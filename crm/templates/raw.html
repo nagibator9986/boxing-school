@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ name }}{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ name }}</h1>
+<p class="page-note">Файл базы знаний как есть. Только просмотр: правки делаются через страницы разделов, чтобы каждая проходила проверку.</p>
+<div class="toolbar">
+  {% for file in files %}
+    <a class="btn small {{ 'primary' if file == name }}" href="{{ url_for('kb_content.raw', name=file) }}">{{ file }}</a>
+  {% endfor %}
+</div>
+<pre class="raw">{{ body }}</pre>
+{% endblock %}

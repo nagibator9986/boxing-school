@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ client.name }}{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ client.channel_icon }} {{ client.name }}</h1>
+<p class="page-note">{{ client.channel_title }} · {{ client.chat_id }}{% if client.phone %} · {{ client.phone }}{% endif %}{% if client.lang %} · язык: {{ client.lang }}{% endif %}</p>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Диалог</h2>
+    <div class="dialog">
+      {% for message in dialog %}
+        <div class="bubble {{ 'client' if message.is_client else ('operator' if message.author == 'operator' else 'bot') }}">{{ message.text }}<span class="meta">{{ message.created_at | dt('%d.%m %H:%M') }}{% if message.author == 'operator' %} · оператор{% endif %}</span></div>
+      {% else %}
+        <div class="empty">Переписки пока нет</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Управление ботом в этом диалоге</h2>
+      {% if client.paused %}
+        <p class="mini">Бот молчит{% if client.paused_until %} до {{ client.paused_until | dt }}{% endif %}. Клиенту отвечает человек.</p>
+        <form method="post" action="{{ url_for('clients.resume', conv_id=client.id) }}">
+          <button class="btn primary" type="submit">Вернуть бота в диалог</button>
+        </form>
+      {% else %}
+        <p class="mini">Бот отвечает сам. Поставьте паузу, если берёте диалог на себя, — иначе он ответит одновременно с вами.</p>
+        <form method="post" action="{{ url_for('clients.pause', conv_id=client.id) }}" class="inline">
+          <select name="minutes">
+            <option value="30">30 минут</option>
+            <option value="60" selected>1 час</option>
+            <option value="180">3 часа</option>
+            <option value="720">12 часов</option>
+          </select>
+          <button class="btn" type="submit">Бот, помолчи</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Карточка</h2>
+      <table>
+        <tbody>
+          <tr><td>Первое обращение</td><td class="num">{{ client.first_at | dt }}</td></tr>
+          <tr><td>Последнее</td><td class="num">{{ client.last_at | dt }}</td></tr>
+          <tr><td>Сообщений от клиента</td><td class="num">{{ client.msg_in }}</td></tr>
+          <tr><td>Ответов бота</td><td class="num">{{ client.msg_out }}</td></tr>
+          <tr><td>Стадия</td><td class="num">{{ client.state }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    {% if lead %}
+    <div class="card">
+      <h2>Заявка</h2>
+      <table>
+        <tbody>
+          <tr><td>Ребёнок</td><td class="num">{{ lead.child_name }}, {{ lead.child_age }} лет</td></tr>
+          <tr><td>Родитель</td><td class="num">{{ lead.parent_name or '—' }}</td></tr>
+          <tr><td>Телефон</td><td class="num">{{ lead.phone or '—' }}</td></tr>
+          <tr><td>Район</td><td class="num">{{ lead.district or '—' }}</td></tr>
+          <tr><td>Зал</td><td class="num">{{ lead.gym_id or '—' }}</td></tr>
+          <tr><td>Когда придут</td><td class="num">{{ lead.trial_slot_text or '—' }}</td></tr>
+          <tr><td>Статус</td><td class="num">{{ lead.status }}</td></tr>
+          {% if lead.motivation %}<tr><td>Мотив</td><td class="num">{{ lead.motivation }}</td></tr>{% endif %}
+          {% if lead.main_objection %}<tr><td>Возражение</td><td class="num">{{ lead.main_objection }}</td></tr>{% endif %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Администраторы{% endblock %}
+{% block content %}
+<h1 class="page-title">Администраторы</h1>
+<p class="page-note">Им приходят заявки в Telegram, и они могут править бота командой <code>/admin</code>. Администратором становится любой, кто пришлёт боту пароль — id при этом определится сам.</p>
+
+<div class="card">
+<table>
+  <thead><tr><th>Telegram-id</th><th>Кто это</th><th>С какого времени</th><th></th></tr></thead>
+  <tbody>
+  {% for admin in admins %}
+    <tr>
+      <td>{{ admin.telegram_id }}</td>
+      <td>{{ admin.title or '—' }}</td>
+      <td class="mini">{{ admin.added_at }}</td>
+      <td>
+        <form method="post" onsubmit="return confirm('Снять права у {{ admin.telegram_id }}?')">
+          <input type="hidden" name="action" value="remove">
+          <input type="hidden" name="telegram_id" value="{{ admin.telegram_id }}">
+          <button class="btn small danger" type="submit">Снять права</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="empty">Администраторов пока нет — пусть кто-нибудь пришлёт боту пароль</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<div class="card">
+  <h2>Добавить вручную</h2>
+  <form method="post" class="row three">
+    <div class="field"><label>Telegram-id</label><input type="number" name="telegram_id" placeholder="647787396"></div>
+    <div class="field"><label>Кто это</label><input type="text" name="title" placeholder="Азамат"></div>
+    <div class="field" style="padding-top:22px"><button class="btn" type="submit">Дать права</button></div>
+  </form>
+  <p class="mini">Проще так: пусть человек напишет боту пароль <strong>{{ password }}</strong> — id подставится сам, и ошибиться в цифрах будет невозможно.</p>
+</div>
+{% endblock %}

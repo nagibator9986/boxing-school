@@ -1,0 +1,767 @@
+schema_version: 1
+updated_at: '2026-08-09'
+updated_by: dev
+artifacts:
+- id: price_card_city
+  kind: text_card
+  enabled: true
+  scope: city
+  gym_id: null
+  title:
+    ru: Цены, Костанай
+    kk: Бағалар, Қостанай
+  when_to_send_ru: когда просят прайс по городу целиком, а не расчёт под конкретную семью
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: pricing
+- id: price_card_region
+  kind: text_card
+  enabled: true
+  scope: region
+  gym_id: null
+  title:
+    ru: Цены, райцентры области
+    kk: Бағалар, аудан орталықтары
+  when_to_send_ru: когда клиент из района области спрашивает стоимость
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: pricing
+- id: price_photo_city
+  kind: image
+  enabled: false
+  scope: city
+  gym_id: null
+  title:
+    ru: Фото прайса, Костанай
+    kk: Прайс фотосы, Қостанай
+  when_to_send_ru: когда просят прислать прайс картинкой, а не текстом
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: price_photo_region
+  kind: image
+  enabled: false
+  scope: region
+  gym_id: null
+  title:
+    ru: Фото прайса, райцентры
+    kk: Прайс фотосы, аудан орталықтары
+  when_to_send_ru: когда клиент из района просит прайс картинкой
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: gyms_list_city
+  kind: text_card
+  enabled: true
+  scope: city
+  gym_id: null
+  title:
+    ru: Адреса залов в Костанае
+    kk: Қостанайдағы залдардың мекенжайлары
+  when_to_send_ru: когда просят список адресов или спрашивают, где вы находитесь
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 2
+  gap_ref: null
+  render_from: gyms
+- id: gyms_list_region
+  kind: text_card
+  enabled: true
+  scope: region
+  gym_id: null
+  title:
+    ru: Где мы есть в области
+    kk: Облыста қай жерде бармыз
+  when_to_send_ru: когда спрашивают, есть ли секция в райцентре области
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 2
+  gap_ref: null
+  render_from: gyms
+- id: gym_location_ksk_kairbekova_334
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: ksk_kairbekova_334
+  title:
+    ru: Как найти зал на КСК
+    kk: КСК-дағы залды қалай табуға болады
+  when_to_send_ru: когда просят локацию или как пройти к залу на КСК, школа №9
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_plaza_szm_70
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: plaza_szm_70
+  title:
+    ru: Как найти зал у Костанай Плаза
+    kk: Қостанай Плаза жанындағы залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала в Северо-Западном микрорайоне, медцентр AIMED
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_center_kasymkhanova_10
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: center_kasymkhanova_10
+  title:
+    ru: Как найти зал на Касымханова
+    kk: Қасымханов көшесіндегі залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала в районе Жана-Кала на Касымханова 10
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_center_kairbekova_24
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: center_kairbekova_24
+  title:
+    ru: Как найти зал у магазина «Рахат»
+    kk: «Рахат» дүкені жанындағы залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала в центре, у магазина Рахат, Каирбекова 24
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_magazin15_voinov_8b
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: magazin15_voinov_8b
+  title:
+    ru: Как найти зал у 15-го магазина
+    kk: 15-дүкен жанындағы залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала на Воинов-интернационалистов 8Б, магазин Романтик
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_mkr6_arystanbekova_6
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: mkr6_arystanbekova_6
+  title:
+    ru: Как найти зал в 6-м микрорайоне
+    kk: 6-шағын аудандағы залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала в 6-м микрорайоне, Арыстанбекова 6, у школы №10
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: schedule_ksk_kairbekova_334
+  kind: image
+  enabled: false
+  scope: city
+  gym_id: ksk_kairbekova_334
+  title:
+    ru: Расписание, зал на КСК
+    kk: Кесте, КСК залы
+  when_to_send_ru: 'нет данных: расписание не передано, материал выключен'
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-1
+  render_from: null
+- id: payment_details
+  kind: text_card
+  enabled: false
+  scope: any
+  gym_id: null
+  title:
+    ru: Как оплатить
+    kk: Қалай төлеуге болады
+  when_to_send_ru: 'нет данных: способы оплаты не переданы, материал выключен'
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-9
+  render_from: null
+- id: instagram_link
+  kind: link
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Instagram школы
+    kk: Мектептің Instagram парақшасы
+  when_to_send_ru: когда просят соцсети, отзывы или хотят посмотреть, как проходят тренировки
+  body:
+    ru: 'Наш Instagram: https://instagram.com/ainazarovtopteam — там тренировки, соревнования и жизнь залов.'
+    kk: 'Біздің Instagram: https://instagram.com/ainazarovtopteam — онда жаттығулар, жарыстар және залдардың өмірі.'
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: offer_and_policy
+  kind: link
+  enabled: false
+  scope: any
+  gym_id: null
+  title:
+    ru: Оферта и условия
+    kk: Оферта және шарттар
+  when_to_send_ru: 'нет данных: ссылки на документы не переданы, материал выключен'
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-14
+  render_from: null
+- id: payment_rules
+  kind: text_card
+  enabled: true
+  scope: city
+  gym_id: null
+  title:
+    ru: Правила оплаты абонемента
+    kk: Абонемент төлеу ережелері
+  when_to_send_ru: когда спрашивают про сроки оплаты, перенос пропущенных занятий или разницу между тарифами
+  body:
+    ru: 'Правила оплаты абонемента
+
+
+      Оплата — ежемесячно, до 10-го числа. Абонемент действует в рамках одного календарного месяца, с 1-го по последнее число.
+
+      Неиспользованные тренировки на следующий месяц не переносятся.
+
+
+      25 000 ₸ — без перерасчёта
+
+      Пропущенные тренировки не переносятся и не компенсируются. Остаток занятий на следующий месяц не сохраняется.
+
+
+      30 000 ₸ — с перерасчётом
+
+      Перерасчёт возможен, если о пропуске предупредить тренера или администратора заранее: болезнь, справка, отпуск и другие
+      согласованные причины. Без предупреждения перерасчёт не делается.
+
+
+      Просим вносить оплату вовремя и заранее сообщать о длительном отсутствии.'
+    kk: 'Абонемент төлеу ережелері
+
+
+      Төлем — ай сайын, әр айдың 10-ына дейін. Абонемент бір күнтізбелік ай ішінде жарамды: айдың 1-інен соңғы күніне дейін.
+
+      Пайдаланылмаған жаттығулар келесі айға ауыспайды.
+
+
+      25 000 ₸ — қайта есептеусіз
+
+      Жіберілген жаттығулар ауыспайды және өтелмейді. Қалған сабақтар келесі айға сақталмайды.
+
+
+      30 000 ₸ — қайта есептеумен
+
+      Жіберу туралы жаттықтырушыға немесе әкімшіге алдын ала хабарласаңыз, қайта есептеу мүмкін: ауру, анықтама, демалыс және
+      басқа келісілген себептер. Ескертусіз қайта есептеу жасалмайды.
+
+
+      Төлемді уақытында жасауды және ұзақ болмау туралы алдын ала хабарлауды сұраймыз.'
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+    telegram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_center_kairbekova_24
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: center_kairbekova_24
+  title:
+    ru: Как добраться — Центр, у магазина «Рахат»
+    kk: Қалай жетуге болады — Орталық, «Рахат» дүкенінің қасында
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: Центр, у магазина «Рахат»
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: Орталық, «Рахат» дүкенінің қасында
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_center_kairbekova_24.mp4
+  file_bytes: 1878335
+  file_sha256: 7fff99f5a1d091529b9c0bfd91d7ad73a7b1ccf8490752446bf58e81fa747025
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_center_kasymkhanova_10
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: center_kasymkhanova_10
+  title:
+    ru: Как добраться — Жана-Кала, Касымханова 10
+    kk: Қалай жетуге болады — Жаңа-Қала, Қасымханов 10
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: Жана-Кала, Касымханова 10
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: Жаңа-Қала, Қасымханов 10
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_center_kasymkhanova_10.mp4
+  file_bytes: 1845032
+  file_sha256: e2772201cb1d36be9db591b8e7965de3c30ea3037ebefbc85dce13cb9c3aa517
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_plaza_szm_70
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: plaza_szm_70
+  title:
+    ru: Как добраться — Северо-Запад, у Областного суда
+    kk: Қалай жетуге болады — Солтүстік-Батыс, Облыстық сот қасында
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: Северо-Запад, у Областного суда
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: Солтүстік-Батыс, Облыстық сот қасында
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_plaza_szm_70.mp4
+  file_bytes: 1657769
+  file_sha256: 8a8f672f16ca6c8a2e238e4caa9d752b9c33af4220210c91c62f171a035c07e9
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_magazin15_voinov_8b
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: magazin15_voinov_8b
+  title:
+    ru: Как добраться — 15-й магазин, у «Романтика»
+    kk: Қалай жетуге болады — 15-дүкен, «Романтик» қасында
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: 15-й магазин, у «Романтика»
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: 15-дүкен, «Романтик» қасында
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_magazin15_voinov_8b.mp4
+  file_bytes: 2836825
+  file_sha256: 8ab0d2714a4c01ce43821c5cc97b39ab9f953746e7baeef7b173816af9eeba26
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_mkr6_arystanbekova_6
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: mkr6_arystanbekova_6
+  title:
+    ru: Как добраться — 6-й микрорайон, Арыстанбекова 6
+    kk: Қалай жетуге болады — 6-шағын аудан, Арыстанбеков 6
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: 6-й микрорайон, Арыстанбекова 6
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: 6-шағын аудан, Арыстанбеков 6
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_mkr6_arystanbekova_6.mp4
+  file_bytes: 2667542
+  file_sha256: e340329dce2ef292edc6f112579343cfc927f1a30d8152e87b6197eed7243561
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: route_region_tobyl
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: region_tobyl
+  title:
+    ru: Как добраться — Тобыл, Тәуелсіздік 51
+    kk: Қалай жетуге болады — Тобыл, Тәуелсіздік 51
+  when_to_send_ru: когда клиент выбрал этот зал и спрашивает, как добраться, где вход, трудно найти, или просит показать дорогу
+  body:
+    ru: '🎥 Дорога до зала: Тобыл, Тәуелсіздік 51
+
+      На видео показан вход — так вы точно не промахнётесь.'
+    kk: '🎥 Залға дейінгі жол: Тобыл, Тәуелсіздік 51
+
+      Бейнеде кіреберіс көрсетілген.'
+  file_mime: video/mp4
+  file_path: route_region_tobyl.mp4
+  file_bytes: 2661827
+  file_sha256: cad70fc257c45b8a8ca91bfad7242a38a7b877d27d0b97425bf0cc88b1fd106a
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_training_process
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Как проходит тренировка
+    kk: Жаттығу қалай өтеді
+  when_to_send_ru: когда спрашивают, что происходит на занятии, как проходит тренировка, что делают новички
+  body:
+    ru: '🥊 Так проходит занятие: разминка, техника, работа в группе.
+
+      Начинающие работают рядом с тренером — в пары сразу никого не ставят.'
+    kk: '🥊 Сабақ осылай өтеді: жаттығу, техника, топпен жұмыс.'
+  file_mime: image/jpeg
+  file_path: training_process.jpg
+  file_bytes: 180230
+  file_sha256: 426b618c2c46d9820c1445f92673751aa33dc72d1723d18dbf36affa5b96e370
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_selfdefense_poster
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Курс самообороны
+    kk: Өзін-өзі қорғау курсы
+  when_to_send_ru: когда спрашивают про бесплатный курс самообороны «Саламатты ұрпақ»
+  body:
+    ru: '🛡 Бесплатный курс самообороны «Саламатты ұрпақ» — две недели занятий.
+
+      Проводим осенью, зимой и весной. Даты ближайшего набора уточнит администратор.'
+    kk: 🛡 Тегін өзін-өзі қорғау курсы «Саламатты ұрпақ» — екі апта.
+  file_mime: image/jpeg
+  file_path: selfdefense_poster.jpg
+  file_bytes: 92680
+  file_sha256: 5534b2d77d0a4eff18732d3e7f121a1bcc088de053cafbda6d9cb1b00ef0a669
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_selfdefense_certificates
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Выпускники курса самообороны
+    kk: Курс түлектері
+  when_to_send_ru: когда спрашивают про курс самообороны и хотят увидеть, чем он заканчивается
+  body:
+    ru: 🏅 Выпуск курса «Саламатты ұрпақ» — ребята получают сертификаты.
+    kk: 🏅 «Саламатты ұрпақ» курсының бітірушілері сертификат алады.
+  file_mime: image/jpeg
+  file_path: selfdefense_certificates.jpg
+  file_bytes: 200368
+  file_sha256: 6bd1997cce820d17d0ad4612d8ce6eac9d53766746a95e558e8e0cbc727af02c
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_competition_team
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Наша команда на соревнованиях
+    kk: Жарыстағы командамыз
+  when_to_send_ru: когда спрашивают про соревнования, результаты, есть ли достижения у учеников
+  body:
+    ru: '🏆 Наша команда на Кубке бойцовского клуба «Тамерлан» по кикбоксингу.
+
+      Выступать никто не обязан — но кто хочет, тот выступает.'
+    kk: 🏆 Командамыз «Тамерлан» кикбоксинг кубогында.
+  file_mime: image/jpeg
+  file_path: competition_team.jpg
+  file_bytes: 350562
+  file_sha256: 6b98a4f4c5fb0af026201ce616fa102849f2771c879aaccbb98ed6d2e1f81a05
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_summer_group
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Летние тренировки
+    kk: Жазғы жаттығулар
+  when_to_send_ru: когда спрашивают, работаете ли летом, что происходит на каникулах
+  body:
+    ru: ☀️ Летом тренируемся и на улице — так ребятам интереснее.
+    kk: ☀️ Жазда далада да жаттығамыз.
+  file_mime: image/jpeg
+  file_path: summer_group.jpg
+  file_bytes: 502947
+  file_sha256: 49e5acb6bebf99e6894cd549f346fc65b2afc4663b8c5a1e7cee2d8e2b5d78fa
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_lake_trip
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Выезд на озеро
+    kk: Көлге саяхат
+  when_to_send_ru: когда спрашивают про атмосферу в команде, чем занимаются кроме тренировок
+  body:
+    ru: 🏖 Кроме тренировок бывают выезды — команда складывается не только в зале.
+    kk: 🏖 Жаттығудан бөлек, серуендер де болады.
+  file_mime: image/jpeg
+  file_path: lake_trip.jpg
+  file_bytes: 319657
+  file_sha256: 3b7cca3fe5573fe024a682ee58dfe7319e28515585042005a63ff5c373413405
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_logo
+  kind: image
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: AINAZAROV TOP TEAM
+    kk: AINAZAROV TOP TEAM
+  when_to_send_ru: когда клиент просит визитку школы или знакомится с ней впервые
+  body:
+    ru: 🥊 AINAZAROV TOP TEAM — школа бокса и кикбоксинга, Костанай.
+    kk: 🥊 AINAZAROV TOP TEAM — бокс және кикбоксинг мектебі, Қостанай.
+  file_mime: image/jpeg
+  file_path: logo.jpg
+  file_bytes: 89556
+  file_sha256: a24b26721ec468aa94b3da357ffce8dc23d6e04a4df06b53e55821624bfb3257
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null
+- id: photo_coach_federation
+  kind: image
+  enabled: false
+  scope: any
+  gym_id: null
+  title:
+    ru: Тренер школы
+    kk: Мектеп жаттықтырушысы
+  when_to_send_ru: когда спрашивают, кто тренирует (включить после подтверждения имени владельцем)
+  body:
+    ru: null
+    kk: null
+  file_path: coach_federation.jpg
+  file_mime: image/jpeg
+  file_bytes: 105535
+  file_sha256: 42c4cf134c898047fe6aca3cff643ff857b3ceb0e3ca7e399171fd3bca17278b
+  channels:
+    telegram: allow
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-8
+  render_from: null
+- id: route_ksk_kairbekova_334
+  kind: video
+  enabled: true
+  scope: any
+  gym_id: ksk_kairbekova_334
+  title:
+    ru: Как добраться — КСК, Каирбекова 334
+    kk: Қалай жетуге болады — КСК, Қайырбеков 334
+  when_to_send_ru: когда клиент выбрал головной зал на КСК и спрашивает, как добраться, где вход, трудно найти, или просит
+    показать дорогу
+  body:
+    ru: '🎥 Дорога до головного зала: КСК, Каирбекова 334
+
+      Вход в цокольном этаже школы №9 — на видео видно, куда заходить.'
+    kk: '🎥 Бас залға дейінгі жол: КСК, Қайырбеков 334
+
+      Кіреберіс №9 мектептің цоколь қабатында.'
+  file_path: route_ksk_kairbekova_334.mp4
+  file_mime: video/mp4
+  file_bytes: 4343496
+  file_sha256: ae11c6681e181b40444c8b1de4c92494d388aab0b7184b3ec29fc091d331a9a2
+  channels:
+    telegram: allow
+    whatsapp: deny
+    instagram: deny
+  max_send_per_dialog: 1
+  gap_ref: null
+  render_from: null

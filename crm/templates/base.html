@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Управление ботом{% endblock %} — AINAZAROV TOP TEAM</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='crm.css') }}">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="brand">AINAZAROV TOP TEAM<small>управление ботом</small></div>
+
+    <div class="navgroup">Мониторинг</div>
+    <a href="{{ url_for('dashboard.index') }}" class="{{ 'active' if request.endpoint == 'dashboard.index' }}">Обзор</a>
+    <a href="{{ url_for('clients.index') }}" class="{{ 'active' if request.blueprint == 'clients' }}">Клиенты</a>
+    <a href="{{ url_for('leads.index') }}" class="{{ 'active' if request.blueprint == 'leads' }}">Заявки</a>
+
+    <div class="navgroup">База знаний</div>
+    <a href="{{ url_for('kb_gyms.index') }}" class="{{ 'active' if request.endpoint in ('kb_gyms.index', 'kb_gyms.edit') }}">Залы</a>
+    <a href="{{ url_for('kb_gyms.schedule') }}" class="{{ 'active' if request.endpoint == 'kb_gyms.schedule' }}">Расписание</a>
+    <a href="{{ url_for('kb_content.pricing') }}" class="{{ 'active' if request.endpoint == 'kb_content.pricing' }}">Цены и скидки</a>
+    <a href="{{ url_for('kb_content.faq') }}" class="{{ 'active' if request.endpoint in ('kb_content.faq', 'kb_content.faq_edit') }}">Вопросы и ответы</a>
+    <a href="{{ url_for('kb_content.media') }}" class="{{ 'active' if request.endpoint in ('kb_content.media', 'kb_content.media_edit') }}">Фото и видео</a>
+    <a href="{{ url_for('kb_content.texts') }}" class="{{ 'active' if request.endpoint == 'kb_content.texts' }}">Готовые фразы</a>
+    <a href="{{ url_for('kb_content.lexicon') }}" class="{{ 'active' if request.endpoint == 'kb_content.lexicon' }}">Словарь клиентов</a>
+    <a href="{{ url_for('kb_content.policies') }}" class="{{ 'active' if request.endpoint == 'kb_content.policies' }}">Правила бота</a>
+
+    <div class="navgroup">Служебное</div>
+    <a href="{{ url_for('settings.index') }}" class="{{ 'active' if request.endpoint == 'settings.index' }}">Настройки бота</a>
+    <a href="{{ url_for('settings.admins') }}" class="{{ 'active' if request.endpoint == 'settings.admins' }}">Администраторы</a>
+    <a href="{{ url_for('dashboard.gaps') }}" class="{{ 'active' if request.endpoint == 'dashboard.gaps' }}">Что бот не знает</a>
+    <a href="{{ url_for('kb_content.backups') }}" class="{{ 'active' if request.endpoint == 'kb_content.backups' }}">Резервные копии</a>
+    <a href="{{ url_for('kb_content.raw', name='gyms.yaml') }}" class="{{ 'active' if request.endpoint == 'kb_content.raw' }}">Файлы базы</a>
+
+    <div class="navgroup">Версия базы</div>
+    <a href="{{ url_for('kb_content.backups') }}"><span class="mini">{{ kb_hash or '—' }}</span></a>
+    <a href="{{ url_for('auth.logout') }}"><span class="mini">Выйти</span></a>
+  </nav>
+
+  <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

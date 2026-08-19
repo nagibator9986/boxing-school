@@ -1,0 +1,32 @@
+# Локальный запуск в контейнере — тот же образ, что поедет на Railway.
+#
+# Postgres и Redis проекту не нужны: всё хранилище — файлы SQLite на диске,
+# который здесь подключён как ./data. Бот и CRM работают в одном контейнере,
+# потому что делят базу знаний и базы данных: на Railway диск принадлежит
+# одной службе и между службами не разделяется.
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      APP_ENV: local
+      DATA_DIR: /data
+      PORT: 8000
+      TZ: Asia/Almaty
+      # Пароль входа в CRM и в /admin. Для боевого запуска задайте свой.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Azamat65}
+      # Постоянный ключ сессии: иначе перезапуск разлогинивает.
+      CRM_SECRET_KEY: ${CRM_SECRET_KEY:-local-dev-key-change-me}
+    volumes:
+      # Диск переживает пересборку образа: в нём база знаний, история диалогов,
+      # заявки и права администраторов.
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

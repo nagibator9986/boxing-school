@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}Цены{% endblock %}
+{% macro plan(prefix, caption, value) %}
+  {% set p = value or {} %}
+  {% set label = p.get('label') or {} %}
+  {% set note = p.get('note') or {} %}
+  <h3>{{ caption }}</h3>
+  <div class="row four">
+    <div class="field"><label>Цена, ₸</label><input type="number" name="{{ prefix }}_price" value="{{ p.get('price') if p.get('price') is not none else '' }}"><div class="hint">Пусто — тарифа нет, бот о нём не говорит.</div></div>
+    <div class="field"><label>Название, русский</label><input type="text" name="{{ prefix }}_label_ru" value="{{ label.get('ru') or '' }}"></div>
+    <div class="field"><label>Название, казахский</label><input type="text" name="{{ prefix }}_label_kk" value="{{ label.get('kk') or '' }}"></div>
+    <div class="field" style="padding-top:22px"><label class="checkbox"><input type="checkbox" name="{{ prefix }}_recalculation" value="1" {{ 'checked' if p.get('recalculation') }}> есть перерасчёт за пропуски</label></div>
+  </div>
+  <div class="row">
+    <div class="field"><label>Оговорка, русский</label><input type="text" name="{{ prefix }}_note_ru" value="{{ note.get('ru') or '' }}"></div>
+    <div class="field"><label>Оговорка, казахский</label><input type="text" name="{{ prefix }}_note_kk" value="{{ note.get('kk') or '' }}"></div>
+  </div>
+{% endmacro %}
+{% block content %}
+{% set discount = doc.get('city_family_discount') or {} %}
+{% set validity = doc.get('city_validity_note') or {} %}
+<h1 class="page-title">Цены и скидки</h1>
+<p class="page-note">Числа с этой страницы считает калькулятор бота — сама модель цены не придумывает и не пересчитывает. Ошибка в цифре здесь становится ошибкой во всех ответах о стоимости сразу.</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    <h2>Костанай</h2>
+    <div class="row three">
+      <div class="field"><label>Город</label><input type="text" name="city_settlement" value="{{ doc.get('city_settlement', '') }}"></div>
+      <div class="field"><label>Занятий в абонементе</label><input type="number" name="city_sessions" value="{{ doc.get('city_sessions', 12) }}"></div>
+      <div class="field"><label>Срок действия, дней</label><input type="number" name="city_validity_days" value="{{ doc.get('city_validity_days', 30) }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Как бот описывает абонемент, русский</label><input type="text" name="city_validity_note_ru" value="{{ validity.get('ru') or '' }}"></div>
+      <div class="field"><label>То же по-казахски</label><input type="text" name="city_validity_note_kk" value="{{ validity.get('kk') or '' }}"></div>
+    </div>
+    {{ plan('standard', 'Стандартный тариф', (doc.get('city_plans') or {}).get('standard')) }}
+    {{ plan('flexible', 'Гибкий тариф', (doc.get('city_plans') or {}).get('flexible')) }}
+    {{ plan('single', 'Разовая тренировка', doc.get('city_single')) }}
+  </div>
+
+  <div class="card">
+    <h2>Семейная скидка в городе</h2>
+    <div class="row three">
+      <div class="field">
+        <label>Скидки по порядку детей</label>
+        <textarea name="family_rules" rows="3">{% for rule in discount.get('rules') or [] %}{{ rule[0] }}:{{ rule[1] }}
+{% endfor %}</textarea>
+        <div class="hint">Строка «2:10» = на второго ребёнка 10 %.</div>
+      </div>
+      <div class="field">
+        <label>На какие тарифы действует</label>
+        <input type="text" name="family_applies_to" value="{{ (discount.get('applies_to') or []) | join(', ') }}">
+        <div class="hint">Через запятую: standard, flexible.</div>
+      </div>
+      <div class="field">
+        <label>Максимум детей в расчёте</label>
+        <input type="number" name="family_max_children" value="{{ discount.get('max_children') if discount.get('max_children') is not none else '' }}">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Подтверждено владельцем</label>
+        <select name="family_applies_to_status">
+          <option value="unconfirmed" {{ 'selected' if discount.get('applies_to_status') != 'confirmed' }}>нет — бот добавляет оговорку</option>
+          <option value="confirmed" {{ 'selected' if discount.get('applies_to_status') == 'confirmed' }}>да — бот считает без оговорок</option>
+        </select>
+        <div class="hint">Пока «нет», бот при гибком тарифе говорит, что точную скидку подтвердит администратор (конфликт C-4).</div>
+      </div>
+      <div class="field"><label>Название скидки, русский</label><input type="text" name="family_label_ru" value="{{ (discount.get('label') or {}).get('ru') or '' }}"></div>
+    </div>
+    <div class="field"><label>Название скидки, казахский</label><input type="text" name="family_label_kk" value="{{ (discount.get('label') or {}).get('kk') or '' }}"></div>
+  </div>
+
+  <div class="card">
+    <h2>Районные центры</h2>
+    <div class="field">
+      <label>Населённые пункты с районным прайсом</label>
+      <textarea name="region_settlements" rows="4">{{ (doc.get('region_settlements') or []) | join('\n') }}</textarea>
+      <div class="hint">По одному в строке. Если посёлка нет в списке, бот назовёт городскую цену — а она в два с половиной раза выше.</div>
+    </div>
+    {{ plan('region_standard', 'Абонемент в районе', (doc.get('region_plans') or {}).get('standard')) }}
+    {{ plan('region_single', 'Разовая в районе', doc.get('region_single')) }}
+    <div class="row three">
+      <div class="field"><label>Семейная цена за ребёнка, ₸</label><input type="number" name="region_family_price" value="{{ doc.get('region_family_price_per_child') if doc.get('region_family_price_per_child') is not none else '' }}"></div>
+      <div class="field"><label>С какого числа детей</label><input type="number" name="region_family_min" value="{{ doc.get('region_family_min_children', 2) }}"></div>
+      <div class="field"><label>Название, русский</label><input type="text" name="region_family_label_ru" value="{{ (doc.get('region_family_label') or {}).get('ru') or '' }}"></div>
+    </div>
+    <div class="field"><label>Название, казахский</label><input type="text" name="region_family_label_kk" value="{{ (doc.get('region_family_label') or {}).get('kk') or '' }}"></div>
+  </div>
+
+  <div class="card">
+    <h2>Оплата</h2>
+    <div class="field">
+      <label>Способы оплаты</label>
+      <input type="text" name="payment_methods" value="{{ (doc.get('payment_methods') or []) | join(', ') }}">
+      <div class="hint">Через запятую: kaspi_qr, kaspi_transfer, cash.</div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Реквизиты и порядок оплаты, русский</label><textarea name="payment_details_ru" rows="3">{{ (doc.get('payment_details') or {}).get('ru') or '' }}</textarea></div>
+      <div class="field"><label>То же по-казахски</label><textarea name="payment_details_kk" rows="3">{{ (doc.get('payment_details') or {}).get('kk') or '' }}</textarea></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Заморозка абонемента, русский</label><textarea name="freeze_policy_ru" rows="3">{{ (doc.get('freeze_policy') or {}).get('ru') or '' }}</textarea></div>
+      <div class="field"><label>То же по-казахски</label><textarea name="freeze_policy_kk" rows="3">{{ (doc.get('freeze_policy') or {}).get('kk') or '' }}</textarea></div>
+    </div>
+  </div>
+
+  <div class="actions"><button class="btn primary" type="submit">Сохранить цены</button></div>
+</form>
+{% endblock %}

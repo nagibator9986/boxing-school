@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Настройки бота{% endblock %}
+{% block content %}
+<h1 class="page-title">Настройки бота</h1>
+<p class="page-note">Эти переключатели читает сам бот — на каждом сообщении, без перезапуска. Те же настройки видны в Telegram по команде <code>/admin</code>: это один и тот же список, а не две копии.</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    {% for spec, value in settings %}
+      <div class="field">
+        {% if spec.kind == 'bool' %}
+          <label class="checkbox"><input type="checkbox" name="{{ spec.key }}" value="1" {{ 'checked' if value in ('on', 'true', '1') }}> <strong>{{ spec.title }}</strong></label>
+        {% else %}
+          <label>{{ spec.title }}</label>
+          <input type="text" name="{{ spec.key }}" value="{{ value }}" placeholder="21:00-09:00" style="max-width:220px">
+        {% endif %}
+        <div class="hint">{{ spec.hint }}</div>
+      </div>
+    {% endfor %}
+    <div class="actions"><button class="btn primary" type="submit">Сохранить настройки</button></div>
+  </div>
+</form>
+
+<div class="card">
+  <h2>Что из этого знает модель</h2>
+  <p class="mini">Часы работы и платность первого занятия попадают в инструкцию модели — она обязана говорить клиенту именно это. Напоминания и уведомления о заявках модели не видны: это механика бота, а не тема разговора.</p>
+  <pre class="raw">{{ runtime.prompt_block() }}</pre>
+</div>
+{% endblock %}

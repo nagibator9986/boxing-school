@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Новый зал' if not gym else (gym.get('title', {}).get('ru') or gym_id) }}{% endblock %}
+{% set g = gym or {} %}
+{% set title = g.get('title', {}) %}
+{% set address = g.get('address', {}) %}
+{% set landmark = g.get('landmark', {}) %}
+{% set district = g.get('district', {}) %}
+{% set capacity = g.get('capacity_note') or {} %}
+{% set slots = g.get('schedule') or [] %}
+{% set coaches = g.get('coaches') or [] %}
+{% block content %}
+<h1 class="page-title">{{ 'Новый зал' if not gym else (title.get('ru') or gym_id) }}</h1>
+<p class="page-note">Всё, что бот знает об этой точке. Поле, оставленное пустым, означает «данных нет» — бот честно скажет это клиенту и передаст вопрос администратору, вместо того чтобы придумать ответ.</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    <h2>Основное</h2>
+    <div class="row three">
+      <div class="field">
+        <label>Идентификатор</label>
+        <input type="text" name="id" value="{{ g.get('id', '') }}" {{ 'readonly' if gym }} placeholder="ksk_kairbekova_334">
+        <div class="hint">Латиницей, без пробелов. Менять у существующего зала нельзя: на него ссылаются заявки и материалы.</div>
+      </div>
+      <div class="field">
+        <label>Где находится</label>
+        <select name="scope">
+          {% for value, label in scopes %}<option value="{{ value }}" {{ 'selected' if g.get('scope') == value }}>{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label>Населённый пункт</label>
+        <input type="text" name="settlement" value="{{ g.get('settlement', 'Костанай') }}">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field"><label>Название, русский</label><input type="text" name="title_ru" value="{{ title.get('ru') or '' }}"></div>
+      <div class="field"><label>Название, казахский</label><input type="text" name="title_kk" value="{{ title.get('kk') or '' }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Адрес, русский</label><input type="text" name="address_ru" value="{{ address.get('ru') or '' }}"></div>
+      <div class="field"><label>Адрес, казахский</label><input type="text" name="address_kk" value="{{ address.get('kk') or '' }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Ориентир, русский</label><input type="text" name="landmark_ru" value="{{ landmark.get('ru') or '' }}"><div class="hint">«цокольный этаж школы №9» — то, что помогает найти вход.</div></div>
+      <div class="field"><label>Ориентир, казахский</label><input type="text" name="landmark_kk" value="{{ landmark.get('kk') or '' }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Район, русский</label><input type="text" name="district_ru" value="{{ district.get('ru') or '' }}"></div>
+      <div class="field"><label>Район, казахский</label><input type="text" name="district_kk" value="{{ district.get('kk') or '' }}"></div>
+    </div>
+    <div class="field">
+      <label>Как ещё называют район</label>
+      <input type="text" name="district_aliases" value="{{ (g.get('district_aliases') or []) | join(', ') }}">
+      <div class="hint">Через запятую. По этим словам бот узнаёт район в сообщении клиента: «кск», «9 школа», «за рынком».</div>
+    </div>
+
+    <div class="row three">
+      <div class="field"><label>Ссылка на карту</label><input type="text" name="map_url" value="{{ g.get('map_url') or '' }}" placeholder="https://2gis.kz/kostanay/geo/..."></div>
+      <div class="field"><label>Широта</label><input type="text" name="geo_lat" value="{{ g.get('geo_lat') if g.get('geo_lat') is not none else '' }}"></div>
+      <div class="field"><label>Долгота</label><input type="text" name="geo_lon" value="{{ g.get('geo_lon') if g.get('geo_lon') is not none else '' }}"></div>
+    </div>
+
+    <div class="row three">
+      <div class="field"><label>Телефон зала</label><input type="text" name="phone" value="{{ g.get('phone') or '' }}"></div>
+      <div class="field">
+        <label>Состояние</label>
+        <select name="status">{% for value, label in statuses %}<option value="{{ value }}" {{ 'selected' if g.get('status') == value }}>{{ label }}</option>{% endfor %}</select>
+      </div>
+      <div class="field" style="padding-top:22px">
+        <label class="checkbox"><input type="checkbox" name="active" value="1" {{ 'checked' if g.get('active', True) }}> бот предлагает этот зал</label>
+        <label class="checkbox"><input type="checkbox" name="is_head" value="1" {{ 'checked' if g.get('is_head') }}> главный зал</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Расписание</h2>
+    <p class="mini">Отметьте дни, поставьте время. Возраст указывается парой «от» и «до» либо не указывается вовсе — тогда бот скажет, что возрастную группу уточнит администратор.</p>
+    <div class="slotline mini">
+      <div>Вид</div><div>Начало</div><div>Конец</div>
+      {% for code, label in days %}<div class="day">{{ label }}</div>{% endfor %}
+      <div>Возраст и примечание</div><div class="day">×</div>
+    </div>
+    {% for slot in slots %}
+      {% set i = loop.index0 %}
+      <div class="slotline">
+        <select name="slot-{{ i }}-discipline">
+          {% for value, label in disciplines %}<option value="{{ value }}" {{ 'selected' if slot.get('discipline') == value }}>{{ label }}</option>{% endfor %}
+        </select>
+        <input type="text" name="slot-{{ i }}-start" value="{{ slot.get('time_start', '') }}" placeholder="09:00">
+        <input type="text" name="slot-{{ i }}-end" value="{{ slot.get('time_end', '') }}" placeholder="10:30">
+        {% for code, label in days %}
+          <div class="day"><input type="checkbox" name="slot-{{ i }}-days" value="{{ code }}" {{ 'checked' if code in (slot.get('days') or []) }}></div>
+        {% endfor %}
+        <div class="inline">
+          <input type="number" name="slot-{{ i }}-age_from" value="{{ slot.get('age_from') if slot.get('age_from') is not none else '' }}" placeholder="от" style="width:64px">
+          <input type="number" name="slot-{{ i }}-age_to" value="{{ slot.get('age_to') if slot.get('age_to') is not none else '' }}" placeholder="до" style="width:64px">
+          <input type="text" name="slot-{{ i }}-note_ru" value="{{ (slot.get('note') or {}).get('ru') or '' }}" placeholder="примечание">
+        </div>
+        <div class="day"><input type="checkbox" name="slot-{{ i }}-delete" value="1" title="удалить занятие"></div>
+      </div>
+    {% endfor %}
+    {% for extra in range(blank_slots) %}
+      {% set i = (slots | length) + extra %}
+      <div class="slotline">
+        <select name="slot-{{ i }}-discipline">
+          {% for value, label in disciplines %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+        </select>
+        <input type="text" name="slot-{{ i }}-start" placeholder="09:00">
+        <input type="text" name="slot-{{ i }}-end" placeholder="10:30">
+        {% for code, label in days %}<div class="day"><input type="checkbox" name="slot-{{ i }}-days" value="{{ code }}"></div>{% endfor %}
+        <div class="inline">
+          <input type="number" name="slot-{{ i }}-age_from" placeholder="от" style="width:64px">
+          <input type="number" name="slot-{{ i }}-age_to" placeholder="до" style="width:64px">
+          <input type="text" name="slot-{{ i }}-note_ru" placeholder="примечание">
+        </div>
+        <div class="day"></div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h2>Тренеры</h2>
+    {% for coach in coaches %}
+      {% set i = loop.index0 %}
+      <div class="row four">
+        <div class="field"><label>Имя</label><input type="text" name="coach-{{ i }}-name" value="{{ coach.get('name', '') }}"></div>
+        <div class="field"><label>Регалии</label><input type="text" name="coach-{{ i }}-credentials" value="{{ coach.get('credentials') or '' }}"></div>
+        <div class="field"><label>Группы</label><input type="text" name="coach-{{ i }}-groups" value="{{ (coach.get('groups') or []) | join(', ') }}"></div>
+        <div class="field" style="padding-top:22px">
+          <label class="checkbox"><input type="checkbox" name="coach-{{ i }}-speaks" value="ru" {{ 'checked' if 'ru' in (coach.get('speaks') or []) }}> рус</label>
+          <label class="checkbox"><input type="checkbox" name="coach-{{ i }}-speaks" value="kk" {{ 'checked' if 'kk' in (coach.get('speaks') or []) }}> каз</label>
+          <label class="checkbox"><input type="checkbox" name="coach-{{ i }}-delete" value="1"> удалить</label>
+        </div>
+      </div>
+    {% endfor %}
+    {% set n = coaches | length %}
+    <div class="row four">
+      <div class="field"><label>Имя нового тренера</label><input type="text" name="coach-{{ n }}-name"></div>
+      <div class="field"><label>Регалии</label><input type="text" name="coach-{{ n }}-credentials" placeholder="МС по боксу"></div>
+      <div class="field"><label>Группы</label><input type="text" name="coach-{{ n }}-groups" placeholder="младшая, средняя"></div>
+      <div class="field" style="padding-top:22px">
+        <label class="checkbox"><input type="checkbox" name="coach-{{ n }}-speaks" value="ru" checked> рус</label>
+        <label class="checkbox"><input type="checkbox" name="coach-{{ n }}-speaks" value="kk"> каз</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Дополнительно</h2>
+    <div class="row">
+      <div class="field"><label>Примечание о наборе, русский</label><input type="text" name="capacity_note_ru" value="{{ capacity.get('ru') or '' }}" placeholder="мест в младшей группе нет до сентября"></div>
+      <div class="field"><label>То же по-казахски</label><input type="text" name="capacity_note_kk" value="{{ capacity.get('kk') or '' }}"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Материалы этого зала</label>
+        <select name="media" multiple size="6">
+          {% for artifact in artifacts %}
+            <option value="{{ artifact.id }}" {{ 'selected' if artifact.id in (g.get('media') or []) }}>{{ artifact.id }}</option>
+          {% endfor %}
+        </select>
+        <div class="hint">Видео маршрута, фото зала. Бот отправит их, когда речь зайдёт об этом зале.</div>
+      </div>
+      <div class="field">
+        <label>Известные пробелы</label>
+        <select name="gap_refs" multiple size="6">
+          {% for gap in gaps %}<option value="{{ gap }}" {{ 'selected' if gap in (g.get('gap_refs') or []) }}>{{ gap }}</option>{% endfor %}
+        </select>
+        <div class="hint">Отмечайте, чего по залу не хватает: бот будет отвечать точнее — «адрес уточнит администратор», а не общее «не знаю».</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Заметка для своих</label>
+      <input type="text" name="internal_note" value="{{ g.get('internal_note') or '' }}">
+      <div class="hint">Клиенту не показывается и в модель не попадает.</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Сохранить</button>
+    <a class="btn" href="{{ url_for('kb_gyms.index') }}">К списку залов</a>
+  </div>
+</form>
+
+{% if gym %}
+<div class="card">
+  <h2>Вставить расписание текстом</h2>
+  <p class="mini">Тот же текст, который вы обычно отправляете в WhatsApp — с эмодзи, днями через точку и временем. Разберётся и заменит расписание этого зала целиком.</p>
+  <form method="post" action="{{ url_for('kb_gyms.schedule_text', gym_id=gym_id) }}">
+    <div class="field">
+      <textarea name="text" rows="8" placeholder="🥊 КИКБОКСИНГ&#10;Понедельник • Среда • Пятница&#10;🕘 09:00–10:30&#10;🕔 17:00–18:30"></textarea>
+    </div>
+    <button class="btn" type="submit">Разобрать и заменить</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Удалить зал</h2>
+  <p class="mini">Зал исчезнет из базы знаний. Если он просто закрылся на время — снимите галочку «бот предлагает этот зал», это обратимо.</p>
+  <form method="post" action="{{ url_for('kb_gyms.delete', gym_id=gym_id) }}" onsubmit="return confirm('Удалить зал {{ gym_id }} из базы знаний?')">
+    <button class="btn danger" type="submit">Удалить зал</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

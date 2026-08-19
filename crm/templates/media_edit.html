@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% set a = artifact %}
+{% set title = a.get('title') or {} %}
+{% set body = a.get('body') or {} %}
+{% block title %}{{ a.get('id') }}{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ title.get('ru') or a.get('id') }}</h1>
+<p class="page-note">{{ a.get('kind') }}{% if a.get('file_path') %} · файл {{ a.get('file_path') }} ({{ ((a.get('file_bytes') or 0) / 1048576) | round(1) }} МБ){% endif %}</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    <div class="row">
+      <div class="field"><label>Название, русский</label><input type="text" name="title_ru" value="{{ title.get('ru') or '' }}"></div>
+      <div class="field"><label>Название, казахский</label><input type="text" name="title_kk" value="{{ title.get('kk') or '' }}"></div>
+    </div>
+    <div class="field">
+      <label>Когда отправлять</label>
+      <input type="text" name="when_to_send_ru" value="{{ a.get('when_to_send_ru') or '' }}">
+      <div class="hint">Описание для модели, клиент его не видит.</div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Текст материала, русский</label><textarea name="body_ru" rows="4">{{ body.get('ru') or '' }}</textarea>
+        <div class="hint">Для текстовых карточек. У фото и видео оставьте пустым — подпись напишет бот на языке клиента.</div></div>
+      <div class="field"><label>Текст материала, казахский</label><textarea name="body_kk" rows="4">{{ body.get('kk') or '' }}</textarea></div>
+    </div>
+    <div class="row three">
+      <div class="field"><label>Для кого</label>
+        <select name="scope">{% for value in scopes %}<option value="{{ value }}" {{ 'selected' if a.get('scope') == value }}>{{ value }}</option>{% endfor %}</select>
+      </div>
+      <div class="field"><label>Зал</label>
+        <select name="gym_id"><option value="">— любой —</option>
+          {% for gym in gyms %}<option value="{{ gym.id }}" {{ 'selected' if a.get('gym_id') == gym.id }}>{{ gym.title.ru or gym.id }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field"><label>Сколько раз за диалог</label><input type="number" name="max_send_per_dialog" value="{{ a.get('max_send_per_dialog', 1) }}"></div>
+    </div>
+    <div class="field">
+      <label>Куда разрешено отправлять</label>
+      <div class="inline">
+        {% for channel in channels %}
+          <label class="checkbox"><input type="checkbox" name="channel_{{ channel }}" value="1" {{ 'checked' if (a.get('channels') or {}).get(channel) == 'allow' }}> {{ channel }}</label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="field"><label class="checkbox"><input type="checkbox" name="enabled" value="1" {{ 'checked' if a.get('enabled') }}> бот может отправлять этот материал</label></div>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Сохранить</button>
+    <a class="btn" href="{{ url_for('kb_content.media') }}">К списку</a>
+  </div>
+</form>
+
+<div class="card">
+  <h2>Убрать из базы знаний</h2>
+  <p class="mini">Запись исчезнет, файл на диске останется — его можно будет зарегистрировать заново.</p>
+  <form method="post" action="{{ url_for('kb_content.media_delete', artifact_id=a.get('id')) }}" onsubmit="return confirm('Убрать материал {{ a.get('id') }}?')">
+    <button class="btn danger" type="submit">Убрать</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+# ФАЙЛ ЦЕЛИКОМ: requirements.txt
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
+httpx>=0.27,<1.0
+sqlalchemy[asyncio]>=2.0.36,<2.1
+aiosqlite>=0.20,<1.0
+alembic>=1.13,<2.0
+# redis — не используется: состояние живёт в SQLite.
+# Раскомментируйте, только если понадобится несколько процессов.
+# redis>=5.0,<6.0
+arq>=0.26,<1.0
+pyyaml>=6.0,<7.0
+# CRM: веб-интерфейс управления ботом (scripts/crm.py).
+flask>=3.0,<4.0
+# Боевой сервер для CRM: сервер разработки Flask на людей не рассчитан.
+gunicorn>=23.0,<27.0
+# Правка YAML с сохранением комментариев: в pricing.yaml и policies.yaml
+# комментариями объяснены решения, и терять их при каждом сохранении нельзя.
+ruamel.yaml>=0.18,<0.19
+structlog>=24.4,<26.0
+prometheus-client>=0.21,<1.0
+google-genai>=2.17.0,<3.0.0
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<2.0
+respx>=0.21,<1.0

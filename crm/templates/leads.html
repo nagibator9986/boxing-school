@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Заявки{% endblock %}
+{% block content %}
+<h1 class="page-title">Заявки на пробное</h1>
+<p class="page-note">Всё, что бот довёл до записи. Карточка уходит администратору в Telegram сразу; здесь — полный список, который никуда не денется.</p>
+
+<div class="toolbar">
+  <form method="get">
+    <select name="status">
+      <option value="">все статусы</option>
+      {% for value, count in statuses %}
+        <option value="{{ value }}" {{ 'selected' if value == status }}>{{ titles.get(value, value) }} ({{ count }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Показать</button>
+  </form>
+  <a class="btn" href="{{ url_for('leads.export', status=status) }}">Выгрузить CSV</a>
+</div>
+
+<div class="card">
+<table>
+  <thead><tr><th>Когда</th><th>Канал</th><th>Ребёнок</th><th>Родитель и телефон</th><th>Куда</th><th>Статус</th></tr></thead>
+  <tbody>
+  {% for lead in leads %}
+    <tr>
+      <td class="mini">{{ lead.created_at | dt }}</td>
+      <td class="mini">{{ lead.channel_title }}</td>
+      <td><a href="{{ url_for('clients.show', conv_id=lead.conversation_id) }}"><strong>{{ lead.child_name or '—' }}</strong></a><div class="mini">{{ lead.child_age }} лет</div></td>
+      <td>{{ lead.parent_name or '—' }}<div class="mini">{{ lead.phone or 'телефона нет' }}</div></td>
+      <td class="mini">{{ gyms.get(lead.gym_id, lead.gym_id or lead.district or '—') }}<div>{{ lead.trial_slot_text or '' }}</div></td>
+      <td><span class="tag {{ 'ok' if lead.status in ('trial_booked','converted') else ('warn' if lead.escalation else '') }}">{{ titles.get(lead.status, lead.status) }}</span></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">Заявок нет</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

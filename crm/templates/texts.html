@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Готовые фразы{% endblock %}
+{% block content %}
+<h1 class="page-title">Готовые фразы <span class="mini">{{ rows | length }} из {{ total }}</span></h1>
+<p class="page-note">Это единственные слова, которые клиент получает без участия модели: приветствие, вежливые отказы, фразы «данных нет». Названия ключей менять нельзя — на них ссылается код бота.</p>
+
+<div class="toolbar">
+  <form method="get">
+    <input type="search" name="q" value="{{ query }}" placeholder="искать по ключу или тексту">
+    <button class="btn" type="submit">Найти</button>
+  </form>
+</div>
+
+<form method="post">
+  <div class="card">
+    {% for key, value in rows %}
+      <div class="field">
+        <label>{{ key }}</label>
+        <div class="row">
+          <textarea name="s::{{ key }}::ru" rows="2" placeholder="по-русски">{{ value.get('ru') or '' }}</textarea>
+          <textarea name="s::{{ key }}::kk" rows="2" placeholder="по-казахски">{{ value.get('kk') or '' }}</textarea>
+        </div>
+      </div>
+    {% else %}
+      <div class="empty">Ничего не нашлось</div>
+    {% endfor %}
+  </div>
+  <div class="actions"><button class="btn primary" type="submit">Сохранить фразы</button></div>
+</form>
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Словарь клиентов{% endblock %}
+{% block content %}
+<h1 class="page-title">Словарь клиентов</h1>
+<p class="page-note">Слова, по которым бот понимает, о чём спрашивают и на каком языке. Сюда добавляют то, как пишут живые люди: «скока», «абик», «где зал». Каждое слово здесь — это диалог, в котором бот понял клиента с первого раза.</p>
+
+<form method="post">
+  <div class="card">
+    <h2>Намерения</h2>
+    <div class="grid cols-2">
+      {% for name, words in (doc.get('intents') or {}).items() %}
+        <div class="field">
+          <label>{{ name }}</label>
+          <textarea name="intent::{{ name }}" rows="4">{{ (words or []) | join('\n') }}</textarea>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Язык и география</h2>
+    <div class="grid cols-2">
+      <div class="field"><label>Казахские слова-маркеры</label><textarea name="kk_words" rows="6">{{ (doc.get('kk_words') or []) | join('\n') }}</textarea></div>
+      <div class="field"><label>Казахский латиницей</label><textarea name="kk_translit" rows="6">{{ (doc.get('kk_translit') or []) | join('\n') }}</textarea></div>
+      <div class="field"><label>Русский латиницей</label><textarea name="ru_translit" rows="6">{{ (doc.get('ru_translit') or []) | join('\n') }}</textarea></div>
+      <div class="field"><label>Как ещё называют районы</label><textarea name="districts_extra" rows="6">{{ (doc.get('districts_extra') or []) | join('\n') }}</textarea></div>
+    </div>
+  </div>
+
+  <div class="actions"><button class="btn primary" type="submit">Сохранить словарь</button></div>
+</form>
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% set e = entry or {} %}
+{% set answer = e.get('answer') or {} %}
+{% set variants = e.get('question_variants') or {} %}
+{% block title %}{{ e.get('id') or 'Новый вопрос' }}{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ e.get('id') or 'Новый вопрос' }}</h1>
+<p class="page-note">Ответ пишется так, как его произнесёт бот, — целой репликой. Варианты вопроса нужны, чтобы он узнал тему в живой формулировке клиента.</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    <div class="row three">
+      <div class="field"><label>Идентификатор</label><input type="text" name="id" value="{{ e.get('id', '') }}" {{ 'readonly' if entry }} placeholder="trial_free"></div>
+      <div class="field"><label>Тема</label><input type="text" name="topic" value="{{ e.get('topic', '') }}" placeholder="trial"></div>
+      <div class="field"><label>Для кого</label>
+        <select name="scope">{% for value in scopes %}<option value="{{ value }}" {{ 'selected' if e.get('scope') == value }}>{{ value }}</option>{% endfor %}</select>
+        <div class="hint">city — только Костанай, region — только районы, any — всем.</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Ответ, русский</label><textarea name="answer_ru" rows="5">{{ answer.get('ru') or '' }}</textarea></div>
+      <div class="field"><label>Ответ, казахский</label><textarea name="answer_kk" rows="5">{{ answer.get('kk') or '' }}</textarea></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Как спрашивают по-русски</label><textarea name="variants_ru" rows="5">{{ (variants.get('ru') or []) | join('\n') }}</textarea><div class="hint">По одной формулировке в строке.</div></div>
+      <div class="field"><label>Как спрашивают по-казахски</label><textarea name="variants_kk" rows="5">{{ (variants.get('kk') or []) | join('\n') }}</textarea></div>
+    </div>
+    <div class="row three">
+      <div class="field"><label>Источник</label>
+        <select name="source">{% for value in sources %}<option value="{{ value }}" {{ 'selected' if e.get('source') == value }}>{{ value }}</option>{% endfor %}</select>
+        <div class="hint">owner_confirmed — подтверждено владельцем; generic — общая формулировка.</div>
+      </div>
+      <div class="field"><label>Связанный пробел</label>
+        <select name="gap_ref"><option value="">—</option>{% for gap in gaps %}<option value="{{ gap }}" {{ 'selected' if e.get('gap_ref') == gap }}>{{ gap }}</option>{% endfor %}</select>
+      </div>
+      <div class="field"><label>Требует инструмента</label><input type="text" name="requires_tool" value="{{ e.get('requires_tool') or '' }}" placeholder="calc_price"></div>
+    </div>
+    <div class="field"><label class="checkbox"><input type="checkbox" name="escalate_if_empty" value="1" {{ 'checked' if e.get('escalate_if_empty', True) }}> если ответа нет — передать администратору</label></div>
+    <div class="field">
+      <label>Чего боту нельзя утверждать в этой теме</label>
+      <textarea name="forbidden_claims" rows="3">{{ (e.get('forbidden_claims') or []) | join('\n') }}</textarea>
+      <div class="hint">По одному запрету в строке. Пост-фильтр снимет ответ, если бот это скажет.</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Сохранить</button>
+    <a class="btn" href="{{ url_for('kb_content.faq') }}">К списку</a>
+  </div>
+</form>
+
+{% if entry %}
+<div class="card">
+  <h2>Удалить вопрос</h2>
+  <form method="post" action="{{ url_for('kb_content.faq_delete', entry_id=e.get('id')) }}" onsubmit="return confirm('Удалить вопрос {{ e.get('id') }}?')">
+    <button class="btn danger" type="submit">Удалить</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

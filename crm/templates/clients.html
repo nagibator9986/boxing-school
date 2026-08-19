@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Клиенты{% endblock %}
+{% block content %}
+<h1 class="page-title">Клиенты <span class="mini">{{ total }}</span></h1>
+<p class="page-note">Все, кто написал боту. Канал виден в первом столбце: по нему понятно, где отвечать, если понадобится вмешаться.</p>
+
+<div class="toolbar">
+  <form method="get">
+    <input type="search" name="q" value="{{ search }}" placeholder="имя, телефон, id чата">
+    <select name="channel">
+      <option value="">все каналы</option>
+      {% for channel, count in channels %}
+        <option value="{{ channel }}" {{ 'selected' if channel == request.args.get('channel') }}>{{ channel_titles.get(channel, channel) }} ({{ count }})</option>
+      {% endfor %}
+    </select>
+    <label class="checkbox"><input type="checkbox" name="leads" value="1" {{ 'checked' if only_leads }}> только с заявкой</label>
+    <button class="btn" type="submit">Показать</button>
+  </form>
+  <a class="btn" href="{{ url_for('clients.export', q=search, channel=request.args.get('channel',''), leads='1' if only_leads else '') }}">Выгрузить CSV</a>
+</div>
+
+<div class="card">
+<table>
+  <thead>
+    <tr><th>Канал</th><th>Клиент</th><th>Последнее сообщение</th><th class="num">Сообщений</th><th>Активность</th><th>Состояние</th></tr>
+  </thead>
+  <tbody>
+  {% for client in clients %}
+    <tr>
+      <td>{{ client.channel_icon }} <span class="mini">{{ client.channel_title }}</span></td>
+      <td>
+        <a href="{{ url_for('clients.show', conv_id=client.id) }}"><strong>{{ client.name }}</strong></a>
+        <div class="mini">{{ client.phone or client.chat_id }}{% if client.lang %} · {{ client.lang }}{% endif %}</div>
+      </td>
+      <td class="mini">{{ (client.last_text or '—')[:80] }}</td>
+      <td class="num">{{ client.msg_in }}</td>
+      <td class="mini">{{ client.last_at | ago }}</td>
+      <td>
+        {% if client.has_lead %}<span class="tag ok">заявка</span>{% endif %}
+        {% if client.paused %}<span class="tag warn">бот молчит</span>{% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">Никого не нашлось</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if pages > 1 %}
+<div class="inline">
+  {% for number in range(1, pages + 1) %}
+    <a class="btn small {{ 'primary' if number == page }}" href="{{ url_for('clients.index', page=number, q=search, channel=request.args.get('channel',''), leads='1' if only_leads else '') }}">{{ number }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

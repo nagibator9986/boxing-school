@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Вопросы и ответы{% endblock %}
+{% block content %}
+<h1 class="page-title">Вопросы и ответы <span class="mini">{{ entries | length }} из {{ total }}</span></h1>
+<p class="page-note">Готовые ответы, из которых бот собирает реплики. Чем точнее здесь написано, тем меньше он импровизирует.</p>
+
+<div class="toolbar">
+  <form method="get">
+    <input type="search" name="q" value="{{ query }}" placeholder="искать по тексту вопроса или ответа">
+    <select name="topic">
+      <option value="">все темы</option>
+      {% for value in topics %}<option value="{{ value }}" {{ 'selected' if value == topic }}>{{ value }}</option>{% endfor %}
+    </select>
+    <button class="btn" type="submit">Найти</button>
+  </form>
+  <a class="btn primary" href="{{ url_for('kb_content.faq_edit') }}">Добавить вопрос</a>
+</div>
+
+<div class="card">
+<table>
+  <thead><tr><th>Тема</th><th>Ответ</th><th>Как спрашивают</th><th>Источник</th><th></th></tr></thead>
+  <tbody>
+  {% for entry in entries %}
+    <tr>
+      <td><a href="{{ url_for('kb_content.faq_edit', entry_id=entry.get('id')) }}"><strong>{{ entry.get('topic') }}</strong></a><div class="mini">{{ entry.get('id') }}</div></td>
+      <td>{{ ((entry.get('answer') or {}).get('ru') or '— пусто —')[:150] }}</td>
+      <td class="mini">{{ ((entry.get('question_variants') or {}).get('ru') or [])[:3] | join(' · ') }}</td>
+      <td><span class="tag {{ 'ok' if entry.get('source') == 'owner_confirmed' else 'warn' }}">{{ entry.get('source') }}</span></td>
+      <td><a class="btn small" href="{{ url_for('kb_content.faq_edit', entry_id=entry.get('id')) }}">Править</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="empty">Ничего не нашлось</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Резервные копии{% endblock %}
+{% block content %}
+<h1 class="page-title">Резервные копии</h1>
+<p class="page-note">Копия снимается перед каждой правкой базы знаний — автоматически, включая правки из Telegram. Откат возвращает все семь файлов сразу и тоже создаёт копию, так что вернуться обратно можно всегда.</p>
+
+<div class="card">
+<table>
+  <thead><tr><th>Когда</th><th>Файлов</th><th></th></tr></thead>
+  <tbody>
+  {% for backup in backups %}
+    <tr>
+      <td>{{ backup.title }}<div class="mini">{{ backup.stamp }}</div></td>
+      <td class="num">{{ backup.files }}</td>
+      <td>
+        <form method="post" action="{{ url_for('kb_content.backup_restore', stamp=backup.stamp) }}" onsubmit="return confirm('Вернуть базу знаний к копии {{ backup.title }}?')">
+          <button class="btn small" type="submit">Откатить сюда</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="3" class="empty">Копий пока нет — их создаст первая правка</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

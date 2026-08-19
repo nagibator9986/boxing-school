@@ -1,0 +1,179 @@
+/* Интерфейс CRM. Одна колонка навигации, одна колонка содержимого.
+   Тёмная тема — не украшение: администратор школы работает и вечером. */
+
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #14171c;
+  --muted: #6b7280;
+  --line: #e3e6ea;
+  --accent: #b3261e;
+  --accent-soft: #fdecea;
+  --ok: #1b7a3d;
+  --ok-soft: #e8f5ec;
+  --warn: #92400e;
+  --warn-soft: #fdf3e3;
+  --shadow: 0 1px 2px rgba(16, 20, 26, .06), 0 4px 12px rgba(16, 20, 26, .04);
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --ink: #e8eaed;
+    --muted: #9aa3af;
+    --line: #2c323b;
+    --accent: #ef5350;
+    --accent-soft: #33201f;
+    --ok: #6ee7a0;
+    --ok-soft: #16281d;
+    --warn: #fbbf24;
+    --warn-soft: #2a2113;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+
+a { color: inherit; }
+a:hover { color: var(--accent); }
+
+/* ------------------------------------------------------------------ каркас */
+.layout { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+
+.sidebar {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 18px 0 40px;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+}
+.brand { padding: 0 18px 16px; font-weight: 700; letter-spacing: .2px; }
+.brand small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; }
+.navgroup { padding: 14px 18px 4px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+.sidebar a {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 7px 18px; text-decoration: none; color: var(--ink); font-size: 14px;
+}
+.sidebar a:hover { background: var(--bg); }
+.sidebar a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
+.sidebar .count { color: var(--muted); font-size: 12px; }
+
+.main { padding: 22px 28px 60px; max-width: 1180px; }
+.page-title { display: flex; align-items: baseline; gap: 12px; margin: 0 0 4px; font-size: 22px; }
+.page-note { color: var(--muted); margin: 0 0 20px; font-size: 14px; max-width: 78ch; }
+
+/* ------------------------------------------------------------------ блоки */
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 18px; margin-bottom: 16px;
+}
+.card h2 { margin: 0 0 12px; font-size: 15px; letter-spacing: .2px; }
+.card h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+
+.grid { display: grid; gap: 14px; align-items: start; }
+.grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 900px) { .grid.cols-4, .grid.cols-3, .grid.cols-2 { grid-template-columns: 1fr 1fr; } }
+
+.metric { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.metric .value { font-size: 26px; font-weight: 650; letter-spacing: -.5px; }
+.metric .label { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.metric .sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+/* ------------------------------------------------------------------ таблицы */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px;
+     text-transform: uppercase; letter-spacing: .4px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--bg); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.empty { color: var(--muted); padding: 26px 10px; text-align: center; }
+
+/* ------------------------------------------------------------------ формы */
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+input[type=text], input[type=password], input[type=number], input[type=search], select, textarea {
+  width: 100%; padding: 8px 10px; font: inherit; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+}
+textarea { resize: vertical; min-height: 74px; line-height: 1.5; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.field { margin-bottom: 14px; }
+.field .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+.row.three { grid-template-columns: 1fr 1fr 1fr; }
+.row.four { grid-template-columns: repeat(4, 1fr); }
+.inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 14px; color: var(--ink); }
+.checkbox input { width: auto; }
+
+.btn {
+  display: inline-block; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); font: inherit; cursor: pointer; text-decoration: none;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { opacity: .9; color: #fff; }
+.btn.danger { color: var(--accent); }
+.btn.small { padding: 4px 10px; font-size: 13px; }
+.actions { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.toolbar form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar input, .toolbar select { width: auto; min-width: 180px; }
+/* Галочка в панели фильтров — не поле ввода: минимальная ширина растянула бы
+   её на 180px, и подпись уехала бы от квадратика на полэкрана. */
+.toolbar input[type=checkbox] { min-width: 0; }
+
+/* ------------------------------------------------------------------ метки */
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 12px; background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+}
+.tag.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.tag.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.tag.bad { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 10px; font-size: 14px; }
+.flash.ok { background: var(--ok-soft); color: var(--ok); }
+.flash.error { background: var(--accent-soft); color: var(--accent); }
+.flash.detail { background: var(--warn-soft); color: var(--warn); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+
+/* ------------------------------------------------------------------ диалог */
+.dialog { display: flex; flex-direction: column; gap: 10px; }
+.bubble { max-width: 74%; padding: 9px 13px; border-radius: 14px; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; }
+.bubble .meta { display: block; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.bubble.client { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.bubble.bot { align-self: flex-end; background: var(--accent-soft); border-bottom-right-radius: 4px; }
+.bubble.operator { align-self: flex-end; background: var(--ok-soft); border-bottom-right-radius: 4px; }
+
+/* ------------------------------------------------------------------ прочее */
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 78px; margin-top: 6px; }
+/* Высота столбца задаётся разметкой, поэтому flex расти ему не даём:
+   иначе колонка растянет все столбцы поровну и график станет плоским. */
+.bars .bar { flex: 0 0 auto; width: 100%; background: var(--accent); opacity: .75; border-radius: 3px 3px 0 0; min-height: 2px; }
+.bars .bar.lead { background: var(--ok); }
+.barwrap { display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; flex: 1; }
+.bars-legend { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+pre.raw { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+          overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; line-height: 1.5; }
+.slotline { display: grid; grid-template-columns: 130px 92px 92px repeat(7, 34px) 1fr 34px; gap: 6px; align-items: center; margin-bottom: 6px; }
+.slotline .day { text-align: center; font-size: 12px; color: var(--muted); }
+.slotline .day input { width: auto; }
+/* Строка занятия обязана оставаться одной строкой: перенос примечания вниз
+   ломает сетку дней, и глаз перестаёт видеть, к какому занятию она относится. */
+.slotline .inline { flex-wrap: nowrap; }
+.slotline .inline input[type=text] { min-width: 80px; }
+.mini { color: var(--muted); font-size: 12px; }
+.login-wrap { display: grid; place-items: center; min-height: 100vh; }
+.login-card { width: 340px; }

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Фото и видео{% endblock %}
+{% block content %}
+<h1 class="page-title">Фото и видео <span class="mini">{{ artifacts | length }}</span></h1>
+<p class="page-note">Бот выбирает материал по описанию «когда отправлять», а не по имени файла. Чем понятнее описание, тем точнее он попадает в момент разговора.</p>
+
+<div class="card">
+  <h2>Загрузить материал</h2>
+  <form method="post" action="{{ url_for('kb_content.media_upload') }}" enctype="multipart/form-data">
+    <div class="row three">
+      <div class="field"><label>Файл</label><input type="file" name="file" accept="image/*,video/*"></div>
+      <div class="field"><label>Короткое название</label><input type="text" name="title" placeholder="Тренировка младшей группы"></div>
+      <div class="field"><label>Зал, если материал о конкретном зале</label><input type="text" name="gym_id" placeholder="ksk_kairbekova_334"></div>
+    </div>
+    <div class="field">
+      <label>Когда бот должен это отправлять</label>
+      <input type="text" name="when_to_send" placeholder="когда спрашивают, как проходят занятия">
+      <div class="hint">Самое важное поле: именно по нему модель решает, в ответ на какой вопрос показать материал.</div>
+    </div>
+    <button class="btn primary" type="submit">Загрузить</button>
+    <span class="mini">Видео уходит только в Telegram: в WhatsApp мешает лимит вложения, в Instagram видео не отправляется вовсе.</span>
+  </form>
+</div>
+
+<div class="card">
+<table>
+  <thead><tr><th>Материал</th><th>Тип</th><th>Когда отправлять</th><th>Каналы</th><th>Состояние</th><th></th></tr></thead>
+  <tbody>
+  {% for artifact in artifacts %}
+    <tr>
+      <td><a href="{{ url_for('kb_content.media_edit', artifact_id=artifact.get('id')) }}"><strong>{{ (artifact.get('title') or {}).get('ru') or artifact.get('id') }}</strong></a>
+        <div class="mini">{{ artifact.get('id') }}{% if artifact.get('file_path') %} · {{ artifact.get('file_path') }}{% endif %}</div></td>
+      <td class="mini">{{ artifact.get('kind') }}</td>
+      <td class="mini">{{ (artifact.get('when_to_send_ru') or '')[:90] }}</td>
+      <td class="mini">{% for channel, mode in (artifact.get('channels') or {}).items() %}{% if mode == 'allow' %}{{ channel }} {% endif %}{% endfor %}</td>
+      <td>
+        {% if artifact.get('enabled') %}
+          {% if effective.get(artifact.get('id')) %}<span class="tag ok">включён</span>{% else %}<span class="tag bad">файл не найден</span>{% endif %}
+        {% else %}<span class="tag">выключен</span>{% endif %}
+      </td>
+      <td><a class="btn small" href="{{ url_for('kb_content.media_edit', artifact_id=artifact.get('id')) }}">Править</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

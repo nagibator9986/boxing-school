@@ -1,0 +1,657 @@
+schema_version: 1
+updated_at: "2026-08-19"
+updated_by: admin
+timezone: Asia/Almaty
+city_settlement: Костанай
+gyms:
+- id: ksk_kairbekova_334
+  scope: city
+  settlement: Костанай
+  is_head: true
+  active: true
+  status: open
+  title:
+    ru: КСК — школа №9
+    kk: КСК — №9 мектеп
+  address:
+    ru: Каирбекова 334, школа №9 (цокольный этаж)
+    kk: Қайырбеков көшесі 334, №9 мектеп (цоколь қабаты)
+  landmark:
+    ru: цокольный этаж школы №9
+    kk: №9 мектептің цоколь қабаты
+  district:
+    ru: КСК
+    kk: КСК
+  district_aliases:
+  - кск
+  - ksk
+  - каирбекова 334
+  - кайырбекова 334
+  - школа 9
+  - школа №9
+  - 9 школа
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001062421593
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: 09:00
+    time_end: "10:30"
+  - discipline: kickboxing
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "17:00"
+    time_end: "18:30"
+  - discipline: kickboxing
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: 09:00
+    time_end: "10:30"
+    note:
+      ru: по боксу переданы не все часы, остальные уточнит администратор
+      kk: бокс бойынша барлық сағат берілмеген, қалғанын әкімші нақтылайды
+  capacity_note: null
+  media:
+  - gym_location_ksk_kairbekova_334
+  - route_ksk_kairbekova_334
+  gap_refs:
+  - G-1
+  - G-2
+  - G-8
+  - G-15
+  internal_note: Головной зал по брифу владельца. internal_note клиенту не показывается и в промпт не попадает.
+- id: plaza_szm_70
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Костанай Плаза — AIMED
+    kk: Қостанай Плаза — AIMED
+  address:
+    ru: Северо-Западный микрорайон 70, участок 51, медцентр AIMED
+    kk: Солтүстік-Батыс шағын ауданы 70, 51-учаске, AIMED медорталығы
+  landmark:
+    ru: медицинский центр AIMED
+    kk: AIMED медорталығы
+  district:
+    ru: Костанай Плаза
+    kk: Қостанай Плаза
+  district_aliases:
+  - плаза
+  - plaza
+  - костанай плаза
+  - северо-западный
+  - северо запад
+  - сзм
+  - аймед
+  - aimed
+  - областной суд
+  - 70 квартал
+  - 70-й квартал
+  - участок 51
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001110476838
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id001
+    - tue
+    - thu
+    - sat
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    days: *id001
+    time_start: "19:00"
+    time_end: "20:30"
+  capacity_note: null
+  media:
+  - gym_location_plaza_szm_70
+  - route_plaza_szm_70
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: null
+- id: center_kasymkhanova_10
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Центр — Жана-Кала
+    kk: Орталық — Жаңа Қала
+  address:
+    ru: Касымханова 10
+    kk: Қасымханов көшесі 10
+  landmark:
+    ru: район Жана-Кала
+    kk: Жаңа Қала ауданы
+  district:
+    ru: Центр / Жана-Кала
+    kk: Орталық / Жаңа Қала
+  district_aliases:
+  - жана кала
+  - жана-кала
+  - жанакала
+  - жаңа қала
+  - касымханова
+  - касымханова 10
+  - касымхановой
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923383
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id002
+    - tue
+    - thu
+    - sat
+    time_start: "17:30"
+    time_end: "19:00"
+  - discipline: boxing
+    days: *id002
+    time_start: "17:30"
+    time_end: "19:00"
+  capacity_note: null
+  media:
+  - gym_location_center_kasymkhanova_10
+  - route_center_kasymkhanova_10
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: Два зала заявлены как ЦЕНТР (этот и center_kairbekova_24). Различать по ориентиру.
+- id: center_kairbekova_24
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Центр — у магазина «Рахат»
+    kk: Орталық — «Рахат» дүкені жанында
+  address:
+    ru: Каирбекова 24
+    kk: Қайырбеков көшесі 24
+  landmark:
+    ru: магазин «Рахат»
+    kk: «Рахат» дүкені
+  district:
+    ru: Центр
+    kk: Орталық
+  district_aliases:
+  - рахат
+  - рахате
+  - каирбекова 24
+  - кайырбекова 24
+  - центр рахат
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923405
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  capacity_note: null
+  media:
+  - gym_location_center_kairbekova_24
+  - route_center_kairbekova_24
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: null
+- id: magazin15_voinov_8b
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: 15-й магазин — «Романтик»
+    kk: 15-дүкен — «Романтик»
+  address:
+    ru: Воинов-интернационалистов 8Б
+    kk: Интернационалист-жауынгерлер көшесі 8Б
+  landmark:
+    ru: магазин «Романтик»
+    kk: «Романтик» дүкені
+  district:
+    ru: район 15-го магазина
+    kk: 15-дүкен ауданы
+  district_aliases:
+  - 15 магазин
+  - 15-й магазин
+  - 15й магазин
+  - пятнадцатый магазин
+  - романтик
+  - воинов интернационалистов
+  - воинов-интернационалистов
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923416
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id003
+    - tue
+    - thu
+    - sat
+    time_start: "18:45"
+    time_end: "19:45"
+  - discipline: boxing
+    days: *id003
+    time_start: "18:45"
+    time_end: "19:45"
+  capacity_note: null
+  media:
+  - gym_location_magazin15_voinov_8b
+  - route_magazin15_voinov_8b
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: "Владелец должен подтвердить: не этот ли зал в шапке Instagram назван «КЖБИ» (конфликт C-3)."
+- id: mkr6_arystanbekova_6
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: 6-й микрорайон — у школы №10
+    kk: 6-шағын аудан — №10 мектеп жанында
+  address:
+    ru: Арыстанбекова 6
+    kk: Арыстанбеков көшесі 6
+  landmark:
+    ru: возле школы №10
+    kk: №10 мектептің жанында
+  district:
+    ru: 6-й микрорайон
+    kk: 6-шағын аудан
+  district_aliases:
+  - 6 микрорайон
+  - 6-й микрорайон
+  - шестой микрорайон
+  - 6 мкр
+  - 6мкр
+  - арыстанбекова
+  - школа 10
+  - школа №10
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923432
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id004
+    - tue
+    - thu
+    - sat
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    days: *id004
+    time_start: "19:00"
+    time_end: "20:30"
+  capacity_note: null
+  media:
+  - gym_location_mkr6_arystanbekova_6
+  - route_mkr6_arystanbekova_6
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: Новый, шестой зал. Закреплённый креатив в Instagram говорит «5 залов» — конфликт C-1, креатив перевыпустить.
+- id: region_tobyl
+  scope: region
+  settlement: Тобыл
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Тобыл
+    kk: Тобыл
+  address:
+    ru: Тобыл, улица Тәуелсіздік, 51
+    kk: Тобыл қаласы, Тәуелсіздік көшесі, 51
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Тобыл
+    kk: Тобыл
+  district_aliases:
+  - тобыл
+  - tobyl
+  - затобольск
+  - затоболовка
+  - тобол
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923454
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id005
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    days: *id005
+    time_start: "19:00"
+    time_end: "20:30"
+  capacity_note: null
+  media:
+  - route_region_tobyl
+  gap_refs:
+  - G-2
+  - G-8
+  internal_note: "Добавлен из расписания 12.08.2026. ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ ВЛАДЕЛЬЦА: прайс районный (10 000 тг) или городской (25 000 тг)? Тобыл — райцентр Костанайского района, поэтому проставлен scope: region."
+- id: region_karabalyk
+  scope: region
+  settlement: Карабалык
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Карабалык
+    kk: Қарабалық
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Карабалык
+    kk: Қарабалық
+  district_aliases:
+  - карабалык
+  - қарабалық
+  - karabalyk
+  - карабалык поселок
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: region_fedorovka
+  scope: region
+  settlement: Фёдоровка
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Фёдоровка
+    kk: Фёдоровка
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Фёдоровка
+    kk: Фёдоровка
+  district_aliases:
+  - федоровка
+  - фёдоровка
+  - fedorovka
+  - федоровский район
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: region_sarykol
+  scope: region
+  settlement: Сарыколь
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Сарыколь
+    kk: Сарыкөл
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Сарыколь
+    kk: Сарыкөл
+  district_aliases:
+  - сарыколь
+  - сарыкол
+  - сарыкөл
+  - sarykol
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: region_auliekol
+  scope: region
+  settlement: Аулиеколь
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Аулиеколь
+    kk: Әулиекөл
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Аулиеколь
+    kk: Әулиекөл
+  district_aliases:
+  - аулиеколь
+  - аулиекол
+  - әулиекөл
+  - auliekol
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: region_uzynkol
+  scope: region
+  settlement: Узынколь
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Узынколь
+    kk: Ұзынкөл
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Узынколь
+    kk: Ұзынкөл
+  district_aliases:
+  - узынколь
+  - узынкол
+  - ұзынкөл
+  - uzynkol
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: region_zhitikara
+  scope: region
+  settlement: Житикара
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Житикара
+    kk: Жітіқара
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: Житикара
+    kk: Жітіқара
+  district_aliases:
+  - житикара
+  - жетикара
+  - жітіқара
+  - zhitikara
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-1
+  - G-2
+  - G-3
+  - G-8
+  internal_note: null
+- id: unresolved_kzhbi
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: false
+  status: unresolved
+  title:
+    ru: КЖБИ — требует уточнения
+    kk: КЖБИ — нақтылауды қажет етеді
+  address:
+    ru: null
+    kk: null
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: КЖБИ
+    kk: КЖБИ
+  district_aliases:
+  - кжби
+  - кжби район
+  - kzhbi
+  - железобетон
+  - завод жби
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule: []
+  capacity_note: null
+  media: []
+  gap_refs:
+  - C-3
+  internal_note: 'Конфликт C-3. До письменного ответа владельца бот не подтверждает и не отрицает наличие зала на КЖБИ: find_gym_by_district на алиас «кжби» возвращает needs_operator и произносит фразу i18n gap.kzhbi.
+
+    '

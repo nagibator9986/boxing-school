@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Обзор{% endblock %}
+{% block content %}
+<h1 class="page-title">Обзор</h1>
+<p class="page-note">Что происходит с ботом прямо сейчас. Данные читаются из той же базы, в которую он пишет.</p>
+
+<div class="grid cols-4">
+  <div class="metric">
+    <div class="value">{{ overview.clients_total }}</div>
+    <div class="label">клиентов всего</div>
+    <div class="sub">+{{ overview.clients_new }} за {{ overview.days }} дней</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ overview.leads_total }}</div>
+    <div class="label">заявок на пробное</div>
+    <div class="sub">+{{ overview.leads_week }} за {{ overview.days }} дней</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ overview.messages_in }}</div>
+    <div class="label">сообщений в переписке</div>
+    <div class="sub">{{ overview.messages_week }} за {{ overview.days }} дней</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ overview.paused_now }}</div>
+    <div class="label">диалогов на паузе</div>
+    <div class="sub">там сейчас отвечает человек</div>
+  </div>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h2>Обращения по дням</h2>
+    <div class="bars">
+      {% set peak = (daily | map(attribute=1) | max) or 1 %}
+      {% for day, convs, leads in daily %}
+        <div class="barwrap" title="{{ day }}: диалогов {{ convs }}, заявок {{ leads }}">
+          {% if leads %}<div class="bar lead" style="height:{{ (leads / peak * 60) | round(0, 'ceil') }}px"></div>{% endif %}
+          <div class="bar" style="height:{{ (convs / peak * 60) | round(0, 'ceil') }}px"></div>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="bars-legend">
+      <span>{{ daily[0][0] if daily }}</span>
+      <span class="mini">новые диалоги · <span style="color:var(--ok)">заявки</span></span>
+      <span>{{ daily[-1][0] if daily }}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Каналы и состояние</h2>
+    <table>
+      <tbody>
+      {% for channel, count in overview.channels.items() %}
+        <tr><td>{{ channel }}</td><td class="num">{{ count }}</td></tr>
+      {% else %}
+        <tr><td colspan="2" class="empty">Клиентов пока нет</td></tr>
+      {% endfor %}
+        <tr><td>последнее сообщение</td><td class="num">{{ last_message | ago }}</td></tr>
+        <tr><td>залов активно</td><td class="num">{{ gyms_active }} из {{ gyms_total }}</td></tr>
+        <tr><td>материалов включено</td><td class="num">{{ artifacts_on }} из {{ artifacts }}</td></tr>
+        <tr><td>вопросов в базе</td><td class="num">{{ faq_count }}</td></tr>
+        {% if overview.llm_calls %}
+        <tr><td>расход на модель за {{ overview.days }} дней</td><td class="num">${{ '%.2f' | format(overview.llm_cost_usd) }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if without_schedule %}
+<div class="card">
+  <h2>Залы без расписания — бот не может ответить «во сколько»</h2>
+  <div class="inline">
+    {% for gym in without_schedule %}
+      <a class="tag warn" href="{{ url_for('kb_gyms.edit', gym_id=gym.id) }}">{{ gym.title.ru or gym.id }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Последние клиенты</h2>
+    <table>
+      <tbody>
+      {% for client in clients %}
+        <tr>
+          <td>{{ client.channel_icon }} <a href="{{ url_for('clients.show', conv_id=client.id) }}">{{ client.name }}</a>
+            {% if client.has_lead %}<span class="tag ok">заявка</span>{% endif %}
+            {% if client.paused %}<span class="tag warn">пауза</span>{% endif %}
+          </td>
+          <td class="num mini">{{ client.last_at | ago }}</td>
+        </tr>
+      {% else %}
+        <tr><td class="empty">Пока никто не написал</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Последние заявки</h2>
+    <table>
+      <tbody>
+      {% for lead in leads %}
+        <tr>
+          <td><a href="{{ url_for('clients.show', conv_id=lead.conversation_id) }}">{{ lead.child_name or '—' }}</a>
+            <span class="mini">{{ lead.child_age }} лет · {{ lead.channel_title }}</span></td>
+          <td class="num mini">{{ lead.created_at | ago }}</td>
+        </tr>
+      {% else %}
+        <tr><td class="empty">Заявок пока нет</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if gaps %}
+<div class="card">
+  <h2>Чего боту не хватает, чтобы отвечать полнее</h2>
+  <table>
+    <thead><tr><th>Пробел</th><th>Что не может бот</th><th>Важность</th></tr></thead>
+    <tbody>
+    {% for gap in gaps[:6] %}
+      <tr>
+        <td>{{ gap.ref.value }}</td>
+        <td>{{ gap.title_ru }}</td>
+        <td><span class="tag {{ 'bad' if gap.priority == 'critical' else 'warn' }}">{{ gap.priority }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="actions"><a class="btn" href="{{ url_for('dashboard.gaps') }}">Весь список</a></div>
+</div>
+{% endif %}
+{% endblock %}

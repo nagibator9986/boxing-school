@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Что бот не знает{% endblock %}
+{% block content %}
+<h1 class="page-title">Что бот не знает</h1>
+<p class="page-note">Список составлен по данным базы знаний: пока поле пустое, бот честно говорит «уточню у администратора» и передаёт вопрос человеку — вместо того чтобы придумать ответ. Заполните данные, и строка закроется сама.</p>
+
+<div class="card">
+<table>
+  <thead><tr><th>Пробел</th><th>Чего не хватает</th><th>Вопрос клиента</th><th>Что отвечает бот сейчас</th><th>Статус</th></tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td><strong>{{ row.info.ref.value }}</strong><br><span class="tag {{ 'bad' if row.info.priority == 'critical' else ('warn' if row.info.priority == 'high' else '') }}">{{ row.info.priority }}</span></td>
+      <td>{{ row.info.title_ru }}</td>
+      <td class="mini">{{ row.info.question_ru }}</td>
+      <td class="mini">{{ row.phrase }}</td>
+      <td>{% if row.open %}<span class="tag bad">данных нет</span>{% else %}<span class="tag ok">закрыт</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

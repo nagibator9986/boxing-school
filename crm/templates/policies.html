@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Правила бота{% endblock %}
+{% set work = doc.get('work_hours') or {} %}
+{% block content %}
+<h1 class="page-title">Правила бота</h1>
+<p class="page-note">Как бот ведёт себя с клиентом: когда передаёт диалог человеку, насколько замолкает, о чём не говорит никогда.</p>
+
+<form method="post">
+  <input type="hidden" name="form_complete" value="1">
+  <div class="card">
+    <h2>Школа</h2>
+    <div class="row">
+      <div class="field"><label>Название</label><input type="text" name="org_brand" value="{{ doc.get('org_brand', '') }}"></div>
+      <div class="field"><label>Город</label><input type="text" name="org_city" value="{{ doc.get('org_city', '') }}"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Часы работы для клиента, русский</label><input type="text" name="work_hours_ru" value="{{ work.get('ru') or '' }}" placeholder="Администратор отвечает с 10:00 до 20:00"></div>
+      <div class="field"><label>То же по-казахски</label><input type="text" name="work_hours_kk" value="{{ work.get('kk') or '' }}"></div>
+    </div>
+    <div class="field"><label class="checkbox"><input type="checkbox" name="audience_adults_only" value="1" {{ 'checked' if doc.get('audience_adults_only', True) }}> бот разговаривает только со взрослыми</label>
+      <div class="hint">Если пишет ребёнок, бот просит позвать родителя и уведомляет администратора, но диалог не бросает.</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Передача человеку</h2>
+    <div class="row">
+      <div class="field"><label>Через сколько минут обычно отвечает администратор</label><input type="number" name="sla_reply_minutes" value="{{ doc.get('sla_reply_minutes') if doc.get('sla_reply_minutes') is not none else '' }}"><div class="hint">Пусто — бот срок не называет. Обещать то, чего не выполняют, хуже, чем не обещать.</div></div>
+      <div class="field"><label>Сколько минут бот молчит после эскалации</label><input type="number" name="escalation_pause_minutes" value="{{ doc.get('escalation_pause_minutes', 60) }}"></div>
+    </div>
+    <div class="field">
+      <label>Стоп-слова: после них бот не пишет никогда</label>
+      <textarea name="followup_stop_words" rows="4">{{ (doc.get('followup_stop_words') or []) | join('\n') }}</textarea>
+      <div class="hint">По одному в строке: «отпишись», «не пишите», «стоп».</div>
+    </div>
+    <div class="field">
+      <label>Чего бот не делает никогда</label>
+      <textarea name="forbidden_behaviour" rows="5">{{ (doc.get('forbidden_behaviour') or []) | join('\n') }}</textarea>
+      <div class="hint">По одному правилу в строке. Эти запреты попадают в инструкцию модели.</div>
+    </div>
+  </div>
+
+  <div class="actions"><button class="btn primary" type="submit">Сохранить правила</button></div>
+</form>
+{% endblock %}

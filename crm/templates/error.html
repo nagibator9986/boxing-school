@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Ошибка {{ code }}{% endblock %}
+{% block content %}
+<h1 class="page-title">Ошибка {{ code }}</h1>
+<p class="page-note">{{ message }}</p>
+{% if errors %}
+<div class="card">
+  <h2>Что именно не так</h2>
+  <pre class="raw">{% for line in errors %}{{ line }}
+{% endfor %}</pre>
+  <p class="mini">Поправьте файл и обновите страницу. Пока база не читается, правки через CRM недоступны, но бот работает по последней исправной версии.</p>
+</div>
+{% endif %}
+<a class="btn" href="{{ url_for('dashboard.index') }}">На главную</a>
+{% endblock %}

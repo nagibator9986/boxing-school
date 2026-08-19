@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Расписание{% endblock %}
+{% block content %}
+<h1 class="page-title">Расписание</h1>
+<p class="page-note">Так расписание видит бот — и так он отвечает на «во сколько занятия». Пустая клетка означает, что в этот день в зале занятий нет; пустая строка целиком — что расписание зала ещё не заполнено, и бот отправляет клиента к администратору.</p>
+
+<div class="card" style="overflow-x:auto">
+<table>
+  <thead>
+    <tr><th>Зал</th>{% for code, label in days %}<th>{{ label }}</th>{% endfor %}</tr>
+  </thead>
+  <tbody>
+  {% for gym in gyms %}
+    <tr>
+      <td><a href="{{ url_for('kb_gyms.edit', gym_id=gym.id) }}"><strong>{{ gym.title.ru or gym.id }}</strong></a>
+        <div class="mini">{{ gym.settlement }}</div></td>
+      {% for code, label in days %}
+        <td>
+          {% for slot in grid[gym.id][code] %}
+            <div class="mini">{{ slot.time_start }}–{{ slot.time_end }}<br>
+              <span class="tag {{ 'ok' if slot.discipline == 'boxing' }}">{{ disciplines[slot.discipline] }}</span>
+              {% if slot.age_known %}<span class="tag">{{ slot.age_from }}–{{ slot.age_to }} лет</span>{% endif %}
+            </div>
+          {% else %}
+            <span class="mini">—</span>
+          {% endfor %}
+        </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
