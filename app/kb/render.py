@@ -13,12 +13,12 @@ KB обязан давать один и тот же текст префикса
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
+from typing import Final
 
-from typing import Final, Iterable, Sequence
-
-from app.types import KBValidationError, Language, Scope
 from app.kb import gaps as gaps_module
-from app.kb.models import FaqEntry, KBSnapshot, PlanPrice
+from app.kb.models import FaqEntry, Gym, KBSnapshot, PlanPrice, ScheduleSlot
+from app.types import KBValidationError, Language, Scope
 
 #: Разделитель блоков префикса.
 _BLOCK_SEP: Final[str] = "\n\n"
@@ -294,64 +294,154 @@ def render_system_prompt(snapshot: KBSnapshot) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Оформление карточек
+# --------------------------------------------------------------------------- #
+#: Значки помечают ТИП строки, а не украшают её. Словарь закрытый и маленький:
+#: когда значков много, они перестают что-либо значить и сообщение начинает
+#: выглядеть рассылкой, а это детская школа.
+ICON_GYM: Final[str] = "🥊"
+ICON_PIN: Final[str] = "📍"
+ICON_MAP: Final[str] = "🗺"
+ICON_TIME: Final[str] = "🕒"
+ICON_SCHEDULE: Final[str] = "🗓"
+ICON_PRICE: Final[str] = "💳"
+ICON_FAMILY: Final[str] = "👨‍👩‍👦"
+
+#: Сокращения дней недели. Это календарные подписи, а не факты о школе, поэтому
+#: они живут в коде рендера, а не в базе знаний.
+_DAY_SHORT: Final[dict[Language, dict[str, str]]] = {
+    Language.RU: {
+        "mon": "Пн", "tue": "Вт", "wed": "Ср", "thu": "Чт",
+        "fri": "Пт", "sat": "Сб", "sun": "Вс",
+    },
+    Language.KK: {
+        "mon": "Дс", "tue": "Сс", "wed": "Ср", "thu": "Бс",
+        "fri": "Жм", "sat": "Сн", "sun": "Жк",
+    },
+}
+
+_DAY_ORDER: Final[tuple[str, ...]] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _blocks(parts: Iterable[str]) -> str:
+    """Склеивает блоки пустой строкой между ними.
+
+    Пустая строка — главный инструмент читаемости в мессенджере: без неё шесть
+    залов сливаются в стену текста, которую не читают, а пролистывают.
+    """
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def _days_line(days: Sequence[str], lang: Language) -> str:
+    """Дни занятия через запятую, в календарном порядке: «Пн, Ср, Пт»."""
+    short = _DAY_SHORT.get(lang, _DAY_SHORT[Language.RU])
+    ordered = [day for day in _DAY_ORDER if day in days]
+    return ", ".join(short.get(day, day) for day in ordered)
+
+
+def _clean_address(gym: Gym, lang: Language) -> str:
+    """Адрес зала без хвоста, который уже сказан в названии.
+
+    В данных название, адрес и ориентир пересказывают друг друга: «КСК — школа
+    №9», «Каирбекова 334, школа №9 (цокольный этаж)», «цокольный этаж школы №9».
+    Склеенные подряд, они читаются как сбой программы, а не как забота.
+    """
+    address = gym.address.get(lang) or ""
+    landmark = gym.landmark.get(lang) or ""
+    if landmark and not _already_said(landmark, f"{gym.title.get(lang) or ''} {address}"):
+        return f"{address}, {landmark}" if address else landmark
+    return address
+
+
+# --------------------------------------------------------------------------- #
 # Тела артефактов
 # --------------------------------------------------------------------------- #
 def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
-    """Тело артефакта ``gyms_list_*`` (``render_from: gyms``)."""
+    """Тело артефакта ``gyms_list_*`` (``render_from: gyms``).
+
+    Один зал — один блок из двух строк: номер с названием и адрес со значком.
+    Нумерация не украшение: кнопок в WhatsApp и Instagram нет, и номер — это то,
+    чем родитель отвечает («напишите номер зала»).
+    """
     gyms = snapshot.active_gyms(scope if scope in (Scope.CITY, Scope.REGION) else Scope.ALL)
-    lines: list[str] = []
-    for gym in gyms:
-        title = gym.title.get(lang) or gym.title.ru or gym.id
-        address = gym.address.get(lang)
-        landmark = gym.landmark.get(lang)
-        if address and landmark:
-            lines.append(f"{title}: {address} ({landmark})")
-        elif address:
-            lines.append(f"{title}: {address}")
-        else:
-            lines.append(title)
-    if not lines:
+    if not gyms:
         return _lang_text(snapshot, "gap.generic", lang)
-    has_unknown_address = any(not gym.address.filled for gym in gyms)
-    if has_unknown_address:
-        lines.append(_lang_text(snapshot, "gap.region_address", lang))
-    return "\n".join(lines)
+
+    if scope is Scope.CITY:
+        title_key = "card.gyms_city_title"
+    elif scope is Scope.REGION:
+        title_key = "card.gyms_region_title"
+    else:
+        title_key = "card.gyms_all_title"
+
+    parts: list[str] = [f"{ICON_GYM} {_lang_text(snapshot, title_key, lang)}"]
+    for number, gym in enumerate(gyms, start=1):
+        name = gym.title.get(lang) or gym.title.ru or gym.id
+        address = _clean_address(gym, lang)
+        parts.append(f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}")
+
+    if any(not gym.address.filled for gym in gyms):
+        parts.append(_lang_text(snapshot, "gap.region_address", lang))
+    parts.append(_lang_text(snapshot, "card.pick_gym", lang))
+    return _blocks(parts)
 
 
 def render_price_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
-    """Тело артефакта ``price_card_*`` (``render_from: pricing``)."""
+    """Тело артефакта ``price_card_*`` (``render_from: pricing``).
+
+    Тарифы идут в том порядке, в каком они записаны в базе знаний, а не по
+    алфавиту: владелец ставит первым тот, который продаёт, — а сортировка
+    выносила вперёд «Гибкий» просто потому, что «Г» раньше «С».
+    """
     pricing = snapshot.pricing
-    lines: list[str] = []
+    parts: list[str] = []
+
     if scope is Scope.REGION:
-        for key in sorted(pricing.region_plans):
-            plan = pricing.region_plans[key]
-            if plan is not None:
-                lines.append(_plan_line(plan, lang))
+        parts.append(f"{ICON_PRICE} {_lang_text(snapshot, 'card.price_region_title', lang)}")
+        plans = [plan for plan in pricing.region_plans.values() if plan is not None]
+        if plans:
+            parts.append(_lang_text(snapshot, "card.subscription", lang))
+            parts.extend(_plan_block(plan, lang) for plan in plans)
         if pricing.region_single is not None:
-            lines.append(_plan_line(pricing.region_single, lang))
+            parts.append(f"{ICON_GYM} {_plan_block(pricing.region_single, lang)}")
         if pricing.region_family_price_per_child is not None:
             label = pricing.region_family_label.get(lang)
             if label:
-                lines.append(label)
+                parts.append(f"{ICON_FAMILY} {label}")
     else:
-        note = pricing.city_validity_note.get(lang)
-        if note:
-            lines.append(note)
-        for key in sorted(pricing.city_plans):
-            plan = pricing.city_plans[key]
-            if plan is not None:
-                lines.append(_plan_line(plan, lang))
+        parts.append(f"{ICON_PRICE} {_lang_text(snapshot, 'card.price_city_title', lang)}")
+        plans = [plan for plan in pricing.city_plans.values() if plan is not None]
+        if plans:
+            parts.append(
+                pricing.city_validity_note.get(lang)
+                or _lang_text(snapshot, "card.subscription", lang)
+            )
+            parts.extend(_plan_block(plan, lang) for plan in plans)
         if pricing.city_single is not None:
-            lines.append(_plan_line(pricing.city_single, lang))
+            parts.append(f"{ICON_GYM} {_plan_block(pricing.city_single, lang)}")
         discount_label = pricing.city_family_discount.label.get(lang)
         if discount_label:
-            lines.append(discount_label)
-    if not lines:
+            parts.append(f"{ICON_FAMILY} {discount_label}")
+
+    if len(parts) <= 1:
         return _lang_text(snapshot, "gap.generic", lang)
-    return "\n".join(lines)
+    return _blocks(parts)
+
+
+def _plan_block(plan: PlanPrice, lang: Language) -> str:
+    """Тариф: цена в первой строке, оговорка — во второй.
+
+    Оговорка обязана быть видна ДО покупки, а не теряться в конце строки после
+    тире: «перерасчёта за пропуски нет» — это то, из-за чего потом спорят.
+    """
+    label = plan.label.get(lang) or plan.label.ru or ""
+    line = f"{label} — {_money(plan.price)}"
+    note = plan.note.get(lang) if plan.note is not None else None
+    return f"{line}\n{note}" if note else line
 
 
 def _plan_line(plan: PlanPrice, lang: Language) -> str:
+    """Тариф одной строкой — для системного префикса, который читает модель."""
     label = plan.label.get(lang) or plan.label.ru or ""
     line = f"{label}: {_money(plan.price)}"
     note = plan.note.get(lang) if plan.note is not None else None
@@ -378,21 +468,26 @@ def render_gym_location(snapshot: KBSnapshot, *, gym_id: str, lang: Language) ->
     # Заголовок нужен только если он говорит больше адреса: «Центр — Жана-Кала»
     # + «Касымханова 10» полезно, а «Тобыл» + «Тобыл, улица …» — повтор.
     if title and not (address and _already_said(title, address)):
-        lines.append(title)
+        lines.append(f"{ICON_PIN} {title}")
     if address:
         lines.append(address)
     if not lines:
-        lines.append(title)
+        lines.append(f"{ICON_PIN} {title}")
     if landmark and not _already_said(landmark, " ".join(lines)):
-        lines.append("Ориентир: " + landmark[0].lower() + landmark[1:])
+        # Регистр ориентира не трогаем: в базе он и так со строчной («цокольный
+        # этаж школы №9»), а принудительное понижение портило казахские названия —
+        # «Жаңа Қала ауданы» превращалось в «жаңа Қала ауданы».
+        label = _lang_text(snapshot, "card.landmark", lang)
+        lines.append(f"{label}: {landmark}")
 
+    parts = ["\n".join(lines)]
     if gym.map_url:
-        # Ссылку подписываем: голый адрес с процентами посреди сообщения
-        # читается как мусор, а превью Telegram занимает пол-экрана.
-        lines.append("На карте: " + gym.map_url)
+        # Ссылку подписываем и выносим отдельным блоком: голый адрес с процентами
+        # посреди сообщения читается как мусор.
+        parts.append(f"{ICON_MAP} {_lang_text(snapshot, 'card.map', lang)}: {gym.map_url}")
     if not address and not landmark:
-        lines.append(_lang_text(snapshot, "gap.region_address", lang))
-    return "\n".join(lines)
+        parts.append(_lang_text(snapshot, "gap.region_address", lang))
+    return _blocks(parts)
 
 
 #: Слова, которые сами по себе ничего не различают: они есть почти в каждом
@@ -446,6 +541,62 @@ def _already_said(candidate: str, existing: str) -> bool:
     return words.issubset(significant(existing))
 
 
+def render_schedule_card(
+    snapshot: KBSnapshot, *, gym_id: str, slots: Sequence[ScheduleSlot], lang: Language
+) -> str:
+    """Расписание зала: занятия сгруппированы по виду, дни сведены в одну строку.
+
+    Собирается кодом, а не моделью, по той же причине, по которой код считает
+    цену: перечисление «вторник, четверг и суббота с 17:30 до 19:00» одной
+    строкой прозой человек читает трижды, прежде чем понять, во сколько ему
+    приходить. И ошибиться в дне при пересказе модель может, а рендер — нет.
+    """
+    gym = snapshot.gym(gym_id)
+    title = (gym.title.get(lang) or gym.title.ru or gym_id) if gym else gym_id
+    if not slots:
+        return _lang_text(snapshot, "gap.schedule", lang)
+
+    by_discipline: dict[str, list[ScheduleSlot]] = {}
+    for slot in slots:
+        by_discipline.setdefault(slot.discipline, []).append(slot)
+
+    parts: list[str] = [f"{ICON_SCHEDULE} {_lang_text(snapshot, 'card.schedule_title', lang)} — {title}"]
+    for discipline, group in by_discipline.items():
+        name = _lang_text(snapshot, f"card.{discipline}", lang)
+        lines = [f"{ICON_GYM} {name}"]
+        for slot in sorted(group, key=lambda item: (item.time_start, item.days[0])):
+            days = _days_line(slot.days, lang)
+            line = f"{days} · {slot.time_start}–{slot.time_end}"
+            if slot.age_known:
+                line += f" ({slot.age_from}–{slot.age_to})"
+            lines.append(f"{ICON_TIME} {line}")
+        parts.append("\n".join(lines))
+
+    if any(not slot.age_known for slot in slots):
+        parts.append(_lang_text(snapshot, "card.age_unknown", lang).capitalize() + ".")
+    return _blocks(parts)
+
+
+def render_route_caption(snapshot: KBSnapshot, *, gym_id: str, lang: Language) -> str:
+    """Подпись к видео маршрута — в том же виде, в каком её пишет сама школа.
+
+    Владелец годами отправляет клиентам видео дороги с одной и той же подписью:
+    ссылка на 2ГИС, адрес, ориентир, вид занятий, дни и время. Это готовый,
+    проверенный людьми формат, и выдумывать вместо него свой незачем — здесь он
+    просто собирается из базы знаний, чтобы не набирать руками каждый раз.
+    """
+    gym = snapshot.gym(gym_id)
+    if gym is None:
+        raise KBValidationError(
+            f"в kb/gyms.yaml нет зала '{gym_id}'",
+            errors=(f"gyms.yaml: отсутствует зал '{gym_id}'",),
+        )
+    parts: list[str] = [render_gym_location(snapshot, gym_id=gym_id, lang=lang)]
+    if gym.schedule:
+        parts.append(render_schedule_card(snapshot, gym_id=gym_id, slots=gym.schedule, lang=lang))
+    return _blocks(parts)
+
+
 def render_artifact_body(snapshot: KBSnapshot, *, artifact_id: str, lang: Language) -> str:
     """Готовый текст любого артефакта: из ``body`` или собранный кодом.
 
@@ -464,6 +615,8 @@ def render_artifact_body(snapshot: KBSnapshot, *, artifact_id: str, lang: Langua
         if artifact.gym_id is not None:
             return render_gym_location(snapshot, gym_id=artifact.gym_id, lang=lang)
         return render_gyms_list_card(snapshot, scope=artifact.scope, lang=lang)
+    if artifact.render_from == "route" and artifact.gym_id is not None:
+        return render_route_caption(snapshot, gym_id=artifact.gym_id, lang=lang)
     body = artifact.body.get(lang) if artifact.body is not None else None
     return body or _lang_text(snapshot, "gap.generic", lang)
 
@@ -479,5 +632,7 @@ __all__ = [
     "render_gyms_list_card",
     "render_price_card",
     "render_pricing_showcase",
+    "render_route_caption",
+    "render_schedule_card",
     "render_system_prompt",
 ]

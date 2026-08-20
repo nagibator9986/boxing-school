@@ -66,8 +66,11 @@ FAQ_TOPICS: Final[tuple[str, ...]] = (
 )
 
 #: Закрытый список групп ключей ``i18n`` (INTERFACES §16.1). Группы `consent` нет.
+#: ``card`` — подписи готовых карточек (список залов, прайс, расписание). Они
+#: попадают клиенту дословно и обязаны быть на обоих языках, поэтому живут здесь,
+#: а не в коде рендера.
 I18N_GROUPS: Final[frozenset[str]] = frozenset(
-    {"gap", "escalation", "error", "bridge", "followup", "lead_card", "greeting", "system"}
+    {"gap", "escalation", "error", "bridge", "followup", "lead_card", "greeting", "system", "card"}
 )
 
 #: Ключ i18n: ``<группа>.<slug>``.
@@ -684,7 +687,7 @@ class Artifact(_Base):
     channels: dict[ChannelKind, Literal["allow", "deny"]] = Field(default_factory=dict)
     max_send_per_dialog: int = 1
     gap_ref: GapRef | None = None
-    render_from: Literal["gyms", "pricing"] | None = None
+    render_from: Literal["gyms", "pricing", "route"] | None = None
 
     @field_validator("id")
     @classmethod
@@ -737,8 +740,18 @@ class Artifact(_Base):
                 raise ValueError(
                     f"artifact[{self.id}]: без render_from нужен готовый body на ru и kk"
                 )
+        if self.render_from == "route" and self.gym_id is None:
+            raise ValueError(f"artifact[{self.id}]: render_from: route требует gym_id")
         if self.render_from is not None and self.kind in FILE_ARTIFACT_KINDS:
-            raise ValueError(f"artifact[{self.id}]: render_from не применим к файловому артефакту")
+            # Файловому артефакту render_from задаёт ПОДПИСЬ, а не тело: видео
+            # маршрута подписывается адресом и расписанием зала, собранными из
+            # базы знаний. Статичная подпись жила бы своей жизнью: владелец
+            # поменял время занятий в CRM, а под видео годами висит старое.
+            if self.render_from not in ("route", "gyms"):
+                raise ValueError(
+                    f"artifact[{self.id}]: у файлового артефакта подпись собирается "
+                    "только из gyms или route"
+                )
         if self.gym_id is not None and not SLUG_RE.match(self.gym_id):
             raise ValueError(f"artifact[{self.id}]: gym_id '{self.gym_id}' не подходит под ^[a-z0-9_]+$")
         return self

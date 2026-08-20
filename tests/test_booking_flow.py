@@ -553,7 +553,15 @@ async def test_route_video_reaches_telegram(deps, llm, kb) -> None:
     file_msg = [m for m in services.outbound if m.content_uri]
     caption = [m for m in services.outbound if m.text]
     assert file_msg, "сам файл не ушёл"
-    assert caption and "🎥" in caption[0].text, "видео ушло без подписи"
+    assert caption, "видео ушло без подписи"
+
+    # Подпись собирается из базы знаний в том же виде, в каком её пишет сама
+    # школа: адрес, ссылка на 2ГИС и расписание. Статичный текст здесь жил бы
+    # своей жизнью — владелец правит расписание, а под видео старое время.
+    text = caption[0].text
+    assert "Арыстанбекова 6" in text, "в подписи нет адреса"
+    assert "2gis.kz" in text, "в подписи нет ссылки на карту"
+    assert "🕒" in text and "19:00–20:30" in text, "в подписи нет расписания"
 
 
 async def test_every_city_gym_has_a_route_video_or_none(kb) -> None:

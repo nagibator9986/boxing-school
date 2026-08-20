@@ -23,11 +23,14 @@ from typing import Any, Final
 
 from app.kb.gaps import say_no_data
 from app.kb.models import Gym, ScheduleSlot
+from app.kb.render import render_schedule_card
 from app.types import (
     EscalationReason,
     GapRef,
     GymStatus,
     Language,
+    OutboundKind,
+    OutboundMessage,
     RenderHint,
     ToolContext,
     ToolResult,
@@ -40,6 +43,18 @@ _WEEKDAY_ORDER: Final[dict[str, int]] = {
 
 #: Допустимые значения аргумента ``shift``.
 _SHIFTS: Final[tuple[str, ...]] = ("first", "second", "unknown")
+
+
+def _route_sent_this_turn(ctx: ToolContext, gym_id: str) -> bool:
+    """Ушло ли видео дороги этого зала на текущем ходу диалога.
+
+    Смотрим сообщения, собранные для отправки в этом же ходу: за пределами хода
+    список пуст, поэтому «спросили вчера» и «спросили только что» не путаются.
+    """
+    collected = getattr(ctx.services, "messages", None)
+    if collected is None:
+        collected = getattr(ctx.services, "outbound", ())
+    return any(getattr(message, "artifact_id", None) == f"route_{gym_id}" for message in collected)
 
 
 def _slot_payload(slot: ScheduleSlot, lang: Language) -> dict[str, Any]:
@@ -155,9 +170,58 @@ async def get_schedule(
             "соседнюю: назови существующие варианты из alternatives или передай администратору."
         )
     caveats.append("Дни и время бери только из этих данных, ничего не добавляя от себя.")
+    # Готовый блок расписания: собран кодом, отформатирован по-человечески.
+    # Модель пересказывает расписание прозой («по вторникам, четвергам и
+    # субботам с 17:30 до 19:00»), и такую строку читают трижды, прежде чем
+    # понять, во сколько приходить. Плюс при пересказе можно потерять день.
+    card = render_schedule_card(kb, gym_id=gym.id, slots=matched or all_slots, lang=lang)
+    # Блок уходит клиенту прямо отсюда, а не через модель. Живой прогон показал,
+    # почему: модель пересказывает готовый блок своими словами и теряет разметку —
+    # значки со строк исчезают, дни и время сливаются в одну фразу. Расписание —
+    # это таблица, и собирать её должен код, как и цену.
+    # Подпись к видео дороги уже содержит расписание этого зала. Если видео ушло
+    # ЭТИМ ЖЕ ходом, второй блок подряд — одно и то же дважды. Но если клиент
+    # спрашивает про время позже, расписание нужно отправить снова: он спросил,
+    # и молчание в ответ на прямой вопрос хуже любого повтора.
+    if _route_sent_this_turn(ctx, gym.id):
+        caveats.append(
+            "Расписание этого зала клиент уже видел в подписи к видео дороги. "
+            "Не отправляй его снова и не пересказывай — переходи к следующему шагу."
+        )
+        return ToolResult.success(
+            data={
+                "card": card,
+                "already_shown": True,
+                "status": status,
+                "gym_id": gym.id,
+                "slots": [_slot_payload(slot, lang) for slot in matched],
+                "total": len(matched),
+            },
+            render_hint=RenderHint.SILENT,
+            caveats=caveats,
+            meta={"gap_refs": []},
+        )
+
+    await ctx.services.enqueue_outbound(
+        OutboundMessage(
+            conversation_id=ctx.conversation_id,
+            channel_id=ctx.channel_id,
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+            lang=lang,
+            kind=OutboundKind.ARTIFACT,
+            text=card,
+        )
+    )
+    caveats.append(
+        "Расписание уже отправлено клиенту готовым блоком — он его видит. "
+        "Не пересказывай дни и время своими словами: добавь только один короткий "
+        "вопрос, например подходит ли такое время."
+    )
 
     return ToolResult.success(
         data={
+            "card": card,
             "status": status,
             "gym_id": gym.id,
             "gym_title": gym.title.get(lang) or gym.title.ru,

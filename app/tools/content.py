@@ -18,7 +18,7 @@ import base64
 import hashlib
 import hmac
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Final
 
@@ -85,8 +85,8 @@ def make_media_token(rel_path: str, *, ttl_s: int, secret: str) -> str:
     safe = _check_rel_path(rel_path)
     if not secret:
         raise ValueError("не задан секрет подписи ссылок на медиа")
-    expires_at = int(datetime.now(timezone.utc).timestamp()) + max(1, int(ttl_s))
-    payload = _b64encode(f"{expires_at}|{safe}".encode("utf-8"))
+    expires_at = int(datetime.now(UTC).timestamp()) + max(1, int(ttl_s))
+    payload = _b64encode(f"{expires_at}|{safe}".encode())
     signature = hmac.new(secret.encode("utf-8"), payload.encode("ascii"), hashlib.sha256).digest()
     return f"{payload}{_TOKEN_SEP}{_b64encode(signature[:_SIG_BYTES])}"
 
@@ -107,7 +107,7 @@ def parse_media_token(token: str, *, secret: str, now: datetime) -> str:
         expires_at = int(expires_raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError("токен повреждён") from exc
-    moment = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    moment = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     if moment.timestamp() > expires_at:
         raise ValueError("срок действия ссылки истёк")
     return _check_rel_path(rel_path)
@@ -203,6 +203,26 @@ def _channel_verdict(artifact: Artifact, channel: ChannelKind) -> str | None:
     return None
 
 
+async def _prefer_route_video(ctx: ToolContext, artifact: Artifact) -> Artifact:
+    """Подменяет карточку адреса видео дороги, если канал его принимает.
+
+    Возвращает исходный артефакт, если подменять нечем или незачем: видео нет,
+    оно выключено, канал его не тянет (WhatsApp, Instagram) или его уже
+    отправляли в этом диалоге.
+    """
+    if not artifact.id.startswith("gym_location_") or not artifact.gym_id:
+        return artifact
+    route = ctx.kb.artifact(f"route_{artifact.gym_id}")
+    if route is None or not route.enabled:
+        return artifact
+    if _channel_verdict(route, ctx.channel) is not None:
+        return artifact
+    sent = await ctx.services.count_artifact_sends(ctx.conversation_id, route.id)
+    if sent >= route.max_send_per_dialog:
+        return artifact
+    return route
+
+
 def _resolve(kb: KBSnapshot, artifact_id: str, gym_id: str | None) -> Artifact | None:
     """Артефакт по id; при заданном ``gym_id`` — его вариант для конкретного зала."""
     if gym_id:
@@ -243,6 +263,12 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
             gap_ref=gap,
             data={"status": "disabled", "artifact_id": artifact.id, "queued": []},
         )
+
+    # Адрес зала школа всегда отправляет вместе с видео дороги — так это делает
+    # сам владелец, и клиенту так понятнее: на видео видно вход. Подпись к видео
+    # собирается из той же базы знаний и уже содержит адрес, ориентир, ссылку на
+    # 2ГИС и расписание, поэтому карточка адреса после него была бы повтором.
+    artifact = await _prefer_route_video(ctx, artifact)
 
     verdict = _channel_verdict(artifact, ctx.channel)
     if verdict is not None:
@@ -321,7 +347,11 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
         # Подпись к файлу идёт ОТДЕЛЬНЫМ сообщением: Wazzup запрещает передавать
         # text и contentUri в одном запросе. Без подписи клиент получает ролик
         # без единого слова и не понимает, что ему прислали и зачем.
-        raw_caption = artifact.body.get(lang) if artifact.body is not None else None
+        # Подпись берём тем же рендером, что и текстовые артефакты: у видео
+        # маршрута она собирается из базы знаний (адрес, ориентир, ссылка на
+        # карту, расписание), а не лежит статикой. Читать здесь только
+        # artifact.body значило бы отправить видео совсем без подписи.
+        raw_caption = render_artifact_body(kb, artifact_id=artifact.id, lang=lang)
         if raw_caption and raw_caption.strip():
             caption_text = _clip(
                 raw_caption.strip(), min(MAX_MESSAGE_CHARS, limits.max_text_chars)
