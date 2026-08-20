@@ -25,7 +25,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID, uuid4
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -188,6 +188,46 @@ async def notify_admins(
     return sent
 
 
+def plan_delivery(
+    messages: "list[Any]", resolve: "Callable[[str | None], Path | None]"
+) -> "list[tuple[Path | None, str | None]]":
+    """Что именно отправить в Telegram: список пар «файл, подпись».
+
+    Пайплайн отдаёт файл и подпись к нему ДВУМЯ сообщениями — так требует
+    Wazzup, где текст и вложение в одном сообщении запрещены. В Telegram это
+    ограничение не действует, и отправлять их порознь нельзя: получалось два
+    видео подряд — первое молча, второе с подписью.
+
+    Поэтому здесь подпись приклеивается к своему файлу, а второе сообщение
+    выбрасывается. Пара опознаётся по ``artifact_id``, порядок значения не имеет.
+    """
+    captions: dict[str, str] = {}
+    for message in messages:
+        artifact_id = getattr(message, "artifact_id", None)
+        text = getattr(message, "text", None)
+        if artifact_id and text and not getattr(message, "content_uri", None):
+            if resolve(artifact_id) is not None:
+                captions.setdefault(artifact_id, text)
+
+    plan: list[tuple[Path | None, str | None]] = []
+    files_done: set[str] = set()
+    for message in messages:
+        artifact_id = getattr(message, "artifact_id", None)
+        text = getattr(message, "text", None)
+        path = resolve(artifact_id) if artifact_id else None
+
+        if path is not None and artifact_id not in files_done:
+            plan.append((path, text or captions.get(artifact_id or "")))
+            files_done.add(artifact_id or "")
+            continue
+        if artifact_id in files_done and text and text == captions.get(artifact_id or ""):
+            # Подпись уже ушла вместе с файлом.
+            continue
+        if text:
+            plan.append((None, text))
+    return plan
+
+
 async def deliver(tg: TelegramClient, chat_id: str, decisions: list[PipelineDecision]) -> int:
     """Отправляет клиенту всё, что решил отправить пайплайн. Возвращает число сообщений.
 
@@ -198,20 +238,20 @@ async def deliver(tg: TelegramClient, chat_id: str, decisions: list[PipelineDeci
     snapshot = kb_loader.get_snapshot()
     sent = 0
     for decision in decisions:
-        for message in decision.outbound:
-            path = _attachment_path(snapshot, message.artifact_id, settings.media_dir)
+        resolve = lambda artifact_id: _attachment_path(  # noqa: E731
+            snapshot, artifact_id, settings.media_dir
+        )
+        for path, text in plan_delivery(list(decision.outbound), resolve):
             if path is not None:
                 try:
-                    await tg.send_file(
-                        chat_id, path=path, kind=_file_kind(path), caption=message.text or None
-                    )
+                    await tg.send_file(chat_id, path=path, kind=_file_kind(path), caption=text)
                     sent += 1
                     continue
                 except TelegramError as exc:
                     # Файл не ушёл — клиент всё равно обязан получить текст.
                     print(f"  [!] вложение не отправлено: {exc}")
-            if message.text:
-                await tg.send_message(chat_id, message.text)
+            if text:
+                await tg.send_message(chat_id, text)
                 sent += 1
     return sent
 
