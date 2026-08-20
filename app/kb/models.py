@@ -297,6 +297,12 @@ class Gym(_Base):
     landmark: Bilingual = EMPTY_BILINGUAL
     district: Bilingual = EMPTY_BILINGUAL
     district_aliases: list[str] = Field(default_factory=list)
+    #: Соседние районы, откуда в этот зал реально ездят и ходят пешком.
+    #: НЕ то же самое, что district_aliases: там — как называют район САМОГО зала,
+    #: здесь — районы, где зала нет. Смешивать нельзя: по алиасу бот скажет
+    #: «наш зал в Аэропорту», а это неправда. По этому полю он скажет честно:
+    #: «в Аэропорту зала нет, ближайший — на Полевой, оттуда пешком».
+    serves_districts: list[str] = Field(default_factory=list)
     geo_lat: float | None = None
     geo_lon: float | None = None
     map_url: str | None = None

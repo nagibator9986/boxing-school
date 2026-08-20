@@ -128,6 +128,7 @@ def _read_gym(form: Any, *, gym_id: str) -> dict[str, Any]:
         "landmark": landmark,
         "district": bilingual(form, "district"),
         "district_aliases": csv_list(form, "district_aliases"),
+        "serves_districts": csv_list(form, "serves_districts"),
         "geo_lat": opt_float(form, "geo_lat"),
         "geo_lon": opt_float(form, "geo_lon"),
         "map_url": opt_text(form, "map_url"),

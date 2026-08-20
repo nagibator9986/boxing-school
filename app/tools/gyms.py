@@ -363,6 +363,10 @@ _SOURCE_WEIGHTS: Final[dict[str, tuple[int, int, int]]] = {
     "alias": (100, 90, 80),
     "settlement": (95, 85, 75),
     "district": (75, 65, 55),
+    # «Зал закрывает этот район» слабее, чем «зал В этом районе»: если зал есть
+    # прямо здесь, он обязан быть первым. Но сильнее случайного совпадения по
+    # адресу или названию.
+    "nearby": (72, 64, 54),
     "text": (70, 58, 50),
 }
 
@@ -371,6 +375,7 @@ _SOURCE_MATCH: Final[dict[str, str]] = {
     "alias": "alias",
     "settlement": "settlement",
     "district": "fallback",
+    "nearby": "nearby",
     "text": "fallback",
 }
 
@@ -389,8 +394,20 @@ def _gym_keys(gym: Gym) -> dict[str, tuple[str, ...]]:
         "alias": _pair(*gym.district_aliases),
         "settlement": _pair(gym.settlement),
         "district": _pair(gym.district.ru, gym.district.kk),
+        "nearby": _pair(*gym.serves_districts),
         "text": text_keys,
     }
+
+
+#: Слова, которые сами по себе не указывают на место. Есть почти в каждом
+#: адресе, поэтому совпадение по одному такому слову — всегда ложное.
+_GENERIC_PLACE_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "микрорайон", "мкр", "район", "районе", "улица", "улице", "квартал",
+        "дом", "проспект", "город", "городе", "поселок", "посёлок", "село",
+        "ауданы", "ауданда", "коше", "көше", "калалык",
+    }
+)
 
 
 def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
@@ -409,7 +426,12 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
         _add(query, 0)
         tokens = [token for token in query.split() if len(token) >= 3]
         for index, token in enumerate(tokens):
-            _add(token, 8)
+            # Отдельное служебное слово ничего не различает: по «микрорайон» из
+            # запроса «западный микрорайон» бот предлагал 6-й микрорайон — просто
+            # потому, что это слово есть в обоих. Пара слов с ним разрешена:
+            # «6 микрорайон» — уже адрес.
+            if token not in _GENERIC_PLACE_WORDS:
+                _add(token, 8)
             if index + 1 < len(tokens):
                 _add(f"{token} {tokens[index + 1]}", 4)
     return tuple(sorted(forms.items(), key=lambda item: item[1]))
@@ -485,8 +507,9 @@ async def find_gym_by_district(
     if not scored:
         known_without_gym = _known_district_without_gym(kb, queries)
         caveats = [
-            "Совпадений нет. Зал придумывать нельзя: предложи полный перечень точек "
-            "и спроси, какой район удобнее."
+            "Совпадений нет. Зал придумывать нельзя. Отправь карточку gyms_list_city "
+            "со ВСЕМИ залами — выбирать за клиента, какие три показать, здесь нельзя: "
+            "он назвал район, которого мы не знаем, и решает он сам."
         ]
         if known_without_gym:
             caveats.insert(
@@ -500,6 +523,7 @@ async def find_gym_by_district(
                 "gyms": [],
                 "total": 0,
                 "offer_full_list": True,
+                "full_list_artifact": "gyms_list_city",
                 "known_district_without_gym": known_without_gym,
                 "districts": sorted(
                     {
@@ -524,6 +548,18 @@ async def find_gym_by_district(
 
     gyms_only = [row[3] for row in top]
     caveats = _gap_caveats(kb, gyms_only, lang)
+    # Совпало только по «зал закрывает этот район» — значит зала ЗДЕСЬ нет.
+    # Сказать «наш зал в Аэропорту» было бы враньём, из-за которого человек
+    # поедет не туда; сказать «зала нет» и замолчать — потерять клиента,
+    # которому до соседнего зала десять минут пешком.
+    nearby_only = all(row[1] == "nearby" for row in top)
+    if nearby_only:
+        caveats.insert(
+            0,
+            "В названном районе зала НЕТ — скажи это прямо первой же фразой. "
+            "Перечисленные залы находятся рядом с ним, а не в нём: предложи их "
+            "как ближайшие и спроси, какой удобнее.",
+        )
     duplicates = _duplicate_districts(gyms_only, lang)
     ambiguous = len(top) > 1 and top[0][0] == top[1][0]
     if duplicates or ambiguous:
@@ -537,6 +573,7 @@ async def find_gym_by_district(
             "query": district_text,
             "gyms": payload,
             "total": len(payload),
+            "nearby_only": nearby_only,
             "ambiguous": ambiguous or bool(duplicates),
             "duplicate_districts": duplicates,
         },

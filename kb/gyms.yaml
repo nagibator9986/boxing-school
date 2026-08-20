@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-08-19"
+updated_at: "2026-08-20"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -77,6 +77,7 @@ gyms:
   - G-8
   - G-15
   internal_note: Головной зал по брифу владельца. internal_note клиенту не показывается и в промпт не попадает.
+  serves_districts: []
 - id: plaza_szm_70
   scope: city
   settlement: Костанай
@@ -134,6 +135,8 @@ gyms:
   - G-8
   - G-15
   internal_note: null
+  serves_districts:
+  - аэропорт
 - id: center_kasymkhanova_10
   scope: city
   settlement: Костанай
@@ -186,6 +189,7 @@ gyms:
   - G-8
   - G-15
   internal_note: Два зала заявлены как ЦЕНТР (этот и center_kairbekova_24). Различать по ориентиру.
+  serves_districts: []
 - id: center_kairbekova_24
   scope: city
   settlement: Костанай
@@ -243,6 +247,7 @@ gyms:
   - G-8
   - G-15
   internal_note: null
+  serves_districts: []
 - id: magazin15_voinov_8b
   scope: city
   settlement: Костанай
@@ -295,6 +300,7 @@ gyms:
   - G-8
   - G-15
   internal_note: "Владелец должен подтвердить: не этот ли зал в шапке Instagram назван «КЖБИ» (конфликт C-3)."
+  serves_districts: []
 - id: mkr6_arystanbekova_6
   scope: city
   settlement: Костанай
@@ -348,6 +354,7 @@ gyms:
   - G-8
   - G-15
   internal_note: Новый, шестой зал. Закреплённый креатив в Instagram говорит «5 залов» — конфликт C-1, креатив перевыпустить.
+  serves_districts: []
 - id: region_tobyl
   scope: region
   settlement: Тобыл
@@ -396,6 +403,7 @@ gyms:
   - G-2
   - G-8
   internal_note: "Добавлен из расписания 12.08.2026. ТРЕБУЕТ ПОДТВЕРЖДЕНИЯ ВЛАДЕЛЬЦА: прайс районный (10 000 тг) или городской (25 000 тг)? Тобыл — райцентр Костанайского района, поэтому проставлен scope: region."
+  serves_districts: []
 - id: region_karabalyk
   scope: region
   settlement: Карабалык
@@ -433,6 +441,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: region_fedorovka
   scope: region
   settlement: Фёдоровка
@@ -470,6 +479,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: region_sarykol
   scope: region
   settlement: Сарыколь
@@ -507,6 +517,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: region_auliekol
   scope: region
   settlement: Аулиеколь
@@ -544,6 +555,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: region_uzynkol
   scope: region
   settlement: Узынколь
@@ -581,6 +593,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: region_zhitikara
   scope: region
   settlement: Житикара
@@ -618,6 +631,7 @@ gyms:
   - G-3
   - G-8
   internal_note: null
+  serves_districts: []
 - id: unresolved_kzhbi
   scope: city
   settlement: Костанай
@@ -655,3 +669,4 @@ gyms:
   internal_note: 'Конфликт C-3. До письменного ответа владельца бот не подтверждает и не отрицает наличие зала на КЖБИ: find_gym_by_district на алиас «кжби» возвращает needs_operator и произносит фразу i18n gap.kzhbi.
 
     '
+  serves_districts: []

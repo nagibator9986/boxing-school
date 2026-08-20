@@ -362,3 +362,102 @@ def test_short_strings_require_exact_match() -> None:
     """Три-четыре буквы сравниваются точно, иначе «кск» поймает половину базы."""
     assert is_fuzzy_match("кск", "ксм")[0] is False
     assert is_fuzzy_match("кск", "кск")[0] is True
+
+
+async def test_nearby_district_is_not_the_same_as_being_there(kb) -> None:
+    """Район, который зал закрывает, не выдаётся за район, где зал стоит.
+
+    Владелец сказал: «на Полевой зал отвечает и за Аэропорт, там недалеко».
+    Записать «аэропорт» в обычные алиасы было бы проще всего — и бот начал бы
+    говорить «наш зал в Аэропорту». Человек поехал бы искать его там.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.tools.gyms import find_gym_by_district
+    from app.types import ChannelKind, Language, ToolContext
+    from tests.conftest import RecordingServices
+
+    ctx = ToolContext(
+        conversation_id=uuid4(),
+        conv_key="c",
+        channel=ChannelKind.TELEGRAM,
+        channel_id="tg",
+        chat_id="1",
+        lang=Language.RU,
+        kb=kb,
+        kb_hash=kb.kb_hash,
+        now=datetime(2026, 8, 20, tzinfo=UTC),
+        correlation_id="t",
+        services=RecordingServices(),
+    )
+    result = await find_gym_by_district(ctx, district_text="Аэропорт")
+
+    assert result.ok and result.data["gyms"], "ближайший зал не предложен"
+    assert all(gym["match"] == "nearby" for gym in result.data["gyms"])
+    assert result.data["nearby_only"] is True
+    assert "зала НЕТ" in result.caveats[0], "модель не предупреждена, что зала там нет"
+
+
+async def test_generic_word_does_not_match_a_gym(kb) -> None:
+    """Одно служебное слово не должно приводить чужой зал.
+
+    На «Западный микрорайон» бот предлагал 6-й микрорайон: совпало слово
+    «микрорайон», которое есть в обоих. Клиенту это выглядит как «бот не понял».
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.tools.gyms import find_gym_by_district
+    from app.types import ChannelKind, Language, ToolContext
+    from tests.conftest import RecordingServices
+
+    ctx = ToolContext(
+        conversation_id=uuid4(),
+        conv_key="c",
+        channel=ChannelKind.TELEGRAM,
+        channel_id="tg",
+        chat_id="1",
+        lang=Language.RU,
+        kb=kb,
+        kb_hash=kb.kb_hash,
+        now=datetime(2026, 8, 20, tzinfo=UTC),
+        correlation_id="t",
+        services=RecordingServices(),
+    )
+    result = await find_gym_by_district(ctx, district_text="Западный микрорайон")
+    found = {gym["id"] for gym in result.data.get("gyms", [])}
+    assert "mkr6_arystanbekova_6" not in found, "6-й микрорайон приехал по слову «микрорайон»"
+
+    # А точный запрос по-прежнему находит нужный зал.
+    exact = await find_gym_by_district(ctx, district_text="6 микрорайон")
+    assert exact.data["gyms"][0]["id"] == "mkr6_arystanbekova_6"
+
+
+async def test_unknown_district_offers_the_whole_list(kb) -> None:
+    """Незнакомый район — повод показать ВСЕ залы, а не три на выбор бота."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.tools.gyms import find_gym_by_district
+    from app.types import ChannelKind, Language, ToolContext
+    from tests.conftest import RecordingServices
+
+    ctx = ToolContext(
+        conversation_id=uuid4(),
+        conv_key="c",
+        channel=ChannelKind.TELEGRAM,
+        channel_id="tg",
+        chat_id="1",
+        lang=Language.RU,
+        kb=kb,
+        kb_hash=kb.kb_hash,
+        now=datetime(2026, 8, 20, tzinfo=UTC),
+        correlation_id="t",
+        services=RecordingServices(),
+    )
+    result = await find_gym_by_district(ctx, district_text="Марсианская улица")
+
+    assert result.data["offer_full_list"] is True
+    assert result.data["full_list_artifact"] == "gyms_list_city"
+    assert "gyms_list_city" in result.caveats[0]
