@@ -20,7 +20,7 @@
 
 * ``PORT`` — порт CRM (Railway передаёт сам);
 * ``DATA_DIR`` — каталог диска, по умолчанию ``/data``, если он доступен на запись;
-* ``RUN_CRM`` / ``RUN_BOT`` — ``false`` отключает соответствующий процесс;
+* ``RUN_WEB`` (прежнее имя ``RUN_CRM``) / ``RUN_BOT`` — ``false`` отключает процесс;
 * ``TELEGRAM_BOT_TOKEN`` — без него бот не запускается, а CRM работает.
 """
 
@@ -56,6 +56,34 @@ def _flag(name: str, default: bool = True) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on", "да")
+
+
+def _report_wazzup(env: dict[str, str]) -> None:
+    """Пишет в журнал, поднимется ли приём Wazzup и почему нет.
+
+    Без этой строки «канал не работает» выясняется по молчанию в чате: вебхук
+    зарегистрирован, сообщения уходят в никуда, а в журнале ничего.
+    """
+    saved = dict(os.environ)
+    try:
+        os.environ.update(env)
+        from app.config import get_settings, reset_settings_cache
+
+        reset_settings_cache()
+        from app.asgi import wazzup_ready
+
+        ready, reasons = wazzup_ready(get_settings())
+        if ready:
+            _log("Wazzup: приём включён")
+        else:
+            for reason in reasons:
+                _log(f"Wazzup: приём выключен — {reason}")
+            _log("Telegram и CRM работают как обычно.")
+    except Exception as exc:  # noqa: BLE001 - диагностика не имеет права ронять запуск
+        _log(f"Wazzup: состояние определить не удалось ({type(exc).__name__})")
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 def resolve_data_dir() -> Path:
@@ -169,6 +197,47 @@ def prepare_env(data_dir: Path) -> dict[str, str]:
     return env
 
 
+def ensure_schema(env: dict[str, str]) -> bool:
+    """Создаёт недостающие таблицы в базе диалогов до запуска процессов.
+
+    Раньше схему создавал только Telegram-раннер, и это работало, пока он был
+    единственным. С приёмом Wazzup появился второй путь: вебхук мог прийти
+    раньше, чем бот поднимется, — а на чистом диске он приходил в базу без
+    единой таблицы. Клиент при этом получал молчание, а в журнале лежало
+    «no such table: conversation».
+
+    Операция идемпотентна: существующие таблицы не трогаются.
+    """
+    import asyncio
+
+    saved = dict(os.environ)
+    try:
+        os.environ.update(env)
+        from app.config import reset_settings_cache
+
+        reset_settings_cache()
+        from app.storage import db as storage_db
+        from app.storage.models import Base
+
+        async def _create() -> None:
+            engine = storage_db.build_engine()
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_create())
+        _log("схема базы диалогов на месте")
+        return True
+    except Exception as exc:  # noqa: BLE001 - причину показываем целиком
+        _log(f"ВНИМАНИЕ: не удалось подготовить базу диалогов: {type(exc).__name__}: {exc}")
+        return False
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def check_kb(env: dict[str, str]) -> bool:
     """Проверяет базу знаний на диске. ``False`` — она невалидна.
 
@@ -193,26 +262,28 @@ def check_kb(env: dict[str, str]) -> bool:
     return True
 
 
-def start_crm(env: dict[str, str]) -> subprocess.Popen[bytes]:
-    """CRM под gunicorn.
+def start_web(env: dict[str, str]) -> subprocess.Popen[bytes]:
+    """Веб-служба: приём вебхуков Wazzup и CRM в одном процессе на одном порту.
 
-    Один рабочий процесс с несколькими потоками — намеренно. Правки базы знаний
-    сериализуются файловой блокировкой, но несколько процессов означали бы ещё и
-    несколько снимков базы знаний в памяти, каждый со своим временем жизни.
+    Один рабочий процесс — намеренно. Несколько означали бы несколько снимков
+    базы знаний в памяти, каждый со своим временем жизни, и несколько писателей
+    в один файл SQLite.
     """
     port = env.get("PORT", "8000")
     command = [
-        sys.executable, "-m", "gunicorn",
-        "--bind", f"0.0.0.0:{port}",
+        sys.executable, "-m", "uvicorn",
+        "app.asgi:build_app",
+        "--factory",
+        "--host", "0.0.0.0",
+        "--port", str(port),
         "--workers", "1",
-        "--threads", env.get("CRM_THREADS", "4"),
-        "--timeout", "120",
-        "--access-logfile", "-",
-        "--error-logfile", "-",
-        "--capture-output",
-        "crm.wsgi:app",
+        # За прокси Railway: без этого приложение видит адрес прокси вместо
+        # клиента, а схему — http вместо https.
+        "--proxy-headers",
+        "--forwarded-allow-ips", "*",
+        "--no-access-log",
     ]
-    _log(f"CRM: http://0.0.0.0:{port}")
+    _log(f"веб-служба: http://0.0.0.0:{port} — CRM на /crm, вебхук Wazzup на /wazzup/webhook/…")
     return subprocess.Popen(command, env=env, cwd=str(ROOT))
 
 
@@ -287,11 +358,13 @@ def main() -> int:
         _log(f"{name}: скопировано из образа файлов — {count} (существующие не тронуты)")
 
     env = prepare_env(data_dir)
+    ensure_schema(env)
     check_kb(env)
 
     children: dict[str, subprocess.Popen[bytes]] = {}
-    if _flag("RUN_CRM"):
-        children["crm"] = start_crm(env)
+    if _flag("RUN_WEB", _flag("RUN_CRM")):
+        _report_wazzup(env)
+        children["web"] = start_web(env)
     if _flag("RUN_BOT"):
         bot = start_bot(env)
         if bot is not None:

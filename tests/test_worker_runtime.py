@@ -503,3 +503,64 @@ def test_pool_is_not_narrower_than_worker_concurrency() -> None:
     assert size + overflow >= 10 + storage_db.POOL_HEADROOM
     # Заданный вручную запас не урезаем.
     assert storage_db._fit_pool_to_workers(20, 10, cfg) == (20, 10)
+
+
+async def test_sweep_ignores_telegram_rows(sessionmaker) -> None:
+    """Воркер Wazzup не забирает сообщения Telegram-бота.
+
+    Строки в очередь пишет общий пайплайн, а отправляют их разные транспорты:
+    Wazzup — воркером, Telegram — собственным циклом опроса. Без фильтра воркер
+    пытался бы отправить telegram-адрес через чужой канал, и каждая такая
+    строка уходила бы в бесконечный ретрай.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import sqlalchemy as sa
+
+    from app.storage import repo_outbox
+    from app.storage.models import Base, Conversation
+    from app.types import ChannelKind, Language, OutboundKind, OutboundMessage
+
+    async with sessionmaker() as session:
+        conv_id = uuid4()
+        session.add(
+            Conversation(
+                id=conv_id,
+                conv_key=f"k-{conv_id}",
+                channel_id="ch",
+                chat_type="whatsapp",
+                chat_id="77010000001",
+                state="new",
+            )
+        )
+        await session.flush()
+
+        for channel, chat in (
+            (ChannelKind.WHATSAPP, "77010000001"),
+            (ChannelKind.TELEGRAM, "647787396"),
+        ):
+            await repo_outbox.enqueue(
+                session,
+                OutboundMessage(
+                    conversation_id=conv_id,
+                    channel_id="ch",
+                    channel=channel,
+                    chat_id=chat,
+                    lang=Language.RU,
+                    kind=OutboundKind.BOT_REPLY,
+                    text=f"ответ для {channel.value}",
+                ),
+            )
+        await session.commit()
+
+        due = await repo_outbox.due(session, datetime.now(tz=UTC))
+        assert len(due) == 1, "воркер забрал не только свои сообщения"
+
+        payload = (
+            await session.execute(
+                sa.text("SELECT json_extract(payload, '$.channel') FROM outbox_message WHERE id = :i"),
+                {"i": str(due[0]).replace("-", "")},
+            )
+        ).scalar()
+        assert payload == "whatsapp"

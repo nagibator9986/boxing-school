@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.storage.db import insert_or_ignore, supports_skip_locked
 from app.storage.models import OutboxMessage, utcnow
-from app.types import OutboundMessage, OutboxState, StorageError
+from app.types import ChannelKind, OutboundMessage, OutboxState, StorageError
 
 __all__ = [
     "claim",
@@ -241,16 +241,31 @@ async def pending_count(session: AsyncSession) -> int:
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
+#: Каналы, которые умеет отправить воркер. Telegram сюда не входит намеренно:
+#: его сообщения отправляет собственный цикл опроса, а не Wazzup.
+SWEEPABLE_CHANNELS: Final[tuple[str, ...]] = (
+    ChannelKind.WHATSAPP.value,
+    ChannelKind.INSTAGRAM.value,
+)
+
+
 async def due(session: AsyncSession, now: datetime, *, limit: int = 50) -> list[UUID]:
     """Пачка id, которые пора отправлять: ``pending`` и срок ретрая наступил.
 
     На PostgreSQL строки берутся с ``FOR UPDATE SKIP LOCKED`` — параллельные воркеры
-    получают непересекающиеся пачки. На SQLite блокировка не нужна: писатель один.
+    получают непересекающиеся пачки.
+
+    Берутся только каналы Wazzup. Telegram-бот работает своим циклом опроса и
+    отправляет сообщения сам, но строки в очередь пишет тот же пайплайн. Без
+    фильтра воркер Wazzup попытался бы отправить их своим транспортом — по
+    telegram-адресу и через чужой канал, — и каждая такая строка ушла бы в
+    бесконечный ретрай.
     """
     stmt = (
         sa.select(OutboxMessage.id)
         .where(
             OutboxMessage.state == OutboxState.PENDING.value,
+            OutboxMessage.payload["channel"].as_string().in_(SWEEPABLE_CHANNELS),
             sa.or_(
                 OutboxMessage.next_attempt_at.is_(None),
                 OutboxMessage.next_attempt_at <= now,

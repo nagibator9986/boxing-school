@@ -136,10 +136,25 @@ def build_engine(url: str | None = None) -> AsyncEngine:
     if _is_sqlite(dsn):
         @sa.event.listens_for(engine.sync_engine, "connect")
         def _sqlite_pragmas(dbapi_connection: Any, _record: Any) -> None:  # pragma: no cover
-            """Внешние ключи в SQLite выключены по умолчанию — включаем."""
+            """Прагмы SQLite: внешние ключи, WAL и ожидание блокировки.
+
+            Внешние ключи в SQLite выключены по умолчанию — включаем.
+
+            WAL и ``busy_timeout`` нужны с того момента, как в одну базу пишут два
+            процесса: приём Wazzup в веб-службе и опрос Telegram рядом. В журнале
+            по умолчанию писатель один, читатели его блокируют, и второй процесс
+            получает «database is locked» ровно в момент ответа клиенту. В WAL
+            читатели писателю не мешают, а таймаут даёт пережить короткое
+            пересечение двух записей вместо немедленной ошибки.
+
+            Для базы в памяти WAL не применяется — там журнала нет.
+            """
             cursor = dbapi_connection.cursor()
             try:
                 cursor.execute("PRAGMA foreign_keys=ON")
+                if not _is_memory_sqlite(dsn):
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=5000")
             finally:
                 cursor.close()
 

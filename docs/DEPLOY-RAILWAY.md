@@ -73,6 +73,9 @@ APP_ENV=prod
 TZ=Asia/Almaty
 ```
 
+Пока этого достаточно: бот работает в Telegram, CRM открывается на `/crm`.
+WhatsApp и Instagram подключаются отдельно — раздел 7.
+
 Необязательное:
 
 ```
@@ -92,7 +95,8 @@ curl https://<имя>.up.railway.app/healthz
 ```
 
 Ответ `{"kb":"5eb33e48d15f","status":"ok"}` означает, что CRM жива и база знаний
-читается. `"kb":"invalid"` — база знаний на диске сломана: CRM работает, бот
+читается. Сама CRM открывается по адресу `https://<имя>.up.railway.app/crm`
+(корень домена туда перенаправляет). `"kb":"invalid"` — база знаний на диске сломана: CRM работает, бот
 отвечать не сможет, чинить в разделе «Файлы базы».
 
 В журнале службы при удачном старте:
@@ -100,8 +104,11 @@ curl https://<имя>.up.railway.app/healthz
 ```
 [serve] каталог данных: /data
 [serve] kb: скопировано из образа файлов — 7 (существующие не тронуты)
+[serve] схема базы диалогов на месте
 [serve] база знаний в порядке: версия 5eb33e48d15f, залов 14
-[serve] CRM: http://0.0.0.0:8080
+[serve] Wazzup: приём выключен — WAZZUP_API_KEY не задан
+[serve] Telegram и CRM работают как обычно.
+[serve] веб-служба: http://0.0.0.0:8080 — CRM на /crm, вебхук Wazzup на /wazzup/webhook/…
 [serve] бот Telegram: опрос запущен
 Бот @ainazarov_kickboxing_bot запущен
 ```
@@ -113,6 +120,53 @@ curl https://<имя>.up.railway.app/healthz
 
 Отправить боту в Telegram пароль из `ADMIN_PASSWORD`. Права сохранятся на диске.
 После этого приходят карточки заявок и работает `/admin` в чате.
+
+---
+
+## 7. Подключить WhatsApp и Instagram (Wazzup)
+
+Служба уже умеет принимать вебхуки: CRM и приём Wazzup работают в одном процессе
+на одном порту. Пока `WAZZUP_API_KEY` пуст, приём просто не поднимается, и в
+журнале об этом сказано прямо.
+
+Добавьте переменные:
+
+```
+WAZZUP_API_KEY=<ключ из кабинета Wazzup24>
+WAZZUP_WEBHOOK_SECRET=<32 случайных символа>
+PUBLIC_BASE_URL=https://<имя>.up.railway.app
+MANAGER_NOTIFY_TARGET=77XXXXXXXXX
+MANAGER_NOTIFY_CHANNEL_ID=<id канала из Wazzup>
+WAZZUP_CHANNEL_ID_WHATSAPP=<id канала WhatsApp>
+WAZZUP_CHANNEL_ID_INSTAGRAM=<id канала Instagram>
+INLINE_WORKER=true
+WAZZUP_REGISTER_WEBHOOK_ON_START=true
+```
+
+Где что взять:
+
+| Переменная | Откуда |
+|---|---|
+| `WAZZUP_API_KEY` | Wazzup24 → Интеграции → Интеграция с CRM → API → Дополнительно. **Тариф платный**, на бесплатном API закрыт |
+| `WAZZUP_WEBHOOK_SECRET` | свой: `python -c "import secrets;print(secrets.token_urlsafe(32))"`. Не короче 24 символов — иначе служба не стартует |
+| `MANAGER_NOTIFY_TARGET` | номер, куда падают карточки заявок: `77XXXXXXXXX`, только цифры |
+| `MANAGER_NOTIFY_CHANNEL_ID`, `WAZZUP_CHANNEL_ID_*` | `GET https://api.wazzup24.com/v3/channels` с заголовком `Authorization: Bearer <ключ>` |
+
+Адрес вебхука собирается сам:
+
+```
+https://<имя>.up.railway.app/wazzup/webhook/<WAZZUP_WEBHOOK_SECRET>
+```
+
+При `WAZZUP_REGISTER_WEBHOOK_ON_START=true` служба пропишет его в Wazzup сама
+при старте. Иначе впишите руками в кабинете.
+
+Проверка: `curl https://<имя>.up.railway.app/healthz`. Если приём поднялся,
+в журнале будет `[serve] Wazzup: приём включён`; если нет — там же причина.
+
+**Клиенту бот отвечает в тот канал, откуда пришло сообщение** — id берётся из
+самого вебхука. Переменные `WAZZUP_CHANNEL_ID_*` нужны только исходящим
+карточкам менеджеру.
 
 ---
 
@@ -150,13 +204,10 @@ curl https://<имя>.up.railway.app/healthz
 
 ## Ограничения этой конфигурации
 
-- **Wazzup (WhatsApp и Instagram) сюда пока не входит.** Их вебхук принимает
-  `app/main.py`, которому нужен тот же публичный порт, что занят CRM. Когда
-  дойдёт до подключения: либо развести их по путям одним ASGI-приложением
-  (`WSGIMiddleware` для CRM внутри FastAPI), либо вынести приём вебхука в
-  отдельную службу с общей очередью — но тогда SQLite придётся заменить.
-- Очередь `arq` (нужна только пути через Wazzup) работает на Redis. Telegram и
-  CRM внешних служб не требуют.
+- Одна реплика обязательна. Два экземпляра начали бы опрашивать Telegram
+  параллельно и писать в один файл SQLite.
+- `INLINE_WORKER=false` в этой конфигурации не имеет смысла: отдельная служба
+  воркера не получит доступ к тому же диску.
 - Процесс в контейнере работает под root: том Railway монтируется с правами
   root, и непривилегированный процесс не смог бы в него писать.
 
@@ -167,6 +218,7 @@ curl https://<имя>.up.railway.app/healthz
 | `Application failed to respond` | CRM не поднялась. Смотреть журнал: скорее всего не задан `DATA_DIR` либо том подключён не к `/data` |
 | В журнале «каталог данных недоступен на запись» | Том не подключён. Settings → Volumes, точка подключения `/data` |
 | `"kb":"invalid"` в `/healthz` | База знаний на диске сломана. Открыть CRM → «Файлы базы», найти ошибку из журнала |
+| Сообщения WhatsApp не доходят | В журнале ищите `Wazzup: приём выключен` — там названа причина. Проверьте, что адрес вебхука в кабинете Wazzup совпадает с `PUBLIC_BASE_URL` и секретом |
 | Бот не отвечает, CRM работает | Не задан `TELEGRAM_BOT_TOKEN` — в журнале будет «бот не запущен» |
 | `Conflict: terminated by other getUpdates` | Запущено две реплики либо локальный бот на том же токене. Оставить один |
 | Вход в CRM слетает после каждого передеплоя | Не задан `CRM_SECRET_KEY` |
