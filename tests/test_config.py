@@ -198,3 +198,34 @@ def test_railway_port_variable_wins() -> None:
     settings = Settings(PORT=12345)
 
     assert settings.port == 12345
+
+
+def test_identifiers_survive_a_paste_from_the_address_book() -> None:
+    """Невидимые символы из скопированного номера не доезжают до Wazzup.
+
+    Телефон, скопированный из адресной книги macOS или iOS, приезжает обёрнутым
+    в управляющие символы направления письма (U+202A…U+202C). На экране это
+    обычный номер, в переменной — тринадцать знаков вместо одиннадцати, а
+    карточка лида не доходит с сообщением «неверный номер» при визуально
+    правильном значении.
+    """
+    from app.config import Settings
+
+    settings = Settings(
+        manager_notify_target="‪77472073003‬",
+        wazzup_channel_id_whatsapp="c3b9f899-70f4-4f56-aaf7-43c90e2a071a​",
+    )
+    assert settings.manager_notify_target == "77472073003"
+    assert settings.wazzup_channel_id_whatsapp == "c3b9f899-70f4-4f56-aaf7-43c90e2a071a"
+
+
+def test_unfilled_placeholder_is_stripped() -> None:
+    """Незаполненная подсказка вида ``<номер>`` не становится значением.
+
+    Так уже случалось трижды при настройке на Railway: угловые скобки из
+    примера оставались частью значения, и ключ уходил в API как ``<ключ>``.
+    """
+    from app.config import Settings
+
+    assert Settings(manager_notify_target="<77051302729>").manager_notify_target == "77051302729"
+    assert Settings(manager_notify_target="   ").manager_notify_target is None

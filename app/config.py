@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
@@ -235,6 +236,31 @@ class Settings(BaseSettings):
     # --- админка и метрики --------------------------------------------------
     admin_token: str | None = None
     metrics_enabled: bool = True
+
+    @field_validator("manager_notify_target", "wazzup_channel_id_whatsapp",
+                     "wazzup_channel_id_instagram", "manager_notify_channel_id", mode="after")
+    @classmethod
+    def _clean_identifier(cls, value: str | None) -> str | None:
+        """Убирает невидимые символы из номеров и идентификаторов каналов.
+
+        Телефон, скопированный из адресной книги macOS или iOS, приезжает
+        обёрнутым в управляющие символы направления письма (U+202A…U+202C).
+        На экране это обычный номер, в переменной — тринадцать знаков вместо
+        одиннадцати, а карточка лида не доходит с сообщением «неверный номер»
+        при визуально правильном значении. Такое ищут часами.
+
+        Заодно снимаются пробелы, неразрывные пробелы и обрамляющие угловые
+        скобки — след незаполненной подсказки вида ``<номер>``.
+        """
+        if value is None:
+            return None
+        cleaned = "".join(
+            char for char in value
+            if unicodedata.category(char) != "Cf" and not char.isspace()
+        ).strip()
+        if len(cleaned) > 1 and cleaned.startswith("<") and cleaned.endswith(">"):
+            cleaned = cleaned[1:-1].strip()
+        return cleaned or None
 
     @field_validator("database_url", mode="after")
     @classmethod
