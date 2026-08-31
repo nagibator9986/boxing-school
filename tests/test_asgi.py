@@ -122,3 +122,54 @@ def test_with_wazzup_both_endpoints_live(workspace: Path) -> None:
         assert client.get("/healthz").status_code == 200
         assert client.get("/crm/login").status_code == 200
         assert client.get("/", follow_redirects=False).headers["location"] == "/crm/"
+
+
+def test_login_returns_to_the_page_under_the_prefix(workspace: Path) -> None:
+    """После входа человек попадает туда, куда шёл, а не в корень домена.
+
+    Flask отдаёт пути уже без префикса монтирования. Без учёта ``script_root``
+    адрес возврата получался вида ``/clients/`` — это корень домена, где живёт
+    вебхук, а не CRM.
+    """
+    with TestClient(build_app(_settings())) as client:
+        protected = client.get("/crm/clients/", follow_redirects=False)
+        assert protected.status_code == 302
+        assert "/crm/login" in protected.headers["location"]
+
+        entered = client.post(
+            "/crm/login?next=/clients/",
+            data={"password": "Azamat65"},
+            follow_redirects=False,
+        )
+        assert entered.headers["location"] == "/crm/clients/", "вернуло не туда, куда шёл"
+
+
+def test_open_redirect_is_refused(workspace: Path) -> None:
+    """Чужой адрес в параметре возврата игнорируется."""
+    with TestClient(build_app(_settings())) as client:
+        response = client.post(
+            "/crm/login?next=https://зло.example/",
+            data={"password": "Azamat65"},
+            follow_redirects=False,
+        )
+        assert "зло.example" not in response.headers["location"]
+
+        protocol_relative = client.post(
+            "/crm/login?next=//зло.example/",
+            data={"password": "Azamat65"},
+            follow_redirects=False,
+        )
+        assert "зло.example" not in protocol_relative.headers["location"]
+
+
+def test_media_link_points_outside_the_crm_prefix(workspace: Path) -> None:
+    """Ссылка на медиа для Wazzup ведёт в корень, а не в CRM.
+
+    Файл клиенту отдаёт API, а не интерфейс управления: ссылка вида
+    ``/crm/media/...`` вернула бы 404, и WhatsApp получил бы сообщение без
+    вложения.
+    """
+    from app.tools.content import build_media_url
+
+    url = build_media_url("logo.jpg")
+    assert "/media/" in url and "/crm/" not in url

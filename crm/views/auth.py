@@ -28,14 +28,29 @@ def login() -> Any:
             login_succeeded(ip)
             session["authenticated"] = True
             session.permanent = True
-            target = request.args.get("next") or url_for("dashboard.index")
-            # Открытый редирект: адрес из параметра берём только если он свой.
-            return redirect(target if target.startswith("/") else url_for("dashboard.index"))
+            return redirect(_safe_next(request.args.get("next")))
 
         login_failed(ip)
         flash("Пароль не подошёл.", "error")
 
     return render_template("login.html")
+
+
+def _safe_next(target: str | None) -> str:
+    """Куда вернуть человека после входа.
+
+    Две проверки. Первая — открытый редирект: адрес из параметра берём только
+    если он ведёт на этот же сайт. Вторая — префикс монтирования: в бою CRM
+    живёт на ``/crm``, а Flask отдаёт пути уже без него, и без ``script_root``
+    человек после входа улетал бы в корень домена.
+    """
+    candidate = (target or "").strip()
+    if not candidate.startswith("/") or candidate.startswith("//"):
+        return url_for("dashboard.index")
+    root = request.script_root or ""
+    if root and not candidate.startswith(f"{root}/") and candidate != root:
+        candidate = f"{root}{candidate}"
+    return candidate
 
 
 @bp.route("/logout")

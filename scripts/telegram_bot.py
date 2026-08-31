@@ -228,6 +228,25 @@ def plan_delivery(
     return plan
 
 
+async def mark_delivered(delivered: set[UUID]) -> None:
+    """Закрывает строки очереди, доставленные этим циклом опроса.
+
+    Отправкой в Telegram занимается сам цикл, а не воркер, и без этой отметки
+    строка навсегда осталась бы «в очереди»: счётчик неотправленного рос бы с
+    каждым ответом бота, и по нему нельзя было бы понять, есть ли настоящая
+    проблема с доставкой.
+    """
+    if not delivered:
+        return
+    from app.storage import repo_outbox
+
+    sessionmaker = storage_db.get_sessionmaker()
+    async with sessionmaker() as session:
+        for crm_message_id in delivered:
+            await repo_outbox.mark_sent_by_crm_id(session, crm_message_id)
+        await session.commit()
+
+
 async def deliver(tg: TelegramClient, chat_id: str, decisions: list[PipelineDecision]) -> int:
     """Отправляет клиенту всё, что решил отправить пайплайн. Возвращает число сообщений.
 
@@ -237,22 +256,35 @@ async def deliver(tg: TelegramClient, chat_id: str, decisions: list[PipelineDeci
     settings = get_settings()
     snapshot = kb_loader.get_snapshot()
     sent = 0
+    delivered: set[UUID] = set()
     for decision in decisions:
         resolve = lambda artifact_id: _attachment_path(  # noqa: E731
             snapshot, artifact_id, settings.media_dir
         )
-        for path, text in plan_delivery(list(decision.outbound), resolve):
+        messages = list(decision.outbound)
+        # Счётчик именно этого решения: общий на все решения пометил бы
+        # доставленными и те сообщения, которые отправить не удалось.
+        sent_here = 0
+        for path, text in plan_delivery(messages, resolve):
             if path is not None:
                 try:
                     await tg.send_file(chat_id, path=path, kind=_file_kind(path), caption=text)
-                    sent += 1
+                    sent_here += 1
                     continue
                 except TelegramError as exc:
                     # Файл не ушёл — клиент всё равно обязан получить текст.
                     print(f"  [!] вложение не отправлено: {exc}")
             if text:
                 await tg.send_message(chat_id, text)
-                sent += 1
+                sent_here += 1
+        sent += sent_here
+        if sent_here:
+            delivered.update(
+                message.crm_message_id
+                for message in messages
+                if getattr(message, "crm_message_id", None) is not None
+            )
+    await mark_delivered(delivered)
     return sent
 
 

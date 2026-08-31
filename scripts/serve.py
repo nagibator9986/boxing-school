@@ -58,6 +58,22 @@ def _flag(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "on", "да")
 
 
+def _forget_settings() -> None:
+    """Сбрасывает кеш конфигурации после работы во временном окружении.
+
+    Проверки схемы и состояния Wazzup подменяют переменные окружения, чтобы
+    посмотреть на конфигурацию дочерних процессов. Оставить после них кеш,
+    собранный на подменённом окружении, значит незаметно раздать его всему
+    остальному коду надзирателя.
+    """
+    try:
+        from app.config import reset_settings_cache
+
+        reset_settings_cache()
+    except Exception:  # noqa: BLE001 - сброс кеша не повод падать
+        pass
+
+
 def _report_wazzup(env: dict[str, str]) -> None:
     """Пишет в журнал, поднимется ли приём Wazzup и почему нет.
 
@@ -84,6 +100,7 @@ def _report_wazzup(env: dict[str, str]) -> None:
     finally:
         os.environ.clear()
         os.environ.update(saved)
+        _forget_settings()
 
 
 def resolve_data_dir() -> Path:
@@ -236,6 +253,7 @@ def ensure_schema(env: dict[str, str]) -> bool:
     finally:
         os.environ.clear()
         os.environ.update(saved)
+        _forget_settings()
 
 
 def check_kb(env: dict[str, str]) -> bool:

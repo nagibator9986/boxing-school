@@ -564,3 +564,60 @@ async def test_sweep_ignores_telegram_rows(sessionmaker) -> None:
             )
         ).scalar()
         assert payload == "whatsapp"
+
+
+async def test_mark_sent_by_crm_id_closes_the_row(sessionmaker) -> None:
+    """Канал, который отправляет сам, закрывает свою строку очереди.
+
+    Telegram-бот доставляет сообщения из решения пайплайна, а не воркером.
+    Без отметки строка навсегда осталась бы «в очереди», и счётчик
+    неотправленного рос бы с каждым ответом бота.
+    """
+    from uuid import uuid4
+
+    import sqlalchemy as sa
+
+    from app.storage import repo_outbox
+    from app.storage.models import Conversation
+    from app.types import ChannelKind, Language, OutboundKind, OutboundMessage
+
+    async with sessionmaker() as session:
+        conv_id = uuid4()
+        session.add(
+            Conversation(
+                id=conv_id,
+                conv_key=f"tg-{conv_id}",
+                channel_id="telegram-bot-api",
+                chat_type="telegram",
+                chat_id="647787396",
+                state="new",
+            )
+        )
+        await session.flush()
+
+        message = OutboundMessage(
+            conversation_id=conv_id,
+            channel_id="telegram-bot-api",
+            channel=ChannelKind.TELEGRAM,
+            chat_id="647787396",
+            lang=Language.RU,
+            kind=OutboundKind.BOT_REPLY,
+            text="ответ",
+        )
+        await repo_outbox.enqueue(session, message)
+        await session.commit()
+
+        assert await repo_outbox.pending_count(session) == 1
+        assert await repo_outbox.mark_sent_by_crm_id(session, message.crm_message_id) is True
+        await session.commit()
+        assert await repo_outbox.pending_count(session) == 0
+
+        # Повторная отметка ничего не меняет: доставка идемпотентна.
+        assert await repo_outbox.mark_sent_by_crm_id(session, message.crm_message_id) is False
+        state = (
+            await session.execute(
+                sa.text("SELECT state FROM outbox_message WHERE conversation_id = :c"),
+                {"c": str(conv_id).replace("-", "")},
+            )
+        ).scalar()
+        assert state == "sent"

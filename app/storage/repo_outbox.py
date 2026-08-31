@@ -140,6 +140,33 @@ async def mark_sent(
     )
 
 
+async def mark_sent_by_crm_id(
+    session: AsyncSession, crm_message_id: UUID, *, transport_message_id: str | None = None
+) -> bool:
+    """Отмечает строку отправленной по идентификатору сообщения пайплайна.
+
+    Нужна каналу, который отправляет сам, а не воркером: Telegram-бот доставляет
+    сообщения из решения пайплайна, а строка очереди при этом навсегда осталась
+    бы в ``pending``. Метрика очереди росла бы без причины, а «не отправленное»
+    сообщение выглядело бы как потерянное.
+    """
+    result = await session.execute(
+        sa.update(OutboxMessage)
+        .where(
+            OutboxMessage.crm_message_id == crm_message_id,
+            OutboxMessage.state != OutboxState.SENT.value,
+        )
+        .values(
+            state=OutboxState.SENT.value,
+            wazzup_message_id=transport_message_id,
+            last_error=None,
+            next_attempt_at=None,
+            updated_at=utcnow(),
+        )
+    )
+    return bool(result.rowcount)
+
+
 async def mark_failed(
     session: AsyncSession, outbox_id: UUID, *, error: str, next_attempt_at: datetime | None
 ) -> None:
