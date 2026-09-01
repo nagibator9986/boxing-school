@@ -403,7 +403,11 @@ Postgres в docker-compose стоит примерно ничего, а обра
 
 ### 4.4 Путь миграции
 
-1. **Пилот на SQLite (если запускаются «сегодня»):** `DATABASE_URL=sqlite+aiosqlite:///data/bot.db`,
+1. **Пилот на SQLite (если запускаются «сегодня»):** `DATABASE_URL` на Railway лучше **не задавать вовсе** —
+   `scripts/serve.py` сам направит бота и CRM на один файл `bot.db` на подключённом томе. Заданный
+   вручную относительный путь (`sqlite+aiosqlite:///data/bot.db`) указывает внутрь контейнера и
+   пропадает при передеплое; такой путь служба переносит на том и пишет об этом в журнал. Локально:
+   `DATABASE_URL=sqlite+aiosqlite:///data/bot.db`,
    `STATE_BACKEND=table`, `QUEUE_BACKEND=inline` (FastAPI `BackgroundTasks`). Работает, но: задачи теряются при
    рестарте, журнала СУБД нет, один воркер.
 2. **Переезд на Postgres:** те же модели SQLAlchemy → `alembic upgrade head` на пустой Postgres →

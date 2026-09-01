@@ -164,3 +164,38 @@ async def test_no_lead_without_anything_to_call_back(deps, bot_db: Path) -> None
     await process_inbound(deps, payload)
 
     assert crm(bot_db).leads() == []
+
+
+async def test_broken_lead_write_does_not_lose_the_answer(deps, bot_db: Path, monkeypatch) -> None:
+    """Заявка не важнее ответа клиенту.
+
+    Сохранение лида идёт в той же транзакции, что и весь ход. Упавший запрос
+    оставляет сессию SQLAlchemy в состоянии «нужен откат», и следующий коммит
+    срывает ход целиком: клиент не получает ни карточки из базы знаний, ни
+    честной заглушки, а администратор — карточки эскалации.
+    """
+    from app.storage import repo_lead
+
+    called: list[str] = []
+
+    async def boom(session, draft):  # type: ignore[no-untyped-def]
+        called.append("да")
+        await session.execute(sa.text("INSERT INTO lead (id) VALUES ('битая-строка')"))
+        raise AssertionError("сюда не дойдём: запрос уже упал")
+
+    monkeypatch.setattr(repo_lead, "upsert", boom)
+
+    decisions = await process_inbound(
+        deps, webhook_payload("wz-boom-1", "Сколько стоит?", chat_id=CHAT_ID)
+    )
+
+    assert called, "подмена не сработала — тест ничего не проверил"
+    assert [d.action.value for d in decisions] == ["escalate"], "ход сорвался из-за заявки"
+
+    # Решение в памяти ещё ничего не доказывает: важно, что коммит хода уцелел
+    # и строка ответа действительно легла в очередь отправки.
+    engine = sa.create_engine(f"sqlite:///{bot_db}")
+    with engine.begin() as conn:
+        queued = conn.execute(sa.text("SELECT COUNT(*) FROM outbox_message")).scalar_one()
+    engine.dispose()
+    assert queued >= 1, "ответ клиенту не сохранился: транзакция хода не закоммитилась"
