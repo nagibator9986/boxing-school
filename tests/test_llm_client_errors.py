@@ -101,6 +101,34 @@ def test_per_day_quota_id_is_daily_quota() -> None:
     assert mapped.retryable is False
 
 
+def test_depleted_prepayment_credits_is_not_retryable() -> None:
+    """Кончились деньги на проекте — повторять нечем и незачем.
+
+    Живая авария 01.09.2026: ключ остался без предоплаченных кредитов, и Gemini
+    отдал это тем же 429 RESOURCE_EXHAUSTED, что и лимит в минуту. Классификатор
+    считал ошибку ретраебельной, поэтому каждое сообщение клиента стоило шести
+    отказавших вызовов (три на основной модели, три на запасной — ключ-то один)
+    и нескольких секунд ожидания перед честной заглушкой.
+    """
+    mapped = _classify(
+        error_429(
+            "Your prepayment credits are depleted. Please go to AI Studio at "
+            "https://ai.studio/projects to manage your project and billing."
+        )
+    )
+
+    assert isinstance(mapped, LLMQuotaError)
+    assert mapped.retryable is False
+
+
+def test_billing_disabled_is_not_retryable() -> None:
+    """Отключённый биллинг — та же категория, что и пустой счёт."""
+    mapped = _classify(error_429("Billing is disabled for this project."))
+
+    assert isinstance(mapped, LLMQuotaError)
+    assert mapped.retryable is False
+
+
 # --------------------------------------------------------------------------- #
 # Повторы
 # --------------------------------------------------------------------------- #

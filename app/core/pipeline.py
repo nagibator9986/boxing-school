@@ -47,7 +47,7 @@ from app.channels import normalize
 from app.channels.outbound import sanitize, split_text, text_limits, window_expires_at
 from app.channels.wazzup_schemas import WebhookPayload, parse_webhook
 from app.config import Settings
-from app.core import debounce, dedup, guards, language, lexicon, pause, postcheck
+from app.core import debounce, dedup, degraded, guards, language, lexicon, pause, postcheck
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
 from app.kb.render import render_system_prompt
@@ -66,10 +66,12 @@ from app.types import (
     EscalationReason,
     GuardFlag,
     InboundMessage,
+    IntentHint,
     JobQueue,
     Language,
     LeadDraft,
     LLMRequest,
+    LLMQuotaError,
     LLMResponse,
     LLMUsage,
     ManagerCard,
@@ -801,6 +803,19 @@ async def _run_turn(
             code = exc.code if isinstance(exc, BotError) else type(exc).__name__
             metrics.observe_llm_error(code)
             _log.warning("llm_failed", error=code, conv_key=conv.conv_key)
+            if isinstance(exc, LLMQuotaError):
+                # Отказ не про этот диалог, а про весь бот: пока счёт пуст,
+                # так ответит каждому. Карточка эскалации об этом не скажет —
+                # администратор видит в ней только «нужен живой ответ» и не
+                # знает, что чинить. Повторы подавляются на 15 минут.
+                await _alert(
+                    deps,
+                    "Модель Gemini не отвечает: кончились оплаченные кредиты или "
+                    "исчерпана квота ключа. Пока счёт не пополнен, бот отвечает "
+                    "клиентам только карточками из базы знаний и зовёт администратора. "
+                    "Пополнить: ai.studio → Projects → Billing.",
+                    code="llm_quota",
+                )
             decision = await _degrade(
                 deps,
                 db,
@@ -811,6 +826,7 @@ async def _run_turn(
                 lang=lang,
                 text=text,
                 reason_code=f"llm_failed:{code}",
+                intents=intents,
                 pause_reason=PauseReason.LLM_FAILURE,
                 correlation_id=correlation_id,
                 now=now,
@@ -843,6 +859,7 @@ async def _run_turn(
                 lang=lang,
                 text=text,
                 reason_code="llm_blocked" if response.blocked else "llm_empty",
+                intents=intents,
                 pause_reason=PauseReason.LLM_FAILURE,
                 correlation_id=correlation_id,
                 now=now,
@@ -884,6 +901,7 @@ async def _run_turn(
                 lang=lang,
                 text=text,
                 reason_code=f"postcheck:{pc.kind.value if pc.kind else 'unknown'}",
+                intents=intents,
                 pause_reason=PauseReason.POSTCHECK_FAIL,
                 correlation_id=correlation_id,
                 now=now,
@@ -1211,11 +1229,20 @@ async def _escalate_turn(
     correlation_id: str,
     now: datetime,
     guard_flags: Sequence[GuardFlag] = (),
+    body: str | None = None,
 ) -> PipelineDecision:
-    """Передаёт диалог человеку: фраза клиенту, карточка администратору, пауза."""
+    """Передаёт диалог человеку: фраза клиенту, карточка администратору, пауза.
+
+    ``body`` — готовый текст вместо строки i18n по ключу ``key``. Так уходит
+    карточка из базы знаний, когда модель недоступна, а ответ на вопрос в KB
+    всё-таки есть (см. :mod:`app.core.degraded`).
+    """
     from app.notify.manager import build_escalation_card
 
-    await _say(deps, services, conv, inbound, kb=kb, lang=lang, key=key, now=now)
+    if body:
+        await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=body, now=now)
+    else:
+        await _say(deps, services, conv, inbound, kb=kb, lang=lang, key=key, now=now)
     card = build_escalation_card(
         reason=reason,
         question=text or "(без текста)",
@@ -1280,6 +1307,7 @@ async def _degrade(
     postcheck_fail: Any = None,
     escalation: EscalationReason | None = None,
     key: str = TEXT_FALLBACK,
+    intents: Sequence[IntentHint] = (),
 ) -> PipelineDecision:
     """Модель упала или ответ не прошёл постфильтр — клиент всё равно слышит человека.
 
@@ -1314,6 +1342,21 @@ async def _degrade(
             else EscalationReason.LLM_FAILURE
         )
 
+    # Модель молчит — но цену, адреса и расписание собирает код, а не она.
+    # Клиенту уходит настоящий ответ, если вопрос из тех, что закрывает KB.
+    body: str | None = None
+    if key == TEXT_FALLBACK and intents:
+        card = degraded.kb_answer(kb, intents=tuple(intents), lang=lang)
+        if card:
+            tail = _kb_text(kb, degraded.TAIL_KEY, lang)
+            body = f"{card}\n\n{tail}" if tail else card
+            reason_code = f"{reason_code}+kb_card"
+            _log.info(
+                "degraded_kb_answer",
+                intents=[intent.value for intent in intents],
+                conv_key=conv.conv_key,
+            )
+
     decision = await _escalate_turn(
         deps,
         db,
@@ -1329,6 +1372,7 @@ async def _degrade(
         correlation_id=correlation_id,
         now=now,
         guard_flags=guard_flags,
+        body=body,
     )
     return decision.model_copy(
         update={
@@ -1894,12 +1938,12 @@ def _kb_or_none(deps: PipelineDeps) -> KBSnapshot | None:
         return None
 
 
-async def _alert(deps: PipelineDeps, text: str) -> None:
+async def _alert(deps: PipelineDeps, text: str, *, code: str = "pipeline_failure") -> None:
     """Техническая тревога администратору с подавлением повторов."""
     try:
         from app.notify.manager import notify_alert
 
-        await notify_alert(deps, text, code="pipeline_failure")
+        await notify_alert(deps, text, code=code)
     except Exception as exc:  # noqa: BLE001
         _log.warning("alert_failed", error=type(exc).__name__)
 

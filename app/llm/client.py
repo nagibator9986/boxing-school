@@ -89,12 +89,23 @@ _TURN_BUDGET_RESERVE_S: Final[float] = 2.0
 #: Признаки СУТОЧНОЙ (или иной длинной) квоты в 429: её backoff не лечит.
 #: Ищутся в «сплющенной» строке — без пробелов, дефисов и подчёркиваний,
 #: поэтому ``PerDay``, ``per-day`` и ``per_day`` совпадают одинаково.
+#:
+#: Сюда же — деньги на проекте. «Your prepayment credits are depleted» Gemini
+#: отдаёт тем же 429 RESOURCE_EXHAUSTED, что и лимит в минуту, но повторять
+#: такое бессмысленно: до пополнения счёта не поможет ни backoff, ни запасная
+#: модель — ключ-то один. Без этих признаков каждое сообщение клиента стоило
+#: шести отказавших вызовов и нескольких секунд его ожидания впустую.
 _QUOTA_MARKERS: Final[tuple[str, ...]] = (
     "perday",
     "daily",
     "billingnotenabled",
     "billingaccount",
     "quotaexceededforquotametricperday",
+    "creditsaredepleted",
+    "prepaymentcredits",
+    "insufficientcredits",
+    "outofcredits",
+    "billingisdisabled",
 )
 
 #: Признаки лимита В МИНУТУ (или в секунду): ровно то, ради чего есть backoff.

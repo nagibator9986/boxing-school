@@ -81,6 +81,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "escalation.complaint",
     "escalation.medical",
     "error.generic",
+    "error.degraded_tail",
     "error.voice_message",
     "error.too_many_messages",
     "bridge.kk_offer",
