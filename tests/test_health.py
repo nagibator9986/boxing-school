@@ -41,6 +41,22 @@ def bot_db(tmp_path: Path) -> Path:
     return path
 
 
+def add_llm_call(bot_db: Path, *, error: str | None, minutes_ago: int = 5) -> None:
+    """Запись вызова модели заданной давности."""
+    stamp = (datetime.now(tz=UTC) - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    engine = sa.create_engine(f"sqlite:///{bot_db}")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO llm_call (id, prompt_tokens, cached_tokens, candidates_tokens,"
+                " thoughts_tokens, latency_ms, cost_usd, error, created_at)"
+                " VALUES (:id, 0, 0, 0, 0, 0, 0, :error, :stamp)"
+            ),
+            {"id": uuid4().hex, "error": error, "stamp": stamp},
+        )
+    engine.dispose()
+
+
 def add_outbox(bot_db: Path, *, state: str, age_minutes: int, error: str | None = None) -> None:
     """Строка очереди отправки заданного возраста и состояния."""
     stamp = (datetime.now(tz=UTC) - timedelta(minutes=age_minutes)).strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -144,3 +160,43 @@ def test_missing_database_does_not_break_the_overview(tmp_path: Path) -> None:
     issues = collect_issues(BotData(tmp_path / "нет.db"), FakeSettings())
 
     assert issues == []
+
+
+# --------------------------------------------------------------------------- #
+# Модель: ключ есть, а ответов нет
+# --------------------------------------------------------------------------- #
+def test_failing_model_is_reported_with_a_plain_reason(bot_db: Path) -> None:
+    """Настройки в порядке, а модель падает — панель обязана это назвать.
+
+    Живой случай 01.09.2026: ключ на месте, кредиты кончились, сутки каждый
+    клиент получал «у меня сбой». В настройках всё выглядело исправным.
+    """
+    for _ in range(3):
+        add_llm_call(bot_db, error="llm_quota")
+    add_llm_call(bot_db, error=None)
+
+    issues = collect_issues(BotData(bot_db), FakeSettings())
+
+    assert len(issues) == 1
+    assert "3 из 4 за час" in issues[0].title
+    assert "ai.studio" in issues[0].detail
+
+
+def test_occasional_model_error_is_not_an_alarm(bot_db: Path) -> None:
+    """Один отказ на десяток вызовов — помеха, а не поломка.
+
+    Паника по каждому сбою сети приведёт к тому, что панель перестанут читать.
+    """
+    add_llm_call(bot_db, error="llm_rate_limit")
+    for _ in range(9):
+        add_llm_call(bot_db, error=None)
+
+    assert collect_issues(BotData(bot_db), FakeSettings()) == []
+
+
+def test_old_failures_do_not_linger(bot_db: Path) -> None:
+    """Вчерашняя авария не должна светиться, когда всё уже починили."""
+    for _ in range(5):
+        add_llm_call(bot_db, error="llm_quota", minutes_ago=180)
+
+    assert collect_issues(BotData(bot_db), FakeSettings()) == []

@@ -804,6 +804,7 @@ async def _run_turn(
             code = exc.code if isinstance(exc, BotError) else type(exc).__name__
             metrics.observe_llm_error(code)
             _log.warning("llm_failed", error=code, conv_key=conv.conv_key)
+            await _record_llm(db, conv, kb=kb, error=code)
             if isinstance(exc, LLMQuotaError):
                 # Отказ не про этот диалог, а про весь бот: пока счёт пуст,
                 # так ответит каждому. Карточка эскалации об этом не скажет —
@@ -841,6 +842,15 @@ async def _run_turn(
 
         invocations = tuple(response.invocations) or tuple(getattr(executor, "invocations", ()))
         usage = tuple(response.usage)
+        await _record_llm(
+            db,
+            conv,
+            kb=kb,
+            usage=usage,
+            model=response.model_used,
+            tool_calls=[inv.name for inv in invocations],
+            finish_reason=response.finish_reason,
+        )
         reply_raw = (response.text or "").strip()
 
         if response.blocked or not reply_raw:
@@ -1667,6 +1677,43 @@ def _draft_from_text(
         child_gender=lexicon.extract_gender(text, lexicon=kb.lexicon),
         messages_count=int(conv.msg_in_count or 0),
     )
+
+
+async def _record_llm(
+    db: AsyncSession,
+    conv: Conversation,
+    *,
+    kb: KBSnapshot,
+    usage: Sequence[LLMUsage] = (),
+    model: str | None = None,
+    tool_calls: Sequence[str] = (),
+    finish_reason: str | None = None,
+    error: str | None = None,
+) -> None:
+    """След вызова модели в базе: расход, задержка, исход.
+
+    Таблица ``llm_call`` была в схеме с самого начала и стояла пустой: писать в
+    неё не начали. Из-за этого отказ модели не оставлял следа нигде, кроме
+    журнала Railway, который владелец не читает, — и причина суточного сбоя
+    выяснялась вопросом ко мне. Строка переживает перезапуск и видна из CRM.
+
+    Ошибка записи гасится: телеметрия не имеет права стоить клиенту ответа.
+    """
+    try:
+        from app.storage import repo_llm
+
+        await repo_llm.record(
+            db,
+            conversation_id=conv.id,
+            usage=usage,
+            model=model,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            error=error,
+            kb_hash=kb.kb_hash,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("llm_call_record_failed", error=type(exc).__name__)
 
 
 async def _remember_lead(

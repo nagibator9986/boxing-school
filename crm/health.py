@@ -44,6 +44,7 @@ def collect_issues(bot, settings) -> list[Issue]:
     """Список неисправностей, самые тяжёлые первыми. Пустой список — всё в порядке."""
     issues: list[Issue] = []
     issues.extend(_config_issues(settings))
+    issues.extend(_model_issues(bot))
     issues.extend(_delivery_issues(bot))
     return sorted(issues, key=lambda item: 0 if item.is_error else 1)
 
@@ -85,6 +86,48 @@ def _config_issues(settings) -> list[Issue]:
         )
 
     return found
+
+
+#: Доля отказов модели, начиная с которой это уже неисправность, а не помеха.
+FAILURE_SHARE: Final[float] = 0.5
+
+#: Что означают коды отказов на языке владельца.
+_ERROR_TEXTS: Final[dict[str, str]] = {
+    "llm_quota": (
+        "кончились оплаченные кредиты или исчерпана квота ключа. "
+        "Пополнить: ai.studio → Projects → Billing"
+    ),
+    "llm_rate_limit": "слишком много запросов в минуту — модель отвечает не всем",
+    "llm_timeout": "модель не успевает ответить за отведённое время",
+    "llm_bad_request": "модель отклоняет запрос — вероятно, дело в настройках",
+}
+
+
+def _model_issues(bot) -> list[Issue]:
+    """Ключ может быть задан и при этом не работать.
+
+    Ровно это и случилось: ключ на месте, кредиты кончились, и сутки каждый
+    клиент получал «у меня сбой на стороне сервиса». Настройки выглядели
+    исправными; о неисправности говорила только доля отказов.
+    """
+    try:
+        health = bot.llm_health(hours=1)
+    except Exception:  # noqa: BLE001 - обзор не имеет права падать из-за проверки
+        return []
+
+    calls, errors = int(health.get("calls", 0)), int(health.get("errors", 0))
+    if not calls or errors / calls < FAILURE_SHARE:
+        return []
+
+    code = str(health.get("last_error") or "").split(":", 1)[0].strip()
+    reason = _ERROR_TEXTS.get(code, f"код отказа: {code or 'неизвестен'}")
+    return [
+        Issue(
+            "error",
+            f"Модель отвечает с ошибками: {errors} из {calls} за час",
+            f"Клиенты получают карточки из базы знаний вместо ответа. Причина — {reason}.",
+        )
+    ]
 
 
 def _delivery_issues(bot) -> list[Issue]:

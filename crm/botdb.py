@@ -584,6 +584,13 @@ class BotData:
                     " pause_reason = NULL, resumed_at = ? WHERE conversation_id = ?",
                     (now, conv_id),
                 )
+                # Тот же путь, которым снимает паузу сам бот: строка и состояние
+                # диалога. Иначе напоминания остались бы выключенными навсегда.
+                conn.execute(
+                    "UPDATE conversation SET state = 'active' WHERE id = ? AND state ="
+                    " 'paused_operator'",
+                    (conv_id,),
+                )
         except sqlite3.Error as exc:
             _log.error("crm_resume_failed", error=str(exc), conversation_id=conv_id)
             return False
@@ -612,11 +619,48 @@ class BotData:
                         " VALUES (?, 1, ?, 'manual', 0, 'manual')",
                         (conv_id, stamp),
                     )
+                # Состояние диалога — вторая половина паузы, и без неё бот
+                # замолкает лишь наполовину: напоминания смотрят именно сюда и
+                # уходили клиенту поверх разговора, начатого человеком.
+                conn.execute(
+                    "UPDATE conversation SET state = 'paused_operator' WHERE id = ?",
+                    (conv_id,),
+                )
         except sqlite3.Error as exc:
             _log.error("crm_pause_failed", error=str(exc), conversation_id=conv_id)
             return False
         self._set_state_key(f"pause:{conv_key}", until)
         return True
+
+    # ------------------------------------------------------- здоровье модели
+    def llm_health(self, *, hours: int = 1) -> dict[str, Any]:
+        """Сколько вызовов модели за период, сколько с ошибкой и какой.
+
+        Ключ может быть задан и при этом не работать — кончились кредиты,
+        отозван, исчерпана квота. Настройки об этом не скажут ничего, а доля
+        отказов скажет сразу.
+        """
+        edge = (datetime.now(tz=_UTC) - timedelta(hours=max(1, int(hours)))).strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+        rows = self._query(
+            "SELECT COUNT(*) AS calls,"
+            " SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors"
+            "  FROM llm_call WHERE created_at >= ?",
+            (edge,),
+        )
+        calls = int(rows[0]["calls"] or 0) if rows else 0
+        errors = int(rows[0]["errors"] or 0) if rows else 0
+        last = self._query(
+            "SELECT error FROM llm_call WHERE error IS NOT NULL AND created_at >= ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (edge,),
+        )
+        return {
+            "calls": calls,
+            "errors": errors,
+            "last_error": str(last[0]["error"]) if last else "",
+        }
 
     # ---------------------------------------------------- здоровье отправки
     def stuck_outbox(self, *, minutes: int = 10) -> int:
