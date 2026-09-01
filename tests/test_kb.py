@@ -317,3 +317,52 @@ def test_price_card_shows_region_prices(kb) -> None:
 
     assert "10 000" in card
     assert "25 000" not in card
+
+
+def test_every_i18n_key_used_by_code_is_enforced() -> None:
+    """Ключ, который произносит код, обязан быть в списке обязательных.
+
+    Иначе связь односторонняя: код читает ключ, а загрузчик его отсутствия не
+    замечает — и пропажа вскрывается пустым местом в ответе живому клиенту.
+    Так уже случалось с подписями карточек: пятнадцать ключей кода не были
+    защищены проверкой базы знаний.
+    """
+    import re
+    from pathlib import Path
+
+    from app.kb.gaps import required_i18n_keys
+
+    root = Path(__file__).resolve().parent.parent
+    sources = [
+        root / "app" / "kb" / "render.py",
+        root / "app" / "core" / "guards.py",
+    ]
+    pattern = re.compile(r"['\"]((?:card|escalation|greeting|bridge|system)\.[a-z_]+)['\"]")
+
+    used: set[str] = set()
+    for path in sources:
+        used.update(pattern.findall(path.read_text(encoding="utf-8")))
+
+    missing = sorted(used - set(required_i18n_keys()))
+    assert not missing, (
+        "код произносит эти ключи, а загрузчик их не требует: " + ", ".join(missing)
+    )
+
+
+def test_no_unused_card_texts(kb) -> None:
+    """В базе знаний нет подписей карточек, которых никто не читает.
+
+    Мёртвый ключ виден владельцу в разделе «Готовые фразы»: он правит текст,
+    сохраняет — и ничего не меняется.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    render = (root / "app" / "kb" / "render.py").read_text(encoding="utf-8")
+    used = set(re.findall(r"['\"](card\.[a-z_]+)['\"]", render))
+    # Дисциплины подставляются по коду: card.{discipline}.
+    used.update({"card.boxing", "card.kickboxing"})
+
+    declared = {key for key in kb.i18n.strings if key.startswith("card.")}
+    assert not declared - used, f"ключи никем не читаются: {sorted(declared - used)}"

@@ -77,6 +77,9 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "greeting.first",
     "escalation.handoff",
     "escalation.child_writing",
+    "escalation.manager_requested",
+    "escalation.complaint",
+    "escalation.medical",
     "error.generic",
     "error.voice_message",
     "error.too_many_messages",
@@ -85,6 +88,24 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "lead_card.escalation",
     "system.lead_saved",
     "system.goodbye",
+    # Подписи готовых карточек. Их произносит код, а не модель, поэтому
+    # отсутствие ключа обязано вскрываться на загрузке базы знаний, а не
+    # посреди живого диалога — там оно означает пустое место в ответе клиенту.
+    "card.gyms_city_title",
+    "card.gyms_region_title",
+    "card.gyms_all_title",
+    "card.pick_gym",
+    "card.also_elsewhere",
+    "card.map",
+    "card.landmark",
+    "card.schedule_title",
+    "card.price_city_title",
+    "card.price_region_title",
+    "card.subscription",
+    "card.age_unknown",
+    # Названия видов занятий подставляются по коду дисциплины: card.{discipline}.
+    "card.boxing",
+    "card.kickboxing",
 )
 
 
