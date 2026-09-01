@@ -461,3 +461,51 @@ async def test_unknown_district_offers_the_whole_list(kb) -> None:
     assert result.data["offer_full_list"] is True
     assert result.data["full_list_artifact"] == "gyms_list_city"
     assert "gyms_list_city" in result.caveats[0]
+
+
+def test_menu_choice_four_hands_over_to_a_human(kb) -> None:
+    """Пункт «Написать менеджеру» передаёт диалог человеку без обращения к модели.
+
+    Цифра разворачивается во фразу со словом из словаря интентов, а её ловит
+    guard — до вызова модели. Так пункт отрабатывает мгновенно и одинаково,
+    а не зависит от того, как модель поймёт цифру.
+    """
+    from app.core.guards import scan
+    from app.core.pipeline import expand_menu_choice
+    from app.types import EscalationReason, GuardFlag, Language
+
+    expanded = expand_menu_choice("4", after_greeting=True)
+    assert expanded != "4", "цифра не развернулась в фразу"
+
+    verdict = scan(expanded, lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies)
+    assert verdict.escalate is True
+    assert verdict.reason is EscalationReason.USER_REQUEST
+    assert GuardFlag.MANAGER_REQUEST in verdict.flags
+    assert verdict.fixed_reply_key == "escalation.manager_requested"
+
+
+def test_manager_request_understands_word_forms(kb) -> None:
+    """Живые формулировки тоже доходят до человека.
+
+    Клиент пишет «напишите администратору» или «свяжите с менеджером», а не
+    словарную форму «менеджер».
+    """
+    from app.core.guards import scan
+    from app.types import Language
+
+    for text in (
+        "Хочу написать менеджеру",
+        "Свяжите меня с менеджером",
+        "Передайте администратору, пожалуйста",
+    ):
+        verdict = scan(text, lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies)
+        assert verdict.escalate is True, text
+
+
+def test_greeting_offers_the_manager_option(kb) -> None:
+    """В приветствии есть пункт «Написать менеджеру» на обоих языках."""
+    from app.types import Language
+
+    assert "4." in kb.text("greeting.first", Language.RU)
+    assert "менеджер" in kb.text("greeting.first", Language.RU).lower()
+    assert "4." in kb.text("greeting.first", Language.KK)

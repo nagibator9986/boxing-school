@@ -382,6 +382,21 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
 
     if any(not gym.address.filled for gym in gyms):
         parts.append(_lang_text(snapshot, "gap.region_address", lang))
+
+    # Список по городу — не весь список школы. Владелец считает залы вместе с
+    # Тобылом и райцентрами, и карточка «6 залов» выглядит так, будто часть
+    # точек потеряли. Прайс при этом разный, поэтому смешивать их в один
+    # нумерованный список нельзя: строка отдельная и без номеров.
+    if scope is Scope.CITY:
+        elsewhere = {
+            gym.settlement for gym in snapshot.active_gyms(Scope.REGION) if gym.settlement
+        }
+        if elsewhere:
+            # Числом, а не перечислением: семь названий в строке не помещаются на
+            # экране телефона, а полный список отдаёт отдельная карточка по
+            # области — вместе с районным прайсом, который отличается втрое.
+            parts.append(snapshot.text("card.also_elsewhere", lang, count=len(elsewhere)))
+
     parts.append(_lang_text(snapshot, "card.pick_gym", lang))
     return _blocks(parts)
 

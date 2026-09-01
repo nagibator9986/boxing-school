@@ -348,3 +348,19 @@ async def test_schedule_is_sent_again_in_a_later_turn(kb: KBSnapshot) -> None:
     assert result.ok and not result.data.get("already_shown")
     sent = [message for message in services.outbound if message.text]
     assert sent and "🗓" in sent[0].text, "на прямой вопрос о времени бот промолчал"
+
+
+def test_city_card_mentions_the_rest_of_the_region(kb: KBSnapshot) -> None:
+    """Список по городу не выдаёт себя за весь список школы.
+
+    Владелец считает залы вместе с Тобылом и райцентрами, и карточка «6 залов»
+    выглядела так, будто часть точек потеряли. Смешивать их в один нумерованный
+    список нельзя: районный прайс отличается втрое.
+    """
+    text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
+    assert "населённых пунктах области" in text
+
+    region_count = len({gym.settlement for gym in kb.active_gyms(Scope.REGION) if gym.settlement})
+    assert str(region_count) in text
+    # Сами райцентры в нумерованный список города не попадают.
+    assert "Житикара" not in text

@@ -576,3 +576,38 @@ async def test_every_city_gym_has_a_route_video_or_none(kb) -> None:
         assert artifact.gym_id in gym_ids, f"{artifact.id}: зал '{artifact.gym_id}' не существует"
         assert artifact.file_path, f"{artifact.id}: не указан файл"
         assert artifact.channels.get("telegram") == "allow"
+
+
+async def test_menu_item_four_reaches_a_human_without_the_model(deps, llm) -> None:
+    """Пункт «Написать менеджеру» отрабатывает кодом, без обращения к модели.
+
+    Разворот цифры в фразу стоит ДО проверок. Пока он стоял после них, guard
+    видел голое «4», просьбу к человеку не опознавал, и цифру разбирала модель:
+    медленнее, дороже и с ответом «чтобы не сказать вам неточность» вместо
+    «передаю менеджеру».
+    """
+    await say(deps, llm, "m-greet", "Здравствуйте", [])
+    # Пустой сценарий: любой вызов модели здесь означал бы, что ход пошёл не тем путём.
+    decisions = await say(deps, llm, "m-four", "4", [])
+
+    assert not tools(decisions), "ход не должен обращаться к инструментам"
+    text = " ".join(replies(decisions))
+    assert "менеджер" in text.lower()
+    assert "неточность" not in text, "клиенту ответили как на незнание, а он просто позвал человека"
+    from app.types import DecisionAction, EscalationReason
+
+    assert any(d.action is DecisionAction.ESCALATE for d in decisions), "диалог не передан человеку"
+    assert any(d.escalation_reason is EscalationReason.USER_REQUEST for d in decisions)
+    assert any(d.manager_cards for d in decisions), "менеджер не получил карточку"
+
+
+async def test_menu_digit_outside_the_greeting_is_not_a_menu_choice(deps, llm) -> None:
+    """Цифра в середине разговора остаётся цифрой.
+
+    После приветствия «4» — это выбор пункта, а дальше в диалоге может быть
+    возраст ребёнка, число детей или номер зала.
+    """
+    from app.core.pipeline import expand_menu_choice
+
+    assert expand_menu_choice("4", after_greeting=False) == "4"
+    assert expand_menu_choice("4", after_greeting=True) != "4"

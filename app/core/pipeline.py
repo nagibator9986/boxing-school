@@ -127,6 +127,11 @@ _GREETING_CHOICES: Final[dict[str, str]] = {
     "1": "Хочу записать ребёнка на бесплатное пробное занятие",
     "2": "Расскажите подробнее о школе, ценах и залах",
     "3": "Мы уже занимаемся, у меня вопрос по оплате, расписанию или группе",
+    # Пункт про менеджера разворачивается во фразу со словом из словаря
+    # интентов: её ловит guard и передаёт диалог человеку БЕЗ обращения к
+    # модели. Так «4» отрабатывает мгновенно и одинаково, а не зависит от
+    # того, как модель поймёт цифру.
+    "4": "Хочу написать менеджеру",
 }
 
 
@@ -642,6 +647,14 @@ async def _run_turn(
             await _flush_queue(deps, services)
             return decision
 
+        # --- 6a. Выбор пункта меню --------------------------------------- #
+        # Разворачивается ДО проверок: цифра — это сокращение фразы, и проверки
+        # обязаны видеть саму фразу. Пока разворот стоял после них, пункт
+        # «Написать менеджеру» не срабатывал: guard видел голое «4», просьба к
+        # человеку не опознавалась, и цифру разбирала модель — медленнее и
+        # с ответом «чтобы не сказать вам неточность» вместо «передаю менеджеру».
+        text = expand_menu_choice(text, after_greeting=await conv_session.bot_turns(db, conv) == 1)
+
         # --- 7. Guards ----------------------------------------------------- #
         verdict = guards.scan(text, lang=lang, lexicon=kb.lexicon, policies=kb.policies)
         if verdict.has(GuardFlag.STOP_WORD):
@@ -724,14 +737,14 @@ async def _run_turn(
 
         # --- 8. LLM + tool-loop -------------------------------------------- #
         history = await conv_session.load_history(db, conv, max_turns=settings.llm_history_turns)
-        # Единственный ответ бота к этому моменту — приветствие с меню, значит
-        # голая цифра это выбор пункта. Считаем ответы бота, а не ищем текст в
-        # истории модели: шаблонные ответы в неё не попадают.
-        text = expand_menu_choice(text, after_greeting=await conv_session.bot_turns(db, conv) == 1)
         system_instruction, ngrams = _prompt_for(kb, _runtime_block(deps))
         intents = lexicon.intent_hints(text, lexicon=kb.lexicon)
         injection = verdict.has(GuardFlag.INJECTION)
         draft = _draft_from_text(text, inbound=inbound, conv=conv, kb=kb, lang=lang, now=now)
+        # Разбор переписки на карточку лида не влияет на ответ, поэтому идёт
+        # параллельно с ним, а не после: последовательный вызов добавлял к
+        # каждому ходу около секунды ожидания на стороне клиента.
+        lead_task = await _start_lead_extraction(deps, db, conv, lang=lang)
 
         ctx = ToolContext(
             conversation_id=conv.id,
@@ -806,6 +819,7 @@ async def _run_turn(
             )
             await db.commit()
             await _flush_queue(deps, services)
+            _drop_lead_task(lead_task)
             return decision
 
         invocations = tuple(response.invocations) or tuple(getattr(executor, "invocations", ()))
@@ -839,6 +853,7 @@ async def _run_turn(
             await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
             await db.commit()
             await _flush_queue(deps, services)
+            _drop_lead_task(lead_task)
             return decision
 
         # --- 9. Postcheck --------------------------------------------------- #
@@ -882,6 +897,7 @@ async def _run_turn(
             await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
             await db.commit()
             await _flush_queue(deps, services)
+            _drop_lead_task(lead_task)
             return decision
 
         # --- 10. Outbox ----------------------------------------------------- #
@@ -904,8 +920,10 @@ async def _run_turn(
         except Exception as exc:  # noqa: BLE001
             _log.warning("summarize_failed", error=type(exc).__name__)
 
-        # Лид извлекается ПОСЛЕ ответа и не влияет на него.
-        lead_usage = await _extract_lead(deps, db, services, conv, lang=lang, draft=draft)
+        # Разбор переписки на карточку шёл параллельно с ответом — забираем результат.
+        lead_usage = await _finish_lead_extraction(
+            lead_task, services, conv, lang=lang, draft=draft
+        )
 
         decision = _decision(
             DecisionAction.ESCALATE if services.paused else DecisionAction.REPLY,
@@ -1536,28 +1554,71 @@ def _draft_from_text(
     )
 
 
-async def _extract_lead(
-    deps: PipelineDeps,
-    db: AsyncSession,
+def _drop_lead_task(task: "asyncio.Task[Any] | None") -> None:
+    """Снимает фоновый разбор карточки на аварийных выходах хода.
+
+    Ход мог оборваться отказом модели или пост-фильтром. Результат разбора тогда
+    никому не нужен, а брошенная задача оставила бы за собой неподобранное
+    исключение в журнале.
+    """
+    if task is not None and not task.done():
+        task.cancel()
+
+
+async def _start_lead_extraction(
+    deps: PipelineDeps, db: AsyncSession, conv: Conversation, *, lang: Language
+) -> "asyncio.Task[tuple[LeadDraft, LLMUsage | None]] | None":
+    """Запускает извлечение лида параллельно с ответом клиенту.
+
+    Извлечение — отдельный вызов модели, и на текст ответа он не влияет вообще.
+    Выполненный последовательно, он добавлял к каждому ходу около секунды:
+    клиент ждал, пока бот молча разбирает переписку на поля карточки. Здесь
+    запускается только сетевой вызов; чтение переписки остаётся в основном
+    потоке — сессия SQLAlchemy не рассчитана на параллельное использование.
+
+    Возвращает ``None``, если извлекать нечего.
+    """
+    try:
+        transcript = await repo_message.load_transcript(db, conv.id, limit=_TRANSCRIPT_LIMIT)
+    except Exception as exc:  # noqa: BLE001 - разбор карточки не роняет ответ
+        _log.warning("extract_lead_transcript_failed", error=type(exc).__name__)
+        return None
+    if not transcript:
+        return None
+    rendered = "\n".join(f"{author.value}: {text}" for author, text in transcript if text)
+    if not rendered.strip():
+        return None
+    task = asyncio.create_task(deps.llm.extract_lead(rendered, lang=lang))
+    # Если ход оборвётся и результат никто не заберёт, исключение задачи всплывёт
+    # в журнале как «exception was never retrieved» — шум, за которым не видно
+    # настоящих ошибок.
+    task.add_done_callback(lambda finished: not finished.cancelled() and finished.exception())
+    return task
+
+
+async def _finish_lead_extraction(
+    task: "asyncio.Task[tuple[LeadDraft, LLMUsage | None]] | None",
     services: _Services,
     conv: Conversation,
     *,
     lang: Language,
     draft: LeadDraft,
 ) -> tuple[LLMUsage, ...]:
-    """«Тихий» вызов извлечения лида ПОСЛЕ ответа: на текст клиента он не влияет.
+    """Дожидается извлечения и сохраняет карточку.
 
-    Инструмент ``create_trial_lead`` уже мог создать лид — тогда второй раз не лезем.
+    Инструмент ``create_trial_lead`` мог создать лид прямо в ходе — тогда
+    результат фонового разбора не нужен, и задача снимается.
     Любая ошибка гасится: потеря карточки не должна ронять состоявшийся ответ.
     """
+    if task is None:
+        return ()
     if services.lead_id is not None:
+        task.cancel()
         return ()
     try:
-        transcript = await repo_message.load_transcript(db, conv.id, limit=_TRANSCRIPT_LIMIT)
-        if not transcript:
-            return ()
-        rendered = "\n".join(f"{author.value}: {text}" for author, text in transcript if text)
-        extracted, usage = await deps.llm.extract_lead(rendered, lang=lang)
+        extracted, usage = await task
+    except asyncio.CancelledError:  # pragma: no cover - ход прерван снаружи
+        raise
     except Exception as exc:  # noqa: BLE001
         _log.warning("extract_lead_failed", error=type(exc).__name__)
         return ()

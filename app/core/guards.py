@@ -236,10 +236,13 @@ def scan(
         )
 
     if _matches_word(normalized, _intent_phrases(lexicon, IntentHint.MANAGER)):
+        # Отдельный текст, а не общий «чтобы не сказать неточность»: тот звучит
+        # как «я не знаю ответа», хотя клиент просто попросил человека. После
+        # выбора пункта «Написать менеджеру» это читается как отговорка.
         return GuardVerdict(
             flags=(GuardFlag.MANAGER_REQUEST,),
             allowed_tools=SAFE_TOOLS,
-            fixed_reply_key="escalation.handoff",
+            fixed_reply_key="escalation.manager_requested",
             escalate=True,
             reason=EscalationReason.USER_REQUEST,
         )
