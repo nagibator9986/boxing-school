@@ -777,3 +777,54 @@ def test_upload_without_description_rejected(client: Any) -> None:
         follow_redirects=True,
     )
     assert "когда бот должен отправлять" in response.data.decode()
+
+
+def test_operator_pause_is_editable_and_reaches_the_bot(client: Any, sandbox: CrmConfig) -> None:
+    """Владелец задаёт, сколько бот молчит после ответа менеджера.
+
+    Настройка должна доходить до самой паузы, а не оставаться цифрой в
+    интерфейсе: именно ею владелец решает, надолго ли он забирает диалог себе.
+    """
+    from app.config import Settings
+
+    client.post(
+        "/settings/",
+        data={
+            "form_complete": "1",
+            "followup_enabled": "1",
+            "lead_notify": "1",
+            "trial_free": "1",
+            "quiet_hours": "21:00-09:00",
+            "work_hours": "10:00-20:00",
+            "operator_pause_minutes": "45",
+        },
+        follow_redirects=True,
+    )
+
+    runtime = load_runtime_settings(sandbox.admin_db)
+    assert runtime.operator_pause_minutes == 45
+
+    base = Settings(wazzup_api_key="k", wazzup_webhook_secret="s" * 24, gemini_api_key="g")
+    assert runtime.apply_to(base).pause_operator_minutes == 45
+
+
+def test_absurd_pause_is_refused(client: Any, sandbox: CrmConfig) -> None:
+    """Ноль и сутки с лишним не принимаются.
+
+    Ноль означал бы «бот отвечает поверх человека сразу», а число из десяти
+    цифр — «бот выключен навсегда»; и то и другое — почти наверняка опечатка.
+    """
+    for wrong in ("0", "99999", "полчаса"):
+        response = client.post(
+            "/settings/",
+            data={
+                "form_complete": "1",
+                "quiet_hours": "21:00-09:00",
+                "work_hours": "10:00-20:00",
+                "operator_pause_minutes": wrong,
+            },
+            follow_redirects=True,
+        )
+        assert "от 1 до 1440" in response.data.decode(), wrong
+
+    assert load_runtime_settings(sandbox.admin_db).operator_pause_minutes == 120

@@ -47,6 +47,15 @@ def index() -> Any:
             for spec in SETTING_SPECS:
                 if spec.kind == "bool":
                     value = "on" if flag(request.form, spec.key) else "off"
+                elif spec.kind == "minutes":
+                    minutes = integer(request.form, spec.key, default=0)
+                    if not 1 <= minutes <= 1440:
+                        problems.append(
+                            f"{spec.title}: нужно число минут от 1 до 1440, получено «"
+                            f"{text(request.form, spec.key)}»"
+                        )
+                        continue
+                    value = str(minutes)
                 else:
                     value = text(request.form, spec.key).replace(" ", "").replace("—", "-")
                     if not _RANGE_RE.match(value):

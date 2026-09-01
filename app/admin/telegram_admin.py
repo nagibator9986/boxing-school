@@ -270,10 +270,12 @@ class AdminConsole:
             return f"{spec.title}: {state}.\n{spec.hint}"
 
         session.step = "setting_value"
-        return (
-            f"{spec.title}\nСейчас: {current}\n{spec.hint}\n\n"
-            "Пришлите новое значение в формате 21:00-09:00. «отмена» — выйти."
+        hint = (
+            "Пришлите число минут, от 1 до 1440."
+            if spec.kind == "minutes"
+            else "Пришлите новое значение в формате 21:00-09:00."
         )
+        return f"{spec.title}\nСейчас: {current}\n{spec.hint}\n\n{hint} «отмена» — выйти."
 
     def _on_setting_value(self, chat_id: str, text: str) -> str:
         """Новое значение настройки с проверкой формата."""
@@ -283,8 +285,14 @@ class AdminConsole:
             self._sessions[chat_id] = AdminSession()
             return "Не понял, какую настройку меняем. Начните заново: /admin"
 
+        spec = next((item for item in SETTING_SPECS if item.key == key), None)
         value = text.strip().replace(" ", "").replace("—", "-").replace("–", "-")
-        if not _TIME_RANGE_RE.fullmatch(value):
+
+        if spec is not None and spec.kind == "minutes":
+            if not value.isdigit() or not 1 <= int(value) <= 1440:
+                return "Нужно число минут — от 1 до 1440."
+            value = str(int(value))
+        elif not _TIME_RANGE_RE.fullmatch(value):
             return "Нужен формат 21:00-09:00 — часы и минуты через дефис."
 
         self._store.set(key, value)

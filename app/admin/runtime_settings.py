@@ -58,6 +58,20 @@ def _parse_range(value: str, fallback: tuple[int, int]) -> tuple[int, int]:
     return start, end
 
 
+def _as_minutes(value: str, fallback: int) -> int:
+    """Минуты из строки настройки. Мусор и бессмыслица → ``fallback``.
+
+    Верхняя граница — сутки: пауза длиннее означает «бот выключен в этом
+    диалоге навсегда», а для этого есть отдельное решение человека, а не
+    случайно введённое число.
+    """
+    try:
+        minutes = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return min(1440, max(1, minutes))
+
+
 def _as_bool(value: str, fallback: bool) -> bool:
     """Строка настройки в булево. Понимает ``on/off``, ``true/false``, ``1/0``."""
     text = (value or "").strip().lower()
@@ -79,6 +93,7 @@ class RuntimeSettings:
     work_end: str = "20:00"
     lead_notify: bool = True
     trial_free: bool = True
+    operator_pause_minutes: int = 120
 
     # ------------------------------------------------------------------ чтение
     @classmethod
@@ -96,6 +111,7 @@ class RuntimeSettings:
         work_end = f"{int(work_match.group(3)):02d}:{work_match.group(4)}" if work_match else "20:00"
         return cls(
             followup_enabled=_as_bool(values.get("followup_enabled", ""), True),
+            operator_pause_minutes=_as_minutes(values.get("operator_pause_minutes", ""), 120),
             quiet_start=quiet[0],
             quiet_end=quiet[1],
             work_start=work_start,
@@ -117,6 +133,7 @@ class RuntimeSettings:
                 "followup_enabled": self.followup_enabled,
                 "followup_quiet_hours_start": self.quiet_start,
                 "followup_quiet_hours_end": self.quiet_end,
+                "pause_operator_minutes": self.operator_pause_minutes,
             }
         )
 
@@ -157,6 +174,7 @@ class RuntimeSettings:
                 self.work_start,
                 self.work_end,
                 self.trial_free,
+                self.operator_pause_minutes,
             )
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]

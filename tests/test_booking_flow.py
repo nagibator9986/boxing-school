@@ -60,6 +60,15 @@ async def say(
     return await process_inbound(deps, webhook_payload(message_id, text, chat_id=CHAT_ID))
 
 
+async def _only_conversation(session):  # type: ignore[no-untyped-def]
+    """Единственный диалог теста — брать его по ключу канала здесь не за что."""
+    import sqlalchemy as sa
+
+    from app.storage.models import Conversation
+
+    return (await session.execute(sa.select(Conversation))).scalars().first()
+
+
 def replies(decisions: Sequence[PipelineDecision]) -> list[str]:
     """Тексты, которые ушли бы клиенту."""
     return [out.text for d in decisions for out in d.outbound]
@@ -611,3 +620,77 @@ async def test_menu_digit_outside_the_greeting_is_not_a_menu_choice(deps, llm) -
 
     assert expand_menu_choice("4", after_greeting=False) == "4"
     assert expand_menu_choice("4", after_greeting=True) != "4"
+
+
+async def test_bot_stays_silent_if_the_manager_answered_first(deps, llm, monkeypatch) -> None:
+    """Ответ бота отменяется, если пока он думал, клиенту ответил человек.
+
+    Пауза проверяется в начале хода, а ответ уходит в конце — между ними
+    секунды работы модели. Ровно в это окно менеджер обычно и отвечает: он
+    видит сообщение клиента одновременно с ботом и пишет быстрее. Без проверки
+    перед самой отправкой клиент получал ответ бота ПОСЛЕ ответа человека.
+
+    Момент входа человека воспроизводится подменой проверки паузы: в начале
+    хода её ещё нет, к моменту отправки — уже есть.
+    """
+    from app.core import pause as pause_module
+    from app.core import pipeline as pipeline_module
+    from app.types import DecisionAction
+
+    await say(deps, llm, "m-1", "Здравствуйте", [FakeTurn.answer("Здравствуйте! Чем помочь?")])
+
+    original = pause_module.is_paused
+
+    async def paused_once_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        """Человек отвечает ровно в окно работы модели: до неё паузы нет, после — есть."""
+        if getattr(deps.llm, "generate_calls", 0):
+            return True
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.pause, "is_paused", paused_once_the_model_worked)
+
+    decisions = await say(
+        deps, llm, "m-2", "Сколько стоит?", [FakeTurn.answer("Сейчас расскажу подробнее.")]
+    )
+
+    assert not replies(decisions), "бот написал клиенту поверх ответа человека"
+    assert any(d.action is DecisionAction.SILENT for d in decisions)
+    assert any(d.reason == "operator_took_over" for d in decisions)
+
+
+async def test_withheld_reply_is_not_picked_up_later_by_the_sweep(deps, llm, monkeypatch) -> None:
+    """Отменённый ответ не уходит клиенту через минуту сметкой очереди.
+
+    Мало не поставить задачу отправки: строка уже лежит в очереди, и cron
+    подобрал бы её как «неотправленную» — человек ответил, а бот всё равно
+    написал, только с опозданием.
+    """
+    import sqlalchemy as sa
+
+    from app.core import pause as pause_module
+    from app.core import pipeline as pipeline_module
+
+    await say(deps, llm, "s-1", "Здравствуйте", [FakeTurn.answer("Здравствуйте!")])
+
+    original = pause_module.is_paused
+
+    async def paused_once_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        """Человек отвечает ровно в окно работы модели: до неё паузы нет, после — есть."""
+        if getattr(deps.llm, "generate_calls", 0):
+            return True
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.pause, "is_paused", paused_once_the_model_worked)
+    await say(deps, llm, "s-2", "А во сколько?", [FakeTurn.answer("Ответ, который уже не нужен.")])
+
+    async with deps.sessionmaker() as session:
+        rows = (
+            await session.execute(
+                sa.text(
+                    "SELECT state FROM outbox_message "
+                    "WHERE json_extract(payload, '$.text') LIKE '%уже не нужен%'"
+                )
+            )
+        ).scalars().all()
+    assert rows, "строка отменённого ответа не найдена"
+    assert "pending" not in rows, f"строка осталась в очереди и уйдёт сметкой: {rows}"

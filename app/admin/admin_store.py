@@ -41,7 +41,7 @@ class SettingSpec:
 
     key: str
     title: str
-    kind: str  # bool | time_range | text
+    kind: str  # bool | time_range | minutes
     default: str
     hint: str
 
@@ -69,6 +69,17 @@ SETTING_SPECS: Final[tuple[SettingSpec, ...]] = (
         kind="time_range",
         default="10:00-20:00",
         hint="Бот говорит клиенту, когда с ним свяжутся.",
+    ),
+    SettingSpec(
+        key="operator_pause_minutes",
+        title="Пауза бота после ответа менеджера",
+        kind="minutes",
+        default="120",
+        hint=(
+            "Сколько минут бот молчит в диалоге, где ответил человек. Каждое новое "
+            "сообщение менеджера продлевает паузу. Вернуть бота раньше: строкой #бот "
+            "в переписке или кнопкой в карточке клиента."
+        ),
     ),
     SettingSpec(
         key="lead_notify",

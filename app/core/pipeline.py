@@ -920,14 +920,23 @@ async def _run_turn(
         except Exception as exc:  # noqa: BLE001
             _log.warning("summarize_failed", error=type(exc).__name__)
 
+        # Пока бот думал, в диалог мог войти человек. Проверяется перед самой
+        # отправкой, а не только в начале хода: между этими точками — секунды
+        # работы модели, и менеджер отвечает обычно именно в них.
+        withheld = await _withhold_if_operator_took_over(deps, db, services, conv, now=now)
+
         # Разбор переписки на карточку шёл параллельно с ответом — забираем результат.
         lead_usage = await _finish_lead_extraction(
             lead_task, services, conv, lang=lang, draft=draft
         )
 
         decision = _decision(
-            DecisionAction.ESCALATE if services.paused else DecisionAction.REPLY,
-            "escalated_by_tool" if services.paused else "reply",
+            DecisionAction.SILENT
+            if withheld
+            else (DecisionAction.ESCALATE if services.paused else DecisionAction.REPLY),
+            "operator_took_over"
+            if withheld
+            else ("escalated_by_tool" if services.paused else "reply"),
             inbound=inbound,
             conv_id=conv.id,
             lang=lang,
@@ -1072,7 +1081,7 @@ async def _handle_echo(
         db,
         conv.id,
         conv.conv_key,
-        minutes=pause.pause_minutes_for(PauseReason.OPERATOR_REPLY, deps.settings),
+        minutes=pause.pause_minutes_for(PauseReason.OPERATOR_REPLY, _owner_settings(deps)),
         reason=PauseReason.OPERATOR_REPLY,
         now=now,
         author_id=inbound.author_id,
@@ -1276,7 +1285,26 @@ async def _degrade(
 
     Ответ модели в этом случае клиенту НЕ уходит: уходит нейтральная строка из
     ``kb/i18n.yaml``, администратор получает карточку, бот замолкает на паузу.
+
+    Исключение — человек уже в диалоге. Тогда молчание и есть правильный ответ:
+    «передаю администратору» поверх его же сообщения выглядит так, будто бот не
+    видит, что происходит в чате. Карточку слать тоже незачем — адресат читает
+    эту переписку прямо сейчас.
     """
+    if await _withhold_if_operator_took_over(deps, db, services, conv, now=now):
+        return _decision(
+            DecisionAction.SILENT,
+            "operator_took_over",
+            inbound=inbound,
+            conv_id=conv.id,
+            lang=lang,
+            guard_flags=guard_flags,
+            invocations=invocations,
+            usage=usage,
+            kb_hash=kb.kb_hash,
+            correlation_id=correlation_id,
+        )
+
     miss = int(conv.bot_miss_count or 0) + 1
     await repo_conversation.set_bot_miss(db, conv.id, miss)
     if escalation is None:
@@ -1448,6 +1476,47 @@ async def _enqueue_reply(
     await repo_conversation.touch_outbound(services.session, conv.id, now)
 
 
+async def _withhold_if_operator_took_over(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    *,
+    now: datetime,
+) -> bool:
+    """Отменяет ответ клиенту, если пока бот думал, в диалог вошёл человек.
+
+    Пауза проверяется в начале хода, а ответ уходит в конце — между ними
+    несколько секунд работы модели. Ровно в это окно менеджер обычно и отвечает:
+    он видит сообщение клиента одновременно с ботом и пишет быстрее, чем тот
+    думает. Без этой проверки клиент получал ответ бота ПОСЛЕ ответа человека —
+    то самое «бот пишет параллельно», из-за которого разговор выглядит бардаком.
+
+    Ответ не просто не отправляется: строки очереди помечаются пропущенными,
+    иначе их через минуту подберёт сметка и всё равно отправит.
+
+    Карточки менеджеру не трогаются: они идут другому адресату и нужны ему тем
+    более, если он уже в диалоге. История хода тоже сохраняется — бот обязан
+    помнить, что он собирался сказать, и не повторяться после возвращения.
+    """
+    if not services.messages and not services.outbox:
+        return False
+    if not await pause.is_paused(deps.state, db, conv.id, conv.conv_key, now):
+        return False
+
+    for outbox_id, _delay in services.outbox:
+        try:
+            await repo_outbox.mark_skipped(
+                db, outbox_id, error="operator_took_over: в диалог вошёл человек"
+            )
+        except Exception as exc:  # noqa: BLE001 - отмена не имеет права ронять ход
+            _log.warning("outbox_skip_failed", error=type(exc).__name__)
+    services.outbox.clear()
+    services.messages.clear()
+    _log.info("reply_withheld_operator", conv_key=conv.conv_key)
+    return True
+
+
 async def _flush_queue(deps: PipelineDeps, services: _Services) -> None:
     """Ставит задачи отправки — строго ПОСЛЕ коммита транзакции.
 
@@ -1552,6 +1621,23 @@ def _draft_from_text(
         child_gender=lexicon.extract_gender(text, lexicon=kb.lexicon),
         messages_count=int(conv.msg_in_count or 0),
     )
+
+
+def _owner_settings(deps: PipelineDeps) -> Settings:
+    """Конфигурация с наложенными настройками владельца.
+
+    Длительность паузы бота задаёт владелец в CRM или в ``/admin``, и правка
+    обязана действовать сразу, без передеплоя. Сбой чтения настроек не имеет
+    права ронять ход: тогда работает конфигурация процесса.
+    """
+    factory = getattr(deps, "runtime", None)
+    if factory is None:
+        return deps.settings
+    try:
+        return factory().apply_to(deps.settings)
+    except Exception as exc:  # noqa: BLE001 - битая база настроек, права на файл
+        _log.warning("runtime_settings_failed", error=str(exc))
+        return deps.settings
 
 
 def _drop_lead_task(task: "asyncio.Task[Any] | None") -> None:

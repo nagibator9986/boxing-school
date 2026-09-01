@@ -208,7 +208,11 @@ class Settings(BaseSettings):
     soft_message_chars: int = 600
     max_messages_per_turn: int = 2
     second_message_delay_ms: int = 2000
-    pause_operator_minutes: int = 30
+    #: Сколько бот молчит после ответа человека. Значение по умолчанию задаёт
+    #: владелец в CRM («Пауза бота после ответа менеджера»); здесь — запасное.
+    #: Тридцати минут не хватало: менеджер отвечает клиенту с перерывами, а бот
+    #: возвращался в диалог посреди его разговора.
+    pause_operator_minutes: int = 120
     pause_user_request_minutes: int = 60
     pause_escalation_minutes: int = 60
     pause_postcheck_minutes: int = 30
