@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from app.logging_conf import get_logger
@@ -45,6 +46,20 @@ CHANNEL_ICONS: Final[dict[str, str]] = {
     "instagram": "📸",
     "vk": "🔷",
     "avito": "🟩",
+}
+
+#: Каналы, в которые CRM может писать: их очередь читает отправщик Wazzup.
+_REPLYABLE_CHANNELS: Final[frozenset[str]] = frozenset({"whatsapp", "instagram"})
+
+#: Отказы отправщика человеческим языком — оператору нужен не код, а причина.
+_DENIAL_TEXTS: Final[dict[str, str]] = {
+    "channel_cannot_initiate": (
+        "В Instagram нельзя писать первым: клиент ещё ни разу не написал сюда."
+    ),
+    "service_window_expired": (
+        "Окно ответа в Instagram закрыто — с последнего сообщения клиента прошло "
+        "больше семи суток. Ответить можно, когда он напишет снова."
+    ),
 }
 
 _UTC: Final[timezone] = UTC
@@ -155,6 +170,18 @@ class LeadRow:
     def channel_title(self) -> str:
         """Канал, из которого пришла заявка."""
         return CHANNEL_TITLES.get(self.channel or "", self.channel or "—")
+
+
+
+def _canonical_uuid(value: str) -> str | None:
+    """``UUID`` из того, как он лежит в SQLite. ``None`` — это не идентификатор.
+
+    В базе они хранятся без дефисов, а модель исходящего ждёт канонический вид.
+    """
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 class BotData:
@@ -590,6 +617,157 @@ class BotData:
             return False
         self._set_state_key(f"pause:{conv_key}", until)
         return True
+
+    # ---------------------------------------------------- здоровье отправки
+    def stuck_outbox(self, *, minutes: int = 10) -> int:
+        """Сколько сообщений ждут отправки дольше положенного.
+
+        Очередь подметается раз в минуту, поэтому всё, что старше нескольких
+        минут, — признак неисправности: не работает отправщик, недействителен
+        ключ канала, не тот номер. Клиент этих сообщений не получил.
+        """
+        edge = (datetime.now(tz=_UTC) - timedelta(minutes=max(1, int(minutes)))).strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM outbox_message"
+            " WHERE state IN ('pending', 'sending') AND created_at < ?",
+            (edge,),
+        )
+        return int(rows[0]["n"]) if rows else 0
+
+    def failed_outbox(self, *, hours: int = 24) -> tuple[int, str] | None:
+        """Сколько сообщений не доставлено за период и последняя причина."""
+        edge = (datetime.now(tz=_UTC) - timedelta(hours=max(1, int(hours)))).strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+        rows = self._query(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS last FROM outbox_message"
+            " WHERE state IN ('failed', 'skipped') AND updated_at >= ?",
+            (edge,),
+        )
+        count = int(rows[0]["n"]) if rows else 0
+        if not count:
+            return None
+        reason_rows = self._query(
+            "SELECT last_error FROM outbox_message"
+            " WHERE state IN ('failed', 'skipped') AND updated_at >= ?"
+            " ORDER BY updated_at DESC LIMIT 1",
+            (edge,),
+        )
+        reason = str(reason_rows[0]["last_error"] or "причина не записана") if reason_rows else ""
+        return count, reason or "причина не записана"
+
+    # ------------------------------------------------- ответ клиенту из CRM
+    def reply_to_client(self, conv_id: str, text: str, *, soft_limit: int = 900) -> str | None:
+        """Кладёт сообщение оператора в очередь отправки. ``None`` — успех.
+
+        Иначе возвращается человекочитаемая причина отказа.
+
+        До этого ответить клиенту из CRM было нельзя вовсе: владелец видел
+        переписку и эскалацию, но писать шёл в WhatsApp с телефона. Строка в
+        ``outbox_message`` — тот же путь, которым отправляет сам бот, поэтому
+        отправщик подберёт её своим циклом и правила канала соблюдёт сам.
+
+        Проверки здесь не дублируют отправщик, а спасают оператора от
+        молчаливого отказа: строку с закрытым окном Instagram он бы пропустил,
+        а оператор считал бы, что ответил.
+        """
+        from app.channels.outbound import check_send_allowed, split_text, text_limits
+        from app.types import ChannelKind, OutboundKind
+
+        body = (text or "").strip()
+        if not body:
+            return "Пустое сообщение отправлять нечего."
+        if not self.exists:
+            return "База диалогов недоступна."
+
+        conv = self._conversation_row(conv_id)
+        if conv is None:
+            return "Диалог не найден."
+
+        try:
+            channel = ChannelKind(str(conv["chat_type"] or "").strip().lower())
+        except ValueError:
+            return f"Неизвестный канал диалога: {conv['chat_type']!r}."
+        if channel not in _REPLYABLE_CHANNELS:
+            # Telegram-бот отправляет из своего цикла и очередь не читает:
+            # строка осталась бы в базе навсегда, а оператор ждал бы доставки.
+            return "Отсюда можно писать только в WhatsApp и Instagram."
+
+        canonical = _canonical_uuid(conv_id)
+        if canonical is None:
+            # Без идентификатора отправщик не узнает, когда клиент писал, а для
+            # Instagram «неизвестно» означает «мы пишем первыми» — строка будет
+            # молча пропущена, и оператор об этом не узнает.
+            return "У диалога испорченный идентификатор — отправка невозможна."
+
+        now = datetime.now(tz=_UTC)
+        denial = check_send_allowed(
+            channel=channel,
+            last_inbound_at=_parse_ts(conv["last_inbound_at"]),
+            now=now,
+            kind=OutboundKind.OPERATOR_REPLY,
+        )
+        if denial is not None:
+            return _DENIAL_TEXTS.get(denial, f"Канал не принимает сообщение: {denial}.")
+
+        soft, hard = text_limits(channel, soft_limit=soft_limit)
+        parts = split_text(body, channel=channel, soft_limit=soft, hard_limit=hard, max_parts=10)
+        if not parts:
+            return "Пустое сообщение отправлять нечего."
+
+        stamp = now.strftime("%Y-%m-%d %H:%M:%S.%f")
+        try:
+            with self._connect(write=True) as conn:
+                for index, part in enumerate(parts):
+                    # SQLAlchemy хранит UUID в SQLite как 32 шестнадцатеричных
+                    # знака без дефисов. Строка с дефисами находилась выборкой
+                    # отправщика, но `session.get` по ней ничего не возвращал:
+                    # сообщение легло бы в базу и не ушло никуда.
+                    crm_message_id = uuid4().hex
+                    payload = {
+                        # В полезной нагрузке — канонический вид с дефисами:
+                        # её разбирает pydantic, а не SQLite.
+                        "crm_message_id": str(UUID(crm_message_id)),
+                        "conversation_id": canonical,
+                        "channel_id": conv["channel_id"],
+                        "channel": channel.value,
+                        "chat_id": conv["chat_id"],
+                        "lang": conv["lang"] or "ru",
+                        "kind": OutboundKind.OPERATOR_REPLY.value,
+                        "text": part,
+                        "content_uri": None,
+                        "artifact_id": None,
+                        "ref_message_id": None,
+                        # В проекте это поле всегда false: счётчик неотвеченных
+                        # в Wazzup ведут операторы, и гасить его отправкой из
+                        # CRM значит прятать от них диалог.
+                        "clear_unanswered": False,
+                        # Части одного ответа не должны прийти вперемешку.
+                        "delay_ms": index * 400,
+                    }
+                    conn.execute(
+                        "INSERT INTO outbox_message (id, conversation_id, crm_message_id,"
+                        " payload, state, attempts, created_at, updated_at)"
+                        " VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)",
+                        (uuid4().hex, conv_id, crm_message_id, json.dumps(payload), stamp, stamp),
+                    )
+        except sqlite3.Error as exc:
+            _log.error("crm_reply_failed", error=str(exc), conversation_id=conv_id)
+            return "Не удалось записать сообщение в очередь отправки."
+
+        _log.info("crm_reply_queued", conversation_id=conv_id, parts=len(parts))
+        return None
+
+    def _conversation_row(self, conv_id: str) -> sqlite3.Row | None:
+        """Строка диалога с полями, нужными для отправки."""
+        rows = self._query(
+            "SELECT id, conv_key, chat_type, chat_id, channel_id, lang, last_inbound_at"
+            "  FROM conversation WHERE id = ? LIMIT 1",
+            (conv_id,),
+        )
+        return rows[0] if rows else None
 
     # --------------------------------------------------- быстрый путь паузы
     def _drop_state_key(self, key: str) -> None:

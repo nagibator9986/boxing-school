@@ -18,6 +18,7 @@ def index() -> Any:
     """Сводка: клиенты, заявки, каналы, расходы на модель, состояние данных."""
     bot = data()
     overview = bot.overview()
+    issues = _issues(bot)
     kb = snapshot()
 
     open_gaps = kb_gaps.open_gaps(kb)
@@ -32,6 +33,7 @@ def index() -> Any:
     return render_template(
         "dashboard.html",
         overview=overview,
+        issues=issues,
         daily=bot.daily_counts(days=14),
         clients=bot.clients(limit=8),
         leads=bot.leads(limit=6),
@@ -67,3 +69,15 @@ def gaps() -> Any:
     order = {"critical": 0, "high": 1, "medium": 2}
     rows.sort(key=lambda row: (not row["open"], order.get(row["info"].priority, 3)))
     return render_template("gaps.html", rows=rows)
+
+
+def _issues(bot) -> list:
+    """Неисправности службы. Сбой самой проверки не имеет права ронять обзор."""
+    try:
+        from app.config import get_settings
+
+        from crm.health import collect_issues
+
+        return collect_issues(bot, get_settings())
+    except Exception:  # noqa: BLE001
+        return []

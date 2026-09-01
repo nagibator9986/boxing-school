@@ -14,6 +14,16 @@
         <div class="empty">Переписки пока нет</div>
       {% endfor %}
     </div>
+
+    {% if client.channel in ("whatsapp", "instagram") %}
+      <form method="post" action="{{ url_for('clients.reply', conv_id=client.id) }}" class="reply">
+        <textarea name="text" rows="3" maxlength="4000" placeholder="Ответить клиенту от лица школы…"></textarea>
+        <button type="submit">Отправить клиенту</button>
+        <span class="mini">Уйдёт в течение минуты. Бот в этом диалоге замолчит.</span>
+      </form>
+    {% else %}
+      <p class="mini">Отсюда можно писать только в WhatsApp и Instagram.</p>
+    {% endif %}
   </div>
 
   <div>

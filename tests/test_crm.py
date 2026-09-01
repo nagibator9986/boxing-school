@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -245,6 +247,96 @@ def test_pages_render(client: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Клиенты и заявки
 # --------------------------------------------------------------------------- #
+def test_dashboard_shows_stuck_deliveries(sandbox: CrmConfig, client: Any) -> None:
+    """Обзор называет поломку прямо: сообщения не ушли клиентам.
+
+    До этого владелец узнавал о неисправности, только спросив меня: в интерфейсе
+    неработающая служба выглядела точно так же, как исправная. Признак взят из
+    данных, а не из настроек: очередь честнее любой конфигурации.
+    """
+    import sqlalchemy as sa
+
+    stale = (datetime.now(tz=timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    engine = sa.create_engine(f"sqlite:///{sandbox.bot_db}")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO outbox_message (id, crm_message_id, payload, state, attempts,"
+                " created_at, updated_at) VALUES ('stuck1', 'stuck1', '{}', 'pending', 0,"
+                " :stamp, :stamp)"
+            ),
+            {"stamp": stale},
+        )
+    engine.dispose()
+
+    page = client.get("/").get_data(as_text=True)
+
+    assert "Служба работает не полностью" in page
+    assert "Не отправлено сообщений: 1" in page
+
+
+def test_operator_reply_from_the_card(client: Any, sandbox: CrmConfig) -> None:
+    """Кнопка «Отправить клиенту» кладёт сообщение в очередь и глушит бота.
+
+    Диалог в песочнице заведён со старым коротким идентификатором, поэтому
+    проверяется именно отказ по нему: отправка без разбираемого идентификатора
+    была бы молча пропущена отправщиком.
+    """
+    page = client.get("/clients/c1").get_data(as_text=True)
+    assert "Отправить клиенту" in page
+
+    answer = client.post(
+        "/clients/c1/reply",
+        data={"text": "Здравствуйте! Ждём вас в среду в 17:30."},
+        follow_redirects=True,
+    ).get_data(as_text=True)
+
+    assert "идентификатор" in answer
+
+
+def test_reply_form_hidden_for_telegram(sandbox: CrmConfig, tmp_path: Path) -> None:
+    """В Telegram отсюда писать нельзя — форму показывать незачем."""
+    import sqlalchemy as sa
+
+    engine = sa.create_engine(f"sqlite:///{sandbox.bot_db}")
+    with engine.begin() as conn:
+        conn.execute(sa.text("UPDATE conversation SET chat_type = 'telegram'"))
+    engine.dispose()
+
+    app = create_app(sandbox)
+    app.config.update(TESTING=True)
+    with app.test_client() as http:
+        http.post("/login", data={"password": sandbox.password}, follow_redirects=True)
+        page = http.get("/clients/c1").get_data(as_text=True)
+
+    assert "Отправить клиенту" not in page
+    assert "только в WhatsApp и Instagram" in page
+
+
+def test_missing_bot_db_is_announced(sandbox: CrmConfig, tmp_path: Path) -> None:
+    """Пустые списки без объяснения — это то, что владелец видел месяц.
+
+    Когда файла базы нет, выборки честно возвращают пустоту, и «Заявок нет»
+    выглядит как «клиенты не пишут». Причина обязана быть на экране.
+    """
+    broken = replace(sandbox, bot_db=tmp_path / "нет-такого.db")
+    app = create_app(broken)
+    app.config.update(TESTING=True)
+    with app.test_client() as http:
+        http.post("/login", data={"password": broken.password}, follow_redirects=True)
+        page = http.get("/leads/").get_data(as_text=True)
+
+    assert "База диалогов не найдена" in page
+    assert "нет-такого.db" in page
+
+
+def test_present_bot_db_is_not_announced(client: Any) -> None:
+    """На рабочей базе предупреждения быть не должно — иначе оно ничего не значит."""
+    page = client.get("/crm/leads").get_data(as_text=True)
+
+    assert "База диалогов не найдена" not in page
+
+
 def test_client_list_shows_channel(client: Any) -> None:
     """В списке клиентов виден канал, из которого написал человек."""
     body = client.get("/clients/").data.decode()

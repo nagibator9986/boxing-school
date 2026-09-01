@@ -269,6 +269,9 @@ class OutboundKind(str, Enum):
     BOT_REPLY = "bot_reply"
     ARTIFACT = "artifact"
     ESCALATION_NOTICE = "escalation_notice"
+    #: Ответ живого человека, отправленный из CRM. Каналу он не отличается от
+    #: ответа бота, а в переписке и метриках должен читаться как работа человека.
+    OPERATOR_REPLY = "operator_reply"
     LEAD_CONFIRMATION = "lead_confirmation"
     FOLLOWUP = "followup"
     MANAGER_CARD = "manager_card"

@@ -8,7 +8,7 @@ from typing import Any, Final
 
 from flask import Blueprint, Response, flash, redirect, render_template, request, url_for
 
-from crm.app import data, login_required
+from crm.app import config, data, login_required
 from crm.botdb import CHANNEL_TITLES
 from crm.forms import integer, text
 
@@ -70,6 +70,50 @@ def show(conv_id: str) -> Any:
         dialog=bot.dialog(conv_id),
         lead=bot.lead_for(conv_id),
     )
+
+
+@bp.route("/<conv_id>/reply", methods=["POST"])
+@login_required
+def reply(conv_id: str) -> Any:
+    """Ответ клиенту прямо отсюда — и пауза боту, чтобы не писал поверх человека.
+
+    Раньше владелец видел переписку и эскалацию, но отвечать шёл в WhatsApp с
+    телефона: CRM показывала разговор и не давала в него вступить.
+    """
+    bot = data()
+    client = bot.client(conv_id)
+    if client is None:
+        flash("Такого клиента нет.", "error")
+        return redirect(url_for("clients.index"))
+
+    message = text(request.form, "text")
+    denial = bot.reply_to_client(conv_id, message)
+    if denial is not None:
+        flash(denial, "error")
+        return redirect(url_for("clients.show", conv_id=conv_id))
+
+    # Отвечает человек — бот обязан замолчать. Иначе следующий вопрос клиента
+    # он подхватит сам и заговорит поверх начатого разговора.
+    minutes = _operator_pause_minutes()
+    bot.pause_bot(conv_id, client.conv_key, minutes=minutes)
+    flash(
+        f"Сообщение отправлено. Бот молчит в этом диалоге {minutes} мин.",
+        "ok",
+    )
+    return redirect(url_for("clients.show", conv_id=conv_id))
+
+
+def _operator_pause_minutes() -> int:
+    """Пауза бота после ответа человека — та же, что задана владельцем в настройках."""
+    try:
+        from app.admin.runtime_settings import load_runtime_settings
+
+        settings = load_runtime_settings(config().admin_db)
+        return max(1, int(settings.operator_pause_minutes))
+    except Exception:  # noqa: BLE001 - настройки недоступны: работает значение конфигурации
+        from app.config import get_settings
+
+        return max(1, int(get_settings().pause_operator_minutes))
 
 
 @bp.route("/<conv_id>/pause", methods=["POST"])

@@ -195,6 +195,61 @@ def seed_from_image(data_dir: Path) -> dict[str, int]:
     return copied
 
 
+def sqlite_file_of(url: str) -> Path | None:
+    """Путь к файлу из ``DATABASE_URL``. ``None`` — это не SQLite.
+
+    Понимает обе записи SQLAlchemy: ``sqlite:///relative/path.db`` (три косые,
+    путь относительный) и ``sqlite:////absolute/path.db`` (четыре — абсолютный).
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep or scheme.split("+", 1)[0].strip().lower() != "sqlite":
+        return None
+    # Одна косая — разделитель хоста, всё после неё и есть путь. Поэтому
+    # ``sqlite:///data/bot.db`` относителен, а ``sqlite:////data/bot.db`` — нет.
+    path = rest[1:] if rest.startswith("/") else rest
+    if not path or path.startswith(":memory:"):
+        return None
+    return Path(path)
+
+
+def align_db_path(env: dict[str, str], data_dir: Path) -> Path | None:
+    """Сводит бота и CRM на один файл базы. Возвращает файл или ``None``.
+
+    Раньше ``DATABASE_URL`` уважался как есть, а путь к базе для CRM
+    прописывался жёстко как ``<data_dir>/bot.db``. Совпадало это только при
+    пустом ``DATABASE_URL``. Стоило владельцу задать его на Railway по образцу
+    из документации — ``sqlite+aiosqlite:///data/bot.db``, путь относительный —
+    и бот начинал писать в ``/app/data/bot.db`` внутри контейнера, а CRM читала
+    ``/data/bot.db`` на томе. Обе вкладки, «Клиенты» и «Заявки», оставались
+    пустыми, и всё написанное пропадало при следующем передеплое.
+
+    Относительный путь на Railway ошибочен всегда, поэтому он переписывается на
+    том — молча это делать нельзя, и в журнал уходит явное сообщение.
+    """
+    default = data_dir / "bot.db"
+    url = env.get("DATABASE_URL", "").strip()
+    if not url:
+        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{default}"
+        return default
+
+    target = sqlite_file_of(url)
+    if target is None:
+        # Postgres — законный выбор, но CRM читает только SQLite напрямую.
+        _log("=" * 72)
+        _log("ВНИМАНИЕ: DATABASE_URL указывает не на SQLite.")
+        _log("Бот с такой базой работать будет, а CRM читать её не умеет:")
+        _log("вкладки «Клиенты» и «Заявки» останутся пустыми.")
+        _log("=" * 72)
+        return None
+
+    if not target.is_absolute():
+        _log(f"DATABASE_URL с относительным путём '{target}' переписан на том: {default}")
+        _log("Относительный путь живёт внутри контейнера и пропадает при передеплое.")
+        target = default
+        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{target}"
+    return target
+
+
 def prepare_env(data_dir: Path) -> dict[str, str]:
     """Единое окружение для обоих процессов: одни и те же файлы у бота и CRM."""
     env = dict(os.environ)
@@ -205,11 +260,28 @@ def prepare_env(data_dir: Path) -> dict[str, str]:
     # разными копиями данных, и это никак не проявится до первой правки.
     env["KB_DIR"] = str(data_dir / "kb")
     env["MEDIA_DIR"] = str(data_dir / "media")
-    env["DATABASE_URL"] = env.get("DATABASE_URL") or f"sqlite+aiosqlite:///{data_dir / 'bot.db'}"
+    # Отправкой в этой конфигурации занимается сам веб-процесс: отдельного
+    # воркера ARQ здесь никто не запускает. При INLINE_WORKER=false очередь
+    # уходит в ARQ, задачи копятся в Redis, который некому читать, а строки
+    # outbox остаются pending — бот принимает сообщения и не отвечает ни на
+    # одно, при этом выглядит совершенно исправным.
+    inline = env.get("INLINE_WORKER", "").strip().lower()
+    if inline not in ("1", "true", "yes", "on"):
+        if inline:
+            _log("=" * 72)
+            _log(f"INLINE_WORKER={inline} переопределён на true.")
+            _log("Иначе отправлять сообщения было бы некому: воркер ARQ этой")
+            _log("службой не запускается, и ответы копились бы в очереди.")
+            _log("=" * 72)
+        env["INLINE_WORKER"] = "true"
+
     env["STATE_BACKEND"] = env.get("STATE_BACKEND") or "sqlite"
     env["STATE_SQLITE_PATH"] = str(data_dir / "state.db")
     env["ADMIN_DB_PATH"] = str(data_dir / "admin.db")
-    env["CRM_BOT_DB"] = str(data_dir / "bot.db")
+    # CRM обязана читать тот же файл, в который пишет бот, — иначе её вкладки
+    # пусты, а причина не видна ниоткуда.
+    bot_db = align_db_path(env, data_dir)
+    env["CRM_BOT_DB"] = str(bot_db) if bot_db is not None else str(data_dir / "bot.db")
     env["PYTHONPATH"] = str(ROOT)
     return env
 

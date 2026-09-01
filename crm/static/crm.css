@@ -177,3 +177,18 @@ pre.raw { background: var(--bg); border: 1px solid var(--line); border-radius: 8
 .mini { color: var(--muted); font-size: 12px; }
 .login-wrap { display: grid; place-items: center; min-height: 100vh; }
 .login-card { width: 340px; }
+
+/* Ответ клиенту прямо из карточки диалога. */
+.reply { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.reply textarea {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  font: inherit; resize: vertical; background: var(--bg-input, #fff); color: inherit;
+}
+.reply button { align-self: flex-start; }
+
+/* Панель неисправностей на обзоре: почему бот работает не полностью. */
+.issues { border-left: 3px solid var(--danger, #e2544a); }
+.issue { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.issue:last-child { border-bottom: 0; }
+.issue.error b { color: var(--danger, #e2544a); }
+.issue.warn b { color: var(--warn, #d9a441); }

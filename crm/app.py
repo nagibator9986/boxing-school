@@ -216,6 +216,17 @@ def create_app(cfg: CrmConfig | None = None) -> Flask:
             hint="CRM открыта в интернете с паролем по умолчанию — смените ADMIN_PASSWORD",
         )
 
+    @app.context_processor
+    def _bot_db_state() -> dict[str, object]:
+        """Виден ли CRM файл базы бота.
+
+        Отсутствие файла означало пустые «Клиенты» и «Заявки» без единого слова
+        о причине: выборки возвращают пустой список, когда базы нет, — это
+        правильно для первого запуска и разорительно, когда пути разъехались.
+        Владелец видел «заявок нет» и думал, что не пишут клиенты.
+        """
+        return {"bot_db_missing": not data().exists, "bot_db_path": str(resolved.bot_db)}
+
     app.jinja_env.filters["dt"] = _fmt_dt
     app.jinja_env.filters["ago"] = _fmt_ago
     app.jinja_env.filters["money"] = _fmt_money

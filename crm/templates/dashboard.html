@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Обзор{% endblock %}
 {% block content %}
+{% if issues %}
+  <div class="card issues">
+    <h2>Служба работает не полностью</h2>
+    {% for issue in issues %}
+      <div class="issue {{ issue.level }}">
+        <b>{{ issue.title }}</b>
+        <p class="mini">{{ issue.detail }}</p>
+      </div>
+    {% endfor %}
+  </div>
+{% endif %}
+
 <h1 class="page-title">Обзор</h1>
 <p class="page-note">Что происходит с ботом прямо сейчас. Данные читаются из той же базы, в которую он пишет.</p>
 

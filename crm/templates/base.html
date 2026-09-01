@@ -39,6 +39,14 @@
   </nav>
 
   <main class="main">
+    {% if bot_db_missing %}
+      <div class="flash error">
+        <b>База диалогов не найдена:</b> <code>{{ bot_db_path }}</code><br>
+        Пока бот ни разу не запускался, это нормально. Если он работает — значит,
+        он пишет в другой файл, и списки клиентов и заявок здесь останутся
+        пустыми. Проверьте <code>DATABASE_URL</code> и <code>CRM_BOT_DB</code>.
+      </div>
+    {% endif %}
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}

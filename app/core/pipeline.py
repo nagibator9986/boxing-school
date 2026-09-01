@@ -70,6 +70,7 @@ from app.types import (
     JobQueue,
     Language,
     LeadDraft,
+    LeadStatus,
     LLMRequest,
     LLMQuotaError,
     LLMResponse,
@@ -1253,6 +1254,7 @@ async def _escalate_turn(
         conversation_id=conv.id,
     )
     await services.notify_manager(card)
+    await _remember_lead(deps, db, services, conv, inbound, kb=kb, lang=lang, text=text, now=now)
     minutes = pause.pause_minutes_for(pause_reason, deps.settings)
     if reason is EscalationReason.CHILD_WRITING:
         # Единственная эскалация, которая НЕ имеет права глушить бота. Клиенту
@@ -1665,6 +1667,63 @@ def _draft_from_text(
         child_gender=lexicon.extract_gender(text, lexicon=kb.lexicon),
         messages_count=int(conv.msg_in_count or 0),
     )
+
+
+async def _remember_lead(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    text: str,
+    now: datetime,
+) -> None:
+    """Сохраняет заявку по тому, что известно о клиенте без модели.
+
+    До этого заявку создавали только два пути, и оба идут через модель:
+    инструмент ``create_trial_lead`` и фоновый разбор переписки
+    ``extract_lead``. Пока модель отвечает, этого хватало. Когда она молчит —
+    кончились кредиты, сбой сети, — вкладка «Заявки» оставалась пустой, хотя
+    клиенты писали: их телефоны были в переписке и терялись вместе с ходом.
+
+    Здесь берётся детерминированный черновик (телефон, возраст, пол — всё
+    регулярками из :mod:`app.core.lexicon`), поэтому работает он всегда.
+    ``repo_lead.upsert`` для этого и написан: «черновик без имени и возраста
+    приходит от эскалации — такой лид тоже обязан сохраниться».
+
+    Что уже известно точнее, тем не затирается: состоявшаяся запись на
+    пробное не откатывается в «передан администратору», а имя родителя,
+    разобранное моделью, не подменяется именем профиля мессенджера.
+    """
+    draft = _draft_from_text(text, inbound=inbound, conv=conv, kb=kb, lang=lang, now=now)
+    if not (draft.phone or draft.child_age or draft.child_name or draft.parent_name):
+        # Ни телефона, ни возраста, ни имени: строка в «Заявках» была бы
+        # пустой карточкой без единого способа перезвонить.
+        return
+
+    try:
+        existing = await repo_lead.get_by_conversation(db, conv.id)
+    except Exception as exc:  # noqa: BLE001 - заявка не важнее ответа клиенту
+        _log.warning("lead_lookup_failed", error=type(exc).__name__)
+        return
+
+    update: dict[str, Any] = {"escalation": True, "status": LeadStatus.ESCALATED}
+    if existing is not None:
+        if existing.status not in (LeadStatus.THINKING.value, LeadStatus.ESCALATED.value):
+            # «Записан на пробное» и «купил абонемент» — результат работы, а
+            # эскалация лишь означает, что дальше отвечает человек.
+            update["status"] = LeadStatus(existing.status)
+        if existing.parent_name:
+            update["parent_name"] = None
+
+    try:
+        await services.upsert_lead(draft.model_copy(update=update))
+        metrics.observe_lead(update["status"])
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("lead_remember_failed", error=type(exc).__name__)
 
 
 def _owner_settings(deps: PipelineDeps) -> Settings:

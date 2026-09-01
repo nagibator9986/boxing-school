@@ -104,6 +104,87 @@ def test_env_points_bot_and_crm_to_same_files(tmp_path: Path, monkeypatch: pytes
     assert env["STATE_SQLITE_PATH"] == str(tmp_path / "state.db")
 
 
+def test_inline_worker_is_forced_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Без inline-воркера эта служба принимает сообщения и не отвечает ни на одно.
+
+    Отдельного процесса ARQ ``serve.py`` не запускает, поэтому при
+    ``INLINE_WORKER=false`` ответы уходили бы в очередь, которую некому читать,
+    а строки ``outbox`` оставались бы ``pending``. Снаружи это выглядит как
+    полностью исправная служба и молчащий бот.
+    """
+    monkeypatch.delenv("INLINE_WORKER", raising=False)
+    assert serve.prepare_env(tmp_path)["INLINE_WORKER"] == "true"
+
+
+def test_explicit_inline_worker_off_is_overridden_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Явное «false» тоже переопределяется — но молча этого делать нельзя."""
+    monkeypatch.setenv("INLINE_WORKER", "false")
+    env = serve.prepare_env(tmp_path)
+
+    assert env["INLINE_WORKER"] == "true"
+    assert "переопределён на true" in capsys.readouterr().out
+
+
+def test_relative_sqlite_url_is_moved_onto_the_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Относительный путь в ``DATABASE_URL`` — молчаливая потеря данных.
+
+    Ровно этот образец лежит в документации: ``sqlite+aiosqlite:///data/bot.db``.
+    Заданный на Railway, он отправлял бота писать в ``/app/data/bot.db`` внутри
+    контейнера, пока CRM читала ``/data/bot.db`` на томе: обе вкладки пустые,
+    всё написанное пропадает при следующем передеплое.
+    """
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///data/bot.db")
+    env = serve.prepare_env(tmp_path)
+
+    assert env["CRM_BOT_DB"] == str(tmp_path / "bot.db")
+    assert env["CRM_BOT_DB"] in env["DATABASE_URL"]
+    assert "переписан на том" in capsys.readouterr().out
+
+
+def test_absolute_sqlite_url_is_followed_by_crm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Осознанный абсолютный путь остаётся за владельцем — CRM идёт следом."""
+    target = tmp_path / "custom" / "place.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{target}")
+    env = serve.prepare_env(tmp_path)
+
+    assert env["DATABASE_URL"] == f"sqlite+aiosqlite:///{target}"
+    assert env["CRM_BOT_DB"] == str(target)
+
+
+def test_postgres_url_is_kept_and_warned_about(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Postgres — законный выбор, но CRM его не читает, и это обязано быть видно."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@host:5432/db")
+    env = serve.prepare_env(tmp_path)
+
+    assert env["DATABASE_URL"] == "postgresql+asyncpg://u:p@host:5432/db"
+    assert "не на SQLite" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("sqlite+aiosqlite:///data/bot.db", "data/bot.db"),
+        ("sqlite+aiosqlite:////data/bot.db", "/data/bot.db"),
+        ("sqlite:///./data/bot.db", "data/bot.db"),
+        ("sqlite+aiosqlite:///:memory:", None),
+        ("postgresql+asyncpg://u:p@h/db", None),
+        ("не url вовсе", None),
+    ],
+)
+def test_sqlite_file_of(url: str, expected: str | None) -> None:
+    """Три косые — путь относительный, четыре — абсолютный. Разница в один символ."""
+    result = serve.sqlite_file_of(url)
+    assert (str(result) if result is not None else None) == expected
+
+
 def test_broken_kb_does_not_block_startup(tmp_path: Path) -> None:
     """Сломанная база знаний не мешает поднять CRM — ею её и чинят."""
     serve.seed_from_image(tmp_path)
