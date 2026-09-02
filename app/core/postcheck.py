@@ -89,6 +89,7 @@ from app.types import (
     MAX_MESSAGE_CHARS,
     Language,
     PostcheckFailKind,
+    Scope,
     ToolInvocation,
     ToolStatus,
 )
@@ -378,6 +379,10 @@ def check(
     forbidden = _forbidden_claims(cleaned, kb)
     if forbidden:
         return _fail(PostcheckFailKind.FORBIDDEN_CLAIM, forbidden)
+
+    denied = _false_denials(cleaned, kb)
+    if denied:
+        return _fail(PostcheckFailKind.FALSE_DENIAL, denied)
 
     if len(cleaned) > MAX_REPLY_CHARS:
         return _fail(PostcheckFailKind.TOO_LONG, (str(len(cleaned)),))
@@ -849,6 +854,59 @@ def _unconfirmed_gyms(text: str, facts: _Facts) -> tuple[str, ...]:
             continue
         bad.append(name)
     return tuple(dict.fromkeys(bad))
+
+
+#: Отрицания утренних занятий. Живой ответ 02.09.2026: «Утренних групп у нас
+#: нет, все занятия проходят во второй половине дня, поэтому прийти утром не
+#: получится». Владелец: «не верная информация» — утренние группы есть.
+_MORNING_DENIAL_RE: Final[re.Pattern[str]] = re.compile(
+    # Прямое отрицание утренних групп.
+    r"утренн\w*\s+(?:групп\w*|занят\w*|тренировк\w*)\s+(?:у\s+нас\s+)?нет"
+    r"|нет\s+утренн\w+"
+    r"|не\s+бывает\s+утренн\w+"
+    # «прийти утром не получится» и «не получится прийти утром» — порядок слов
+    # в русском свободный, а живой ответ был именно в обратном.
+    r"|утром\s+(?:\w+\s+){0,2}?не\s+(?:получится|выйдет|сможете|занимаемся|тренируемся|проводим)"
+    r"|не\s+(?:получится|выйдет)\s+(?:\w+\s+){0,2}?утром"
+    r"|утром\s+(?:нельзя|не\s+работаем)"
+    # Общие утверждения «всё только вечером». Оговорка про конкретный зал
+    # («в этом зале занятия во второй половине дня») сюда не попадает: она
+    # верна для большинства залов, и снимать её было бы вредительством.
+    r"|(?:все|всё)\s+(?:занятия|тренировки|группы)\s+(?:\w+\s+){0,2}?"
+    r"(?:во\s+второй\s+половине\s+дня|вечером|после\s+обеда)"
+    r"|(?:занятия|тренировки|группы)\s+(?:идут\s+|проход\w+\s+)?только\s+"
+    r"(?:вечером|по\s+вечерам|во\s+второй\s+половине\s+дня)",
+    re.IGNORECASE,
+)
+
+
+def _has_morning_slots(kb: KBSnapshot) -> bool:
+    """Есть ли в расписании занятия до полудня."""
+    for gym in kb.active_gyms(Scope.ALL):
+        for slot in gym.schedule or ():
+            head, _, _ = slot.time_start.partition(":")
+            if head.isdigit() and int(head) < 12:
+                return True
+    return False
+
+
+def _false_denials(text: str, kb: KBSnapshot) -> tuple[str, ...]:
+    """Утверждения, которые отрицают то, что в базе знаний есть.
+
+    Обычные проверки ловят выдуманные значения: цену, время, адрес. Но
+    «утренних групп нет» не содержит ни одного значения — проверять в нём
+    нечего, и такой ответ проходил фильтр насквозь. Между тем ошибка здесь
+    дороже выдуманной цифры: клиенту говорят, что школа ему не подходит, и он
+    уходит.
+
+    Проверка узкая и названа честно: сейчас в ней одно утверждение — про
+    утренние занятия. Каждое следующее добавляется тем же способом — по живому
+    случаю, а не про запас.
+    """
+    match = _MORNING_DENIAL_RE.search(text)
+    if match is None or not _has_morning_slots(kb):
+        return ()
+    return (match.group(0),)
 
 
 def _forbidden_claims(text: str, kb: KBSnapshot) -> tuple[str, ...]:

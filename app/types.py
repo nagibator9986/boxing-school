@@ -306,6 +306,10 @@ class PostcheckFailKind(str, Enum):
     GYM_NAME = "gym_name"
     PROMPT_LEAK = "prompt_leak"
     FORBIDDEN_CLAIM = "forbidden_claim"
+    #: Ответ отрицает то, что в базе знаний есть: «утренних групп нет» при
+    #: заполненном утреннем расписании. Проверить такое утверждение нечем —
+    #: в нём нет ни цены, ни времени, ни адреса, — поэтому оно проверяется само.
+    FALSE_DENIAL = "false_denial"
     TOO_LONG = "too_long"
 
 
@@ -325,6 +329,9 @@ class IntentHint(str, Enum):
     SCHEDULE = "schedule"
     LOCATION = "location"
     MANAGER = "manager"
+    #: Вопрос действующего клиента: пропуск занятия, перенос, замена группы,
+    #: оплата уже купленного абонемента. Такое решает человек, а не бот.
+    CLIENT_MATTER = "client_matter"
     ERASE = "erase"
     STOP = "stop"
     SAFETY = "safety"

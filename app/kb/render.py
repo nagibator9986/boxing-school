@@ -249,6 +249,44 @@ def render_gaps_manifest(snapshot: KBSnapshot) -> str:
     return _join(lines)
 
 
+def render_schedule_overview(snapshot: KBSnapshot) -> str:
+    """Какие смены вообще существуют — словами, без единой цифры.
+
+    В промпте не было ни слова о том, когда идут тренировки: реестр залов,
+    прайс, FAQ — и всё. На вопрос «можно ли прийти утром» модели нечего было
+    прочитать, и она ответила догадкой: «утренних групп у нас нет, все занятия
+    во второй половине дня». Утренние группы есть. Владелец увидел этот ответ и
+    написал «не верная информация».
+
+    Времени здесь нет намеренно. Настоящие числа в промпте модель списывает
+    вместо вызова инструмента, а постфильтр подтверждает время только данными
+    ``get_schedule`` — и снимает ответ целиком. Поэтому смены названы словами:
+    факт «утро есть» модель получает, а часы по-прежнему обязана спросить у
+    инструмента.
+    """
+    shifts: dict[str, set[str]] = {"утренние": set(), "дневные": set(), "вечерние": set()}
+    for gym in snapshot.active_gyms(Scope.ALL):
+        for slot in gym.schedule or ():
+            hour = int(slot.time_start.split(":", 1)[0]) if ":" in slot.time_start else 0
+            name = "утренние" if hour < 12 else "дневные" if hour < 17 else "вечерние"
+            shifts[name].add(gym.id)
+    if not any(shifts.values()):
+        return ""
+
+    lines = ["КАКИЕ СМЕНЫ ЕСТЬ (точное время занятий — только через get_schedule)"]
+    for name, gyms in shifts.items():
+        if gyms:
+            lines.append(f"- {name} группы: {', '.join(sorted(gyms))}")
+    if shifts["утренние"]:
+        lines.append(
+            "Утренние группы ЕСТЬ. Не отвечай, что занятия бывают только вечером "
+            "или что прийти утром нельзя."
+        )
+    else:
+        lines.append("Утренних групп нет ни в одном зале.")
+    return _join(lines)
+
+
 def render_escalation_rules(snapshot: KBSnapshot) -> str:
     """Правила передачи диалога администратору и запреты бренда."""
     policies = snapshot.policies
@@ -260,6 +298,17 @@ def render_escalation_rules(snapshot: KBSnapshot) -> str:
             "Бот разговаривает с родителем. Если по переписке видно, что пишет сам ребёнок — "
             "доброжелательно попроси позвать маму или папу и передай диалог администратору."
         )
+    # Бот — консультант и продавец. Всё, что касается уже занимающихся детей,
+    # ведёт человек: у бота нет ни журнала посещаемости, ни права переносить
+    # занятия. Правило написано здесь, а не только словарём: формулировок у
+    # родителей бесконечно много, а словарь ловит перечисленные.
+    lines.append(
+        "ДЕЙСТВУЮЩИЕ КЛИЕНТЫ — ТОЛЬКО ЧЕЛОВЕК. Пропуск и опоздание, перенос "
+        "занятия, смена группы или зала, заморозка и возврат абонемента, "
+        "претензия к тренировке, вопрос об уже купленном абонементе: не отвечай "
+        "сам и ничего не обещай — вызови escalate_to_manager. У тебя нет ни "
+        "журнала посещаемости, ни расписания конкретного ребёнка."
+    )
     if policies.work_hours is not None and policies.work_hours.ru:
         lines.append(f"Часы работы администратора: {policies.work_hours.ru}")
     if policies.sla_reply_minutes is not None:
@@ -283,6 +332,7 @@ def render_system_prompt(snapshot: KBSnapshot) -> str:
     blocks = (
         _ROLE_BLOCK,
         render_gyms_block(snapshot),
+        render_schedule_overview(snapshot),
         render_pricing_showcase(snapshot),
         render_faq_digest(snapshot),
         render_artifacts_catalog(snapshot),
@@ -638,6 +688,7 @@ def render_artifact_body(snapshot: KBSnapshot, *, artifact_id: str, lang: Langua
 
 __all__ = [
     "render_artifact_body",
+    "render_schedule_overview",
     "render_artifacts_catalog",
     "render_escalation_rules",
     "render_faq_digest",

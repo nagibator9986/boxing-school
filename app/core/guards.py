@@ -247,6 +247,21 @@ def scan(
             reason=EscalationReason.USER_REQUEST,
         )
 
+    if _matches_word(normalized, _intent_phrases(lexicon, IntentHint.CLIENT_MATTER)):
+        # Родители пишут в тот же чат по любому поводу: «Артём завтра не сможет
+        # прийти», «нам неудобно в 19:00, давайте другое время». Бот — консультант
+        # и продавец; посещаемость, переносы и действующие абонементы ведёт
+        # человек. Отвечать на такое моделью значит либо выдумывать, либо
+        # обещать за администратора — 02.09.2026 бот так и ответил родителю, что
+        # утренних групп нет, хотя они есть.
+        return GuardVerdict(
+            flags=(GuardFlag.MANAGER_REQUEST,),
+            allowed_tools=SAFE_TOOLS,
+            fixed_reply_key="escalation.client_matter",
+            escalate=True,
+            reason=EscalationReason.USER_REQUEST,
+        )
+
     if detect_abuse(normalized):
         return GuardVerdict(
             flags=(GuardFlag.ABUSE,),

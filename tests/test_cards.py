@@ -397,3 +397,43 @@ def test_every_city_gym_is_in_the_city_card(kb: KBSnapshot) -> None:
 
     for gym in kb.active_gyms(Scope.CITY):
         assert (gym.address.ru or "") in card, f"в карточке города нет адреса зала {gym.id}"
+
+
+# --------------------------------------------------------------------------- #
+# Что модель знает о сменах
+# --------------------------------------------------------------------------- #
+def test_prompt_says_morning_groups_exist(kb: KBSnapshot) -> None:
+    """В промпте не было ни слова о том, когда идут занятия.
+
+    Поэтому на вопрос «можно ли прийти утром» модель ответила догадкой —
+    «утренних групп нет, все занятия во второй половине дня», — и владелец
+    написал «не верная информация». Утренняя группа есть на КСК.
+    """
+    from app.kb.render import render_schedule_overview, render_system_prompt
+    from app.types import Scope
+
+    morning = [
+        gym.id
+        for gym in kb.active_gyms(Scope.ALL)
+        for slot in gym.schedule or ()
+        if slot.time_start < "12:00"
+    ]
+    assert morning, "фикстура без утренних занятий не проверяет ничего"
+
+    overview = render_schedule_overview(kb)
+    assert "Утренние группы ЕСТЬ" in overview
+    assert morning[0] in overview
+    assert overview in render_system_prompt(kb), "сводка не попала в системную инструкцию"
+
+
+def test_prompt_overview_carries_no_clock_times(kb: KBSnapshot) -> None:
+    """Настоящее время в промпте модель списывает вместо вызова инструмента.
+
+    Постфильтр подтверждает время только данными ``get_schedule`` и снимает
+    ответ целиком — поэтому смены названы словами, а часов в сводке нет.
+    """
+    import re
+
+    from app.kb.render import render_schedule_overview
+
+    assert not re.search(r"\d{1,2}[:.]\d{2}", render_schedule_overview(kb))
