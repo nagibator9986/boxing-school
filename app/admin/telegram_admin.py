@@ -273,6 +273,8 @@ class AdminConsole:
         hint = (
             "Пришлите число минут, от 1 до 1440."
             if spec.kind == "minutes"
+            else "Пришлите номера через запятую или с новой строки."
+            if spec.kind == "phones"
             else "Пришлите новое значение в формате 21:00-09:00."
         )
         return f"{spec.title}\nСейчас: {current}\n{spec.hint}\n\n{hint} «отмена» — выйти."
@@ -292,6 +294,11 @@ class AdminConsole:
             if not value.isdigit() or not 1 <= int(value) <= 1440:
                 return "Нужно число минут — от 1 до 1440."
             value = str(int(value))
+        elif spec is not None and spec.kind == "phones":
+            # Список номеров: формат записи свободный, проверять нечего, кроме
+            # того, что в присланном вообще есть цифры.
+            if not any(ch.isdigit() for ch in value):
+                return "Пришлите номера через запятую или с новой строки."
         elif not _TIME_RANGE_RE.fullmatch(value):
             return "Нужен формат 21:00-09:00 — часы и минуты через дефис."
 

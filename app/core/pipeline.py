@@ -47,7 +47,17 @@ from app.channels import normalize
 from app.channels.outbound import sanitize, split_text, text_limits, window_expires_at
 from app.channels.wazzup_schemas import WebhookPayload, parse_webhook
 from app.config import Settings
-from app.core import debounce, dedup, degraded, guards, language, lexicon, pause, postcheck
+from app.core import (
+    debounce,
+    dedup,
+    degraded,
+    guards,
+    ignore_list,
+    language,
+    lexicon,
+    pause,
+    postcheck,
+)
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
 from app.kb.render import render_system_prompt
@@ -463,6 +473,24 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
             await db.commit()
             return _decision(
                 DecisionAction.DROP, "not_client", inbound=inbound, correlation_id=correlation_id
+            )
+
+        # Тренеры и сотрудники пишут в тот же WhatsApp, что и родители. Их
+        # сообщения бот не обрабатывает вовсе: ни ответа, ни заявки, ни диалога
+        # в CRM — иначе рабочая переписка школы выглядит как поток клиентов.
+        # Список ведёт владелец в настройках, без передеплоя.
+        if ignore_list.is_ignored(
+            ignore_list.parse(_owner_settings(deps).ignored_numbers),
+            chat_id=inbound.chat_id,
+            phone=inbound.phone_e164 or inbound.contact_phone,
+        ):
+            await db.commit()
+            _log.info("ignored_number", chat_id=inbound.chat_id)
+            return _decision(
+                DecisionAction.DROP,
+                "ignored_number",
+                inbound=inbound,
+                correlation_id=correlation_id,
             )
 
         conv = await conv_session.ensure_conversation(
@@ -1117,6 +1145,26 @@ async def _handle_echo(
         # возврата бота, иначе бот переспросит то, что человек уже выяснил.
         await conv_session.save_turn(
             db, conv, [{"role": "model", "parts": [{"text": inbound.text}]}]
+        )
+
+    if not await conv_session.client_has_written(db, conv):
+        # Клиент ещё ни разу не написал — перехватывать диалог не у кого.
+        #
+        # Так выглядит чат, пришедший с рекламы: WhatsApp Business сам шлёт
+        # автоприветствие («ЖМИ ОТПРАВИТЬ!»), и оно возвращается к нам эхом,
+        # которого нет в нашем outbox. Бот принимал его за живого оператора,
+        # ставил себе паузу на два часа и молчал на всё, что писал клиент
+        # дальше: 02.09.2026 так были потеряны два сообщения человека, который
+        # пришёл записывать ребёнка. Реплика в историю попадает — модель должна
+        # видеть, с чего начался разговор, — но паузы не будет.
+        _log.info("echo_before_first_client_message", conv_key=conv.conv_key)
+        return _decision(
+            DecisionAction.SILENT,
+            "auto_greeting",
+            inbound=inbound,
+            conv_id=conv.id,
+            lang=Language.parse(conv.lang),
+            correlation_id=correlation_id,
         )
 
     await pause.set_pause(

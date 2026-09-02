@@ -119,12 +119,20 @@ def test_unknown_setting_is_refused(store) -> None:
 
 
 def test_all_settings_are_listed_with_titles(store) -> None:
-    """Список для показа в чате: название на русском и текущее значение."""
+    """Список для показа в чате: название на русском и текущее значение.
+
+    Пустое значение допустимо только у списков: «номеров без ответа» по
+    умолчанию нет, и подставлять туда что-то ради непустоты было бы враньём.
+    У переключателей и диапазонов пустое значение означало бы, что владелец
+    видит в чате настройку без состояния.
+    """
     rows = store.all_settings()
     assert len(rows) == len(SETTING_SPECS)
     for spec, value in rows:
         assert spec.title and not spec.title.startswith("setting")
-        assert value
+        assert value is not None
+        if spec.kind != "phones":
+            assert value, f"настройка {spec.key} показана без значения"
 
 
 # --------------------------------------------------------------------------- #

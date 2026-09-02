@@ -362,6 +362,21 @@ async def should_greet(
     return (now - last) >= timedelta(days=days)
 
 
+async def client_has_written(db: AsyncSession, conv: Conversation) -> bool:
+    """Писал ли клиент в этот диалог хоть раз.
+
+    Считаются именно его реплики, а не факт существования диалога: ``created_at``
+    и ``first_inbound_at`` проставляются и по эху исходящего, поэтому по ним
+    отличить «клиент молчит» нельзя.
+    """
+    stmt = (
+        sa.select(sa.func.count())
+        .select_from(Message)
+        .where(Message.conversation_id == conv.id, Message.author == Author.CLIENT.value)
+    )
+    return int((await db.execute(stmt)).scalar_one() or 0) > 0
+
+
 async def last_bot_message_at(db: AsyncSession, conv: Conversation) -> datetime | None:
     """Когда бот последний раз писал в этот диалог. ``None`` — ни разу."""
     stmt = (

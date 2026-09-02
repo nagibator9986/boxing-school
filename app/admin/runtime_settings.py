@@ -94,6 +94,10 @@ class RuntimeSettings:
     lead_notify: bool = True
     trial_free: bool = True
     operator_pause_minutes: int = 120
+    #: Номера, которым бот не отвечает, как их ввёл владелец. Разбор — в
+    #: :mod:`app.core.ignore_list`: здесь строка хранится как есть, чтобы в
+    #: интерфейсе она выглядела так же, как её вписали.
+    ignored_numbers: str = ""
 
     # ------------------------------------------------------------------ чтение
     @classmethod
@@ -118,6 +122,7 @@ class RuntimeSettings:
             work_end=work_end,
             lead_notify=_as_bool(values.get("lead_notify", ""), True),
             trial_free=_as_bool(values.get("trial_free", ""), True),
+            ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
         )
 
     # ------------------------------------------------------------ применение
@@ -134,6 +139,7 @@ class RuntimeSettings:
                 "followup_quiet_hours_start": self.quiet_start,
                 "followup_quiet_hours_end": self.quiet_end,
                 "pause_operator_minutes": self.operator_pause_minutes,
+                "ignored_numbers": self.ignored_numbers,
             }
         )
 

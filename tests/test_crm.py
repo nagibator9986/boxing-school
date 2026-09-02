@@ -247,6 +247,25 @@ def test_pages_render(client: Any) -> None:
 # --------------------------------------------------------------------------- #
 # Клиенты и заявки
 # --------------------------------------------------------------------------- #
+def test_ignored_numbers_are_saved_from_the_settings_page(client: Any, sandbox: CrmConfig) -> None:
+    """Список номеров без ответа владелец ведёт сам, без передеплоя.
+
+    Настоящие номера тренеров в репозиторий не попадают: они личные и живут
+    только в настройках на диске.
+    """
+    from app.admin.admin_store import AdminStore
+
+    page = client.get("/settings/").get_data(as_text=True)
+    assert "Номера без ответа бота" in page
+
+    fields = form_fields(page)
+    fields["ignored_numbers"] = "+7 777 000 00 01, 8 708 111 2233"
+    client.post("/settings/", data=fields, follow_redirects=True)
+
+    store = AdminStore(sandbox.admin_db)
+    assert store.get("ignored_numbers") == "+7 777 000 00 01, 8 708 111 2233"
+
+
 def test_dashboard_shows_stuck_deliveries(sandbox: CrmConfig, client: Any) -> None:
     """Обзор называет поломку прямо: сообщения не ушли клиентам.
 

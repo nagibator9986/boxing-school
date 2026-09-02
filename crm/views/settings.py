@@ -56,6 +56,10 @@ def index() -> Any:
                         )
                         continue
                     value = str(minutes)
+                elif spec.kind == "phones":
+                    # Номера сохраняются как их ввёл владелец: пробелы, скобки и
+                    # плюсы ему привычнее, а сравнение всё равно идёт по цифрам.
+                    value = text(request.form, spec.key).strip()
                 else:
                     value = text(request.form, spec.key).replace(" ", "").replace("—", "-")
                     if not _RANGE_RE.match(value):

@@ -41,7 +41,7 @@ class SettingSpec:
 
     key: str
     title: str
-    kind: str  # bool | time_range | minutes
+    kind: str  # bool | time_range | minutes | phones
     default: str
     hint: str
 
@@ -79,6 +79,17 @@ SETTING_SPECS: Final[tuple[SettingSpec, ...]] = (
             "Сколько минут бот молчит в диалоге, где ответил человек. Каждое новое "
             "сообщение менеджера продлевает паузу. Вернуть бота раньше: строкой #бот "
             "в переписке или кнопкой в карточке клиента."
+        ),
+    ),
+    SettingSpec(
+        key="ignored_numbers",
+        title="Номера без ответа бота",
+        kind="phones",
+        default="",
+        hint=(
+            "Тренеры и сотрудники пишут в тот же WhatsApp, что и родители. "
+            "Перечислите их номера через запятую или с новой строки — бот не "
+            "ответит и не заведёт по ним заявку. Формат записи не важен."
         ),
     ),
     SettingSpec(
