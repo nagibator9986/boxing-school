@@ -586,9 +586,12 @@ class BotData:
                 )
                 # Тот же путь, которым снимает паузу сам бот: строка и состояние
                 # диалога. Иначе напоминания остались бы выключенными навсегда.
+                # Возвращаются оба нерабочих состояния — и «отвечает человек», и
+                # «передан администратору»: бот при снятии паузы не различает их
+                # тоже. «Завершён» не трогаем: это осознанный конец разговора.
                 conn.execute(
-                    "UPDATE conversation SET state = 'active' WHERE id = ? AND state ="
-                    " 'paused_operator'",
+                    "UPDATE conversation SET state = 'active' WHERE id = ?"
+                    " AND state IN ('paused_operator', 'escalated')",
                     (conv_id,),
                 )
         except sqlite3.Error as exc:

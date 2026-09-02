@@ -95,11 +95,16 @@ def reply(conv_id: str) -> Any:
     # Отвечает человек — бот обязан замолчать. Иначе следующий вопрос клиента
     # он подхватит сам и заговорит поверх начатого разговора.
     minutes = _operator_pause_minutes()
-    bot.pause_bot(conv_id, client.conv_key, minutes=minutes)
-    flash(
-        f"Сообщение отправлено. Бот молчит в этом диалоге {minutes} мин.",
-        "ok",
-    )
+    if bot.pause_bot(conv_id, client.conv_key, minutes=minutes):
+        flash(f"Сообщение отправлено. Бот молчит в этом диалоге {minutes} мин.", "ok")
+    else:
+        # Обещать тишину, которой не будет, нельзя: оператор начнёт разговор, а
+        # бот ответит поверх него, и никто не поймёт, откуда второй голос.
+        flash(
+            "Сообщение отправлено, но поставить бота на паузу не удалось — "
+            "он может ответить в этот диалог сам.",
+            "error",
+        )
     return redirect(url_for("clients.show", conv_id=conv_id))
 
 

@@ -114,3 +114,21 @@ async def test_reply_from_crm_silences_followups(bot_db: Path) -> None:
     bot.pause_bot(CONV_ID, CONV_KEY, minutes=120)
 
     assert await skip_reason(bot_db) == "operator"
+
+
+async def test_resume_returns_an_escalated_dialog_to_work(bot_db: Path) -> None:
+    """Снятие паузы возвращает в работу и диалог, который эскалировал сам бот.
+
+    Сам бот при снятии паузы ставит состояние «в работе» всегда, а CRM
+    возвращала только из «отвечает человек». Диалог, переданный администратору
+    ботом, оставался «эскалированным» навсегда — и напоминания по нему не
+    уходили уже никогда.
+    """
+    engine = sa.create_engine(f"sqlite:///{bot_db}")
+    with engine.begin() as conn:
+        conn.execute(sa.text("UPDATE conversation SET state = 'escalated'"))
+    engine.dispose()
+
+    assert BotData(bot_db).resume_bot(CONV_ID, CONV_KEY) is True
+
+    assert await skip_reason(bot_db) is None

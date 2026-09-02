@@ -173,3 +173,27 @@ def test_reply_shows_up_in_the_dialogue(bot_db: Path) -> None:
 
     texts = [item.text for item in bot.dialog(CONV["wa"])]
     assert "Ждём вас в среду." in texts
+
+
+def test_reply_pauses_the_bot(bot_db: Path) -> None:
+    """Ответ человека обязан глушить бота — иначе он заговорит поверх.
+
+    Проверяется по состоянию диалога: именно на него смотрят напоминания.
+    """
+    bot = BotData(bot_db)
+    assert bot.reply_to_client(CONV["wa"], "Здравствуйте!") is None
+    assert bot.pause_bot(CONV["wa"], "ch-1:whatsapp:77015550001", minutes=120) is True
+
+    engine = sa.create_engine(f"sqlite:///{bot_db}")
+    with engine.begin() as conn:
+        state = conn.execute(
+            sa.text("SELECT state FROM conversation WHERE id = :id"), {"id": CONV["wa"]}
+        ).scalar_one()
+        paused = conn.execute(
+            sa.text("SELECT paused FROM escalation_state WHERE conversation_id = :id"),
+            {"id": CONV["wa"]},
+        ).scalar_one()
+    engine.dispose()
+
+    assert state == "paused_operator"
+    assert paused == 1
