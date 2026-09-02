@@ -29,6 +29,10 @@
   <div>
     <div class="card">
       <h2>Управление ботом в этом диалоге</h2>
+      <form method="post" action="{{ url_for('clients.close', conv_id=client.id) }}" class="inline">
+        <button type="submit">Завершить диалог</button>
+        <span class="mini">Следующее сообщение клиента начнётся с меню «1–4».</span>
+      </form>
       {% if client.paused %}
         <p class="mini">Бот молчит{% if client.paused_until %} до {{ client.paused_until | dt }}{% endif %}. Клиенту отвечает человек.</p>
         <form method="post" action="{{ url_for('clients.resume', conv_id=client.id) }}">

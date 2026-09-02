@@ -62,6 +62,7 @@ from app.tools import registry
 from app.types import (
     Author,
     BotError,
+    ConversationState,
     DecisionAction,
     EscalationReason,
     GuardFlag,
@@ -710,7 +711,20 @@ async def _run_turn(
         # экономим вызов модели на самом частом сообщении.
         # Если клиент открыл диалог сразу вопросом, шаблон не подставляется:
         # отвечать меню на вопрос «сколько стоит» было бы хуже, чем ответить.
-        if _is_bare_greeting(text) and await conv_session.is_first_turn(db, conv):
+        # Диалог, завершённый вручную из CRM, клиент открывает заново своим
+        # сообщением: состояние возвращается в рабочее, а «здравствуйте»
+        # получает меню, как у нового клиента.
+        reopened = conv.state == ConversationState.CLOSED.value
+        if reopened:
+            await repo_conversation.set_state(db, conv.id, ConversationState.ACTIVE)
+
+        if _is_bare_greeting(text) and await conv_session.should_greet(
+            db,
+            conv,
+            now=now,
+            repeat_after_days=settings.greeting_repeat_days,
+            reopened=reopened,
+        ):
             said = await _say(
                 deps, services, conv, inbound, kb=kb, lang=lang, key=TEXT_GREETING, now=now
             )

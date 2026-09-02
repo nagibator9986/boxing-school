@@ -632,6 +632,26 @@ class BotData:
         self._set_state_key(f"pause:{conv_key}", until)
         return True
 
+    def close_dialog(self, conv_id: str) -> bool:
+        """Завершает диалог: следующее сообщение клиента начнётся с меню.
+
+        Меню из четырёх пунктов показывается один раз на разговор — на втором
+        «здравствуйте» подряд оно выглядело бы как сброс. Но разговор когда-то
+        заканчивается, и решает это человек: после завершения клиент,
+        написавший снова, начинает как новый.
+        """
+        if not self.exists:
+            return False
+        try:
+            with self._connect(write=True) as conn:
+                changed = conn.execute(
+                    "UPDATE conversation SET state = 'closed' WHERE id = ?", (conv_id,)
+                ).rowcount
+        except sqlite3.Error as exc:
+            _log.error("crm_close_failed", error=str(exc), conversation_id=conv_id)
+            return False
+        return bool(changed)
+
     # ------------------------------------------------------- здоровье модели
     def llm_health(self, *, hours: int = 1) -> dict[str, Any]:
         """Сколько вызовов модели за период, сколько с ошибкой и какой.

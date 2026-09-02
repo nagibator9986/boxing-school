@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Final, Sequence
 from uuid import UUID
 
@@ -328,6 +328,51 @@ async def bot_turns(db: AsyncSession, conv: Conversation) -> int:
     )
     result = await db.execute(stmt)
     return int(result.scalar_one() or 0)
+
+
+async def should_greet(
+    db: AsyncSession,
+    conv: Conversation,
+    *,
+    now: datetime,
+    repeat_after_days: int,
+    reopened: bool = False,
+) -> bool:
+    """Показывать ли меню из четырёх пунктов на «здравствуйте».
+
+    Да — если бот в этом диалоге ещё не отвечал (обычное первое сообщение) или
+    если клиент вернулся после долгого молчания. Второй случай появился из
+    жизни: правило «поздороваться ровно один раз» на деле означало «один раз
+    навсегда», и человек, писавший месяц назад, получал на «здравствуйте»
+    общий ответ модели вместо списка вариантов. Для него разговор начинается
+    заново — и вопрос «что писать дальше» у него тот же, что у нового клиента.
+
+    Внутри разговора меню по-прежнему не повторяется: там оно выглядело бы как
+    сброс диалога. ``reopened`` — диалог был завершён вручную из CRM: владелец
+    сам сказал, что разговор окончен, и следующее сообщение начинает новый.
+    """
+    if reopened:
+        return True
+    last = await last_bot_message_at(db, conv)
+    if last is None:
+        return True
+    days = max(0, int(repeat_after_days))
+    if not days:
+        return False
+    return (now - last) >= timedelta(days=days)
+
+
+async def last_bot_message_at(db: AsyncSession, conv: Conversation) -> datetime | None:
+    """Когда бот последний раз писал в этот диалог. ``None`` — ни разу."""
+    stmt = (
+        sa.select(sa.func.max(Message.created_at))
+        .select_from(Message)
+        .where(Message.conversation_id == conv.id, Message.author == Author.BOT.value)
+    )
+    value = (await db.execute(stmt)).scalar_one_or_none()
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 async def is_first_turn(db: AsyncSession, conv: Conversation) -> bool:

@@ -116,6 +116,21 @@ def _operator_pause_minutes() -> int:
         return max(1, int(get_settings().pause_operator_minutes))
 
 
+@bp.route("/<conv_id>/close", methods=["POST"])
+@login_required
+def close(conv_id: str) -> Any:
+    """Завершает разговор: следующее сообщение клиента начнётся с меню."""
+    bot = data()
+    if bot.client(conv_id) is None:
+        flash("Такого клиента нет.", "error")
+        return redirect(url_for("clients.index"))
+    if bot.close_dialog(conv_id):
+        flash("Диалог завершён. Следующее сообщение клиента начнётся с меню.", "ok")
+    else:
+        flash("Не получилось завершить диалог.", "error")
+    return redirect(url_for("clients.show", conv_id=conv_id))
+
+
 @bp.route("/<conv_id>/pause", methods=["POST"])
 @login_required
 def pause(conv_id: str) -> Any:
