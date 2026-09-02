@@ -172,8 +172,13 @@ async def test_address_request_sends_route_video(kb: KBSnapshot) -> None:
     assert caption and "2gis.kz" in caption[0].text
 
 
-async def test_whatsapp_keeps_the_text_card(kb: KBSnapshot) -> None:
-    """В WhatsApp видео не проходит, и подмены быть не должно — уйдёт карточка."""
+async def test_whatsapp_gets_the_route_video(kb: KBSnapshot) -> None:
+    """В WhatsApp карточка адреса повышается до видео дороги.
+
+    Раньше видео сюда не отправлялось: и возможности канала, и база знаний
+    исходили из того, что ролик не влезет в предел API в 10 МБ. Маршруты школы
+    весят 1,5–4,1 МБ, и владелец те же видео отправляет вручную.
+    """
     from datetime import datetime
     from uuid import uuid4
 
@@ -198,7 +203,7 @@ async def test_whatsapp_keeps_the_text_card(kb: KBSnapshot) -> None:
     result = await send_content(ctx, artifact_id="gym_location_ksk_kairbekova_334")
 
     assert result.ok
-    assert result.meta["artifact_id"] == "gym_location_ksk_kairbekova_334"
+    assert result.meta["artifact_id"] == "route_ksk_kairbekova_334"
 
 
 async def test_schedule_card_is_sent_by_code(kb: KBSnapshot) -> None:
@@ -364,3 +369,31 @@ def test_city_card_mentions_the_rest_of_the_region(kb: KBSnapshot) -> None:
     assert str(region_count) in text
     # Сами райцентры в нумерованный список города не попадают.
     assert "Житикара" not in text
+
+
+def test_all_gyms_card_covers_every_address(kb: KBSnapshot) -> None:
+    """«Скиньте все залы» — это все залы, а не только городские.
+
+    Владелец насчитал у школы восемь адресов, а бот присылал шесть: в базе
+    знаний были только списки «по Костанаю» и «по области», и модель выбирала
+    городской. Карточка ``gyms_list_all`` показывает и город, и районы сразу.
+    """
+    from app.kb.render import render_artifact_body
+    from app.types import Scope
+
+    card = render_artifact_body(kb, artifact_id="gyms_list_all", lang=Language.RU)
+
+    for gym in kb.active_gyms(Scope.ALL):
+        title = gym.title.get(Language.RU) or gym.title.ru
+        assert title in card, f"в списке «все залы» нет зала {gym.id}"
+
+
+def test_every_city_gym_is_in_the_city_card(kb: KBSnapshot) -> None:
+    """Новый зал обязан появляться в карточке сам, без правки кода."""
+    from app.kb.render import render_gyms_list_card
+    from app.types import Scope
+
+    card = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
+
+    for gym in kb.active_gyms(Scope.CITY):
+        assert (gym.address.ru or "") in card, f"в карточке города нет адреса зала {gym.id}"

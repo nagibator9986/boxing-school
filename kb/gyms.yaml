@@ -355,6 +355,54 @@ gyms:
   - G-15
   internal_note: Новый, шестой зал. Закреплённый креатив в Instagram говорит «5 залов» — конфликт C-1, креатив перевыпустить.
   serves_districts: []
+- id: polevaya_7_3
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  title:
+    ru: Полевая — БЦ «Кеме»
+    kk: Полевая — «Кеме» БО
+  address:
+    ru: Полевая 7/3
+    kk: Полевая көшесі 7/3
+  landmark:
+    ru: бизнес-центр «Кеме»
+    kk: «Кеме» бизнес-орталығы
+  district:
+    ru: null
+    kk: null
+  district_aliases:
+  - полевая
+  - кеме
+  - бц кеме
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001117090364
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    days: &id_polevaya
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    days: *id_polevaya
+    time_start: "19:00"
+    time_end: "20:30"
+  capacity_note: null
+  media:
+  - gym_location_polevaya_7_3
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: Седьмой зал города, данные от владельца 02.09.2026 (адрес, ориентир, расписание, 2ГИС). Видео дороги пока нет; район и охват соседних районов не заданы.
+  serves_districts: []
 - id: region_tobyl
   scope: region
   settlement: Тобыл

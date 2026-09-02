@@ -120,9 +120,14 @@ CHANNEL_CAPABILITIES: Final[dict[ChannelKind, ChannelCapabilities]] = {
                 ArtifactKind.DOCUMENT,
                 ArtifactKind.LINK,
                 ArtifactKind.LOCATION_TEXT,
+                ArtifactKind.VIDEO,
             }
         ),
-        video_as_link_only=True,  # видео вложением бот не шлёт: 10 МБ API не хватает
+        # Видео уходит вложением: Wazzup принимает для WhatsApp .mp4, а предел
+        # API в 10 МБ маршруты школы проходят с запасом (1,5–4,1 МБ). Ролик
+        # крупнее предела отсеет проверка размера, и клиент получит карточку со
+        # ссылкой — как и раньше.
+        video_as_link_only=False,
         supports_quote=True,
         renders_markdown=False,
         note="WhatsApp: текст до 1000 знаков, картинки и pdf до 10 МБ.",

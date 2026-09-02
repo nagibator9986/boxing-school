@@ -189,12 +189,12 @@ async def test_empty_query_is_invalid_input(ctx, query) -> None:
 # --------------------------------------------------------------------------- #
 # get_gyms
 # --------------------------------------------------------------------------- #
-async def test_get_gyms_city_returns_six_open_gyms(ctx) -> None:
+async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     """Костанай — шесть залов. Закреплённый креатив говорит «5» (конфликт C-1)."""
     result = await get_gyms(ctx, scope="city")
 
     assert result.ok
-    assert result.data["total_in_scope"] == 6
+    assert result.data["total_in_scope"] == 7
     assert all(gym["scope"] == Scope.CITY.value for gym in result.data["gyms"])
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
@@ -312,7 +312,7 @@ async def test_get_gyms_respects_limit(ctx) -> None:
     result = await get_gyms(ctx, scope="all", limit=2)
 
     assert len(result.data["gyms"]) == 2
-    assert result.data["total_in_scope"] == 13
+    assert result.data["total_in_scope"] == 14
     assert any("не все" in caveat.lower() for caveat in result.caveats)
 
 

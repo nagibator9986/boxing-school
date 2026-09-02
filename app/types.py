@@ -433,7 +433,13 @@ CHANNEL_LIMITS: Final[dict[ChannelKind, ChannelLimits]] = {
         max_text_chars=1000,
         soft_text_chars=600,
         allows_media=True,
-        allowed_mime=frozenset({"image/jpeg", "image/png", "application/pdf"}),
+        # ``video/mp4`` здесь не по недосмотру: Wazzup принимает для WhatsApp
+        # видео .mp4 (research §2.4, таблица форматов S12). Раньше видео сюда не
+        # попадало из предположения, что ролики не влезут в 10 МБ API, — а все
+        # маршруты школы весят от 1,5 до 4,1 МБ. Из-за этого клиенты WhatsApp
+        # видели текстовую карточку со ссылкой вместо видео дороги, которое
+        # владелец годами отправляет вручную.
+        allowed_mime=frozenset({"image/jpeg", "image/png", "application/pdf", "video/mp4"}),
         max_file_bytes=10 * 1024 * 1024,
         service_window_hours=None,  # НП: личный WhatsApp окна не имеет, WABA — 24 ч
     ),

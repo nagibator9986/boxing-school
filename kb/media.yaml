@@ -102,6 +102,26 @@ artifacts:
   max_send_per_dialog: 2
   gap_ref: null
   render_from: gyms
+- id: gyms_list_all
+  kind: text_card
+  enabled: true
+  scope: any
+  gym_id: null
+  title:
+    ru: Все залы и секции целиком
+    kk: Барлық залдар мен секциялар
+  when_to_send_ru: когда просят прислать все залы, полный список, все адреса сразу — тогда город и районы области идут одним сообщением, а не только Костанай
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 2
+  gap_ref: null
+  render_from: gyms
 - id: gyms_list_region
   kind: text_card
   enabled: true
@@ -231,6 +251,26 @@ artifacts:
     ru: Как найти зал в 6-м микрорайоне
     kk: 6-шағын аудандағы залды қалай табуға болады
   when_to_send_ru: когда просят локацию зала в 6-м микрорайоне, Арыстанбекова 6, у школы №10
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
+- id: gym_location_polevaya_7_3
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: polevaya_7_3
+  title:
+    ru: Как найти зал на Полевой
+    kk: Полевая көшесіндегі залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала на Полевой, 7/3, в бизнес-центре «Кеме»
   body: null
   file_path: null
   file_mime: null
@@ -401,7 +441,7 @@ artifacts:
   file_sha256: 7fff99f5a1d091529b9c0bfd91d7ad73a7b1ccf8490752446bf58e81fa747025
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -424,7 +464,7 @@ artifacts:
   file_sha256: e2772201cb1d36be9db591b8e7965de3c30ea3037ebefbc85dce13cb9c3aa517
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -447,7 +487,7 @@ artifacts:
   file_sha256: 8a8f672f16ca6c8a2e238e4caa9d752b9c33af4220210c91c62f171a035c07e9
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -470,7 +510,7 @@ artifacts:
   file_sha256: 8ab0d2714a4c01ce43821c5cc97b39ab9f953746e7baeef7b173816af9eeba26
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -493,7 +533,7 @@ artifacts:
   file_sha256: e340329dce2ef292edc6f112579343cfc927f1a30d8152e87b6197eed7243561
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -516,7 +556,7 @@ artifacts:
   file_sha256: cad70fc257c45b8a8ca91bfad7242a38a7b877d27d0b97425bf0cc88b1fd106a
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null
@@ -729,7 +769,7 @@ artifacts:
   file_sha256: ae11c6681e181b40444c8b1de4c92494d388aab0b7184b3ec29fc091d331a9a2
   channels:
     telegram: allow
-    whatsapp: deny
+    whatsapp: allow
     instagram: deny
   max_send_per_dialog: 1
   gap_ref: null

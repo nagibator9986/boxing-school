@@ -496,12 +496,14 @@ async def test_digit_later_in_dialogue_is_left_alone(deps, llm) -> None:
 # --------------------------------------------------------------------------- #
 # Контент по контексту: видео маршрута, фото, деградация по каналам
 # --------------------------------------------------------------------------- #
-async def test_route_video_is_denied_in_whatsapp_with_a_text_fallback(deps, llm, kb) -> None:
-    """Видео не уходит в WhatsApp — но это НЕ «данных нет».
+async def test_route_video_reaches_whatsapp(deps, llm, kb) -> None:
+    """Видео дороги уходит клиенту в WhatsApp вложением, а не ссылкой.
 
-    Раньше отказ канала возвращался как no_data, и бот отвечал «уточню у
-    администратора», хотя адрес он знает. Теперь инструмент отдаёт успех
-    с подсказкой и именем запасного материала — карточки адреса.
+    Раньше канал отказывал: в возможностях стояло «видео только ссылкой», а в
+    базе знаний — ``whatsapp: deny``. Обе записи опирались на предположение, что
+    ролики не влезут в предел API в 10 МБ. Маршруты школы весят от 1,5 до 4,1 МБ,
+    и владелец годами отправляет эти же видео вручную — а бот вместо них слал
+    текстовую карточку.
     """
     from app.tools.content import send_content
     from app.types import ChannelKind, ToolContext
@@ -524,12 +526,48 @@ async def test_route_video_is_denied_in_whatsapp_with_a_text_fallback(deps, llm,
     )
     result = await send_content(ctx, artifact_id="route_mkr6_arystanbekova_6")
 
-    assert result.ok, "отказ канала не должен выглядеть как ошибка инструмента"
-    assert result.data["status"] == "channel_unsupported"
-    assert result.data["fallback_artifact_id"] == "gym_location_mkr6_arystanbekova_6", (
-        "модели не подсказали, чем заменить видео"
+    assert result.ok
+    queued = result.data["queued"]
+    assert [item["artifact_id"] for item in queued] == ["route_mkr6_arystanbekova_6"], (
+        "видео не ушло в WhatsApp"
     )
-    assert result.data["queued"] == [], "в WhatsApp видео не имеет права уйти"
+    assert queued[0]["kind"] == "video"
+
+
+def test_oversized_video_still_falls_back_to_the_card() -> None:
+    """Ролик крупнее предела API отсеивается — клиенту уйдёт карточка со ссылкой.
+
+    Предел в 10 МБ никуда не делся: снято предположение, что видео его не
+    проходит, а не сама проверка.
+    """
+    from app.channels.outbound import DENY_SIZE, check_artifact_deliverable
+    from app.types import ArtifactKind, ChannelKind
+
+    verdict = check_artifact_deliverable(
+        channel=ChannelKind.WHATSAPP,
+        kind=ArtifactKind.VIDEO,
+        mime="video/mp4",
+        size_bytes=11 * 1024 * 1024,
+        allowed=True,
+    )
+
+    assert verdict is not None and verdict.startswith(DENY_SIZE)
+
+
+def test_video_is_never_sent_to_instagram() -> None:
+    """Instagram принимает только текст и картинки — это ограничение канала."""
+    from app.channels.outbound import check_artifact_deliverable
+    from app.types import ArtifactKind, ChannelKind
+
+    verdict = check_artifact_deliverable(
+        channel=ChannelKind.INSTAGRAM,
+        kind=ArtifactKind.VIDEO,
+        mime="video/mp4",
+        size_bytes=2 * 1024 * 1024,
+        allowed=True,
+    )
+
+    assert verdict is not None, "видео в Instagram уйти не имеет права"
 
 
 async def test_route_video_reaches_telegram(deps, llm, kb) -> None:

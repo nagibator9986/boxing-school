@@ -67,10 +67,12 @@ def load_broken(directory: Path, media_dir: Path) -> KBValidationError:
 def test_real_kb_loads(kb) -> None:
     """Настоящая база знаний обязана грузиться: иначе бот не поднимется вовсе."""
     assert kb.kb_hash
-    # 6 залов Костаная + 6 райцентров; тринадцатая запись — заглушка КЖБИ (C-3),
+    # 7 залов Костаная + 7 райцентров; пятнадцатая запись — заглушка КЖБИ (C-3),
     # она живёт в базе со статусом unresolved и в выдачу не попадает.
-    assert len(kb.active_gyms(Scope.ALL)) == 13
-    assert len(kb.active_gyms(Scope.CITY)) == 6
+    # Седьмой городской — Полевая 7/3, БЦ «Кеме»: данные владельца от 02.09.2026,
+    # до этого бот отвечал «шесть залов», а школа считала свои восемь адресов.
+    assert len(kb.active_gyms(Scope.ALL)) == 14
+    assert len(kb.active_gyms(Scope.CITY)) == 7
     assert len(kb.active_gyms(Scope.REGION)) == 7
     assert len(list(kb.unresolved_gyms())) == 1
     assert kb.pricing.city_plans["standard"].price == 25_000
