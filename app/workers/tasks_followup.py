@@ -165,6 +165,18 @@ async def send_followup_job(ctx: dict[str, Any], task_id: str) -> None:
                 return
 
             outbox_id = await _enqueue(session, message)
+            if message.text:
+                # Напоминание обязано попасть в историю модели, иначе следующий
+                # ход она начнёт с пустого места. Живой случай 03.09.2026: бот
+                # спросил «как прошла первая тренировка», клиент ответил «да,
+                # всё понравилось» — а модель этого вопроса не видела и
+                # предложила записаться на пробное занятие человеку, который
+                # уже отзанимался. Тот же приём, что и для шаблона приветствия.
+                from app.core import session as conv_session
+
+                await conv_session.save_turn(
+                    session, conv, [{"role": "model", "parts": [{"text": message.text}]}]
+                )
             # Терминальный переход — условный: `WHERE state = 'pending'`. Один и тот
             # же task_id приходит двумя путями (отложенная задача из schedule_followups
             # и followup_sweep_cron), и оба могли прочитать состояние pending до того,

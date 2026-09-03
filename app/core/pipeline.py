@@ -49,6 +49,7 @@ from app.channels.wazzup_schemas import WebhookPayload, parse_webhook
 from app.config import Settings
 from app.core import (
     debounce,
+    reply_dedup,
     dedup,
     degraded,
     guards,
@@ -818,6 +819,7 @@ async def _run_turn(
             intents=intents,
             injection_suspected=injection,
             gym_id=None,
+            stage=await _client_stage(db, conv),
         )
         request = LLMRequest(
             system_instruction=system_instruction,
@@ -973,12 +975,20 @@ async def _run_turn(
 
         # --- 10. Outbox ----------------------------------------------------- #
         reply = pc.text or cleaned
+        # Инструменты уже отправили карточки этого хода. Всё, что модель
+        # пересказала следом, клиент читает вторым экземпляром — а предложение
+        # прислать то, что уже прислано, читается как невнимательность.
+        reply = reply_dedup.strip_card_repeats(reply, [m.text or "" for m in services.messages])
+        if not reply.strip():
+            # От ответа ничего не осталось: карточка и была ответом.
+            _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
         if lang_decision.needs_bridge:
             bridge = _kb_text(kb, TEXT_BRIDGE_KK, lang)
             if bridge and bridge not in reply:
                 reply = f"{reply}\n\n{bridge}"
 
-        await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
+        if reply.strip():
+            await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
         await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
         if int(conv.bot_miss_count or 0):
             await repo_conversation.set_bot_miss(db, conv.id, 0)
@@ -1742,6 +1752,44 @@ def _draft_from_text(
         child_gender=lexicon.extract_gender(text, lexicon=kb.lexicon),
         messages_count=int(conv.msg_in_count or 0),
     )
+
+
+#: Что модель обязана знать о стадии клиента, по статусу его заявки.
+#: Живой случай 03.09.2026: клиент отзанимался на пробном, менеджер вёл его к
+#: оплате — а бот предложил записаться на бесплатное пробное. Стадии в запросе
+#: не было вовсе: заметка знала имя и возраст, но не знала, что человек уже
+#: пришёл. Формулировки короткие и в повелительном наклонении: это инструкция.
+_STAGE_NOTES: Final[dict[str, str]] = {
+    LeadStatus.TRIAL_BOOKED.value: (
+        "Клиент уже записан на пробное занятие. Не предлагай записаться ещё раз — "
+        "помоги с тем, о чём он спрашивает, и веди к покупке абонемента."
+    ),
+    LeadStatus.CONVERTED.value: (
+        "Клиент уже купил абонемент и занимается. Не предлагай ни пробное, ни покупку: "
+        "он действующий клиент, и его вопросы ведёт администратор."
+    ),
+    LeadStatus.NO_SHOW.value: (
+        "Клиент записывался на пробное и не пришёл. Не начинай запись с нуля — "
+        "спроси, удобно ли перенести."
+    ),
+    LeadStatus.NEEDS_CALL.value: (
+        "По клиенту нужен звонок администратора — не обещай его сам."
+    ),
+}
+
+
+async def _client_stage(db: AsyncSession, conv: Conversation) -> str | None:
+    """Строка о стадии клиента для служебной заметки. ``None`` — заявки ещё нет.
+
+    Стадия берётся из сохранённой заявки, а не из текущего сообщения: именно там
+    лежит то, что бот с клиентом уже прошёл.
+    """
+    try:
+        lead = await repo_lead.get_by_conversation(db, conv.id)
+    except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
+        _log.warning("stage_lookup_failed", error=type(exc).__name__)
+        return None
+    return _STAGE_NOTES.get(lead.status) if lead is not None else None
 
 
 def _is_auto_greeting(text: str | None, settings: Settings) -> bool:

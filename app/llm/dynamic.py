@@ -31,6 +31,7 @@ def build_dynamic_note(
     intents: Sequence[IntentHint],
     injection_suspected: bool,
     gym_id: str | None = None,
+    stage: str | None = None,
 ) -> str:
     """Служебная заметка ПОСЛЕДНИМ элементом ``contents``.
 
@@ -56,6 +57,8 @@ def build_dynamic_note(
         known.append(f"имя родителя: {lead.parent_name}")
     if known:
         lines.append("Уже известно — переспрашивать не нужно: " + "; ".join(known) + ".")
+    if stage:
+        lines.append(stage)
 
     missing = lead.missing_required()
     if missing:
