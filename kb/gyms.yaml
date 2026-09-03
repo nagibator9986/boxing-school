@@ -37,6 +37,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days:
     - mon
     - wed
@@ -44,6 +46,8 @@ gyms:
     time_start: 09:00
     time_end: "10:30"
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days:
     - mon
     - wed
@@ -51,6 +55,8 @@ gyms:
     time_start: "17:00"
     time_end: "18:30"
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days:
     - mon
     - wed
@@ -58,6 +64,8 @@ gyms:
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days:
     - tue
     - thu
@@ -116,6 +124,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id001
     - tue
     - thu
@@ -123,6 +133,8 @@ gyms:
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id001
     time_start: "19:00"
     time_end: "20:30"
@@ -170,6 +182,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id002
     - tue
     - thu
@@ -177,6 +191,8 @@ gyms:
     time_start: "17:30"
     time_end: "19:00"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id002
     time_start: "17:30"
     time_end: "19:00"
@@ -221,8 +237,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
-    age_from: null
-    age_to: null
+    age_from: 7
+    age_to: 12
     days:
     - fri
     time_start: "19:00"
@@ -230,8 +246,8 @@ gyms:
     shift: any
     note: null
   - discipline: boxing
-    age_from: null
-    age_to: null
+    age_from: 7
+    age_to: 12
     days:
     - fri
     time_start: "19:00"
@@ -281,6 +297,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id003
     - tue
     - thu
@@ -288,6 +306,8 @@ gyms:
     time_start: "18:45"
     time_end: "19:45"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id003
     time_start: "18:45"
     time_end: "19:45"
@@ -335,6 +355,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id004
     - tue
     - thu
@@ -342,6 +364,8 @@ gyms:
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id004
     time_start: "19:00"
     time_end: "20:30"
@@ -384,6 +408,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id_polevaya
     - mon
     - wed
@@ -391,6 +417,8 @@ gyms:
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id_polevaya
     time_start: "19:00"
     time_end: "20:30"
@@ -434,6 +462,8 @@ gyms:
   coaches: []
   schedule:
   - discipline: kickboxing
+    age_from: 7
+    age_to: 12
     days: &id005
     - mon
     - wed
@@ -441,6 +471,8 @@ gyms:
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
+    age_from: 7
+    age_to: 12
     days: *id005
     time_start: "19:00"
     time_end: "20:30"

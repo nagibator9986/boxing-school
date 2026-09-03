@@ -73,11 +73,34 @@ escalation_pause_minutes: 60
 #  Жёсткое правило поверх этой таблицы: если клиент написал стоп-слово,
 #  напоминания выключаются навсегда, независимо от max_times.
 followup_policy:
-  - { event: fu_soft,            delay_hours: 2,   only_work_hours: true,  template_id: "followup.fu_soft",            max_times: 1 }
+  - { event: fu_soft,            delay_hours: 0.5, only_work_hours: true,  template_id: "followup.fu_soft",            max_times: 1 }
   - { event: fu_value,           delay_hours: 48,  only_work_hours: true,  template_id: "followup.fu_value",           max_times: 1 }
   - { event: trial_reminder_20h, delay_hours: -20, only_work_hours: true,  template_id: "followup.trial_reminder_20h", max_times: 1 }
   - { event: trial_reminder_2h,  delay_hours: -2,  only_work_hours: false, template_id: "followup.trial_reminder_2h",  max_times: 1 }
   - { event: no_show,            delay_hours: 24,  only_work_hours: true,  template_id: "followup.no_show",            max_times: 1 }
+
+# Разговор закончился по-хорошему: клиент поблагодарил или попрощался.
+# Напоминание через полчаса после такого читается как навязчивость, поэтому
+# мягкая дожимка не назначается. От стоп-слов отличие принципиальное: здесь
+# клиент не просил больше не писать, и следующий его вопрос бот обслужит как
+# обычно — выключается только напоминание по этому разговору.
+followup_closing_words:
+  - "спасибо"
+  - "спасибо большое"
+  - "благодарю"
+  - "рахмет"
+  - "до встречи"
+  - "договорились"
+  - "хорошо, спасибо"
+  - "все понятно"
+  - "всё понятно"
+  - "понял"
+  - "поняла"
+  - "ок спасибо"
+  - "приедем"
+  - "придем"
+  - "придём"
+  - "будем"
 
 # После любого из этих слов бот больше не напоминает о себе никогда.
 followup_stop_words:

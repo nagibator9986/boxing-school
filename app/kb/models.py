@@ -788,7 +788,10 @@ class FollowupRule(_Base):
     """Строка политики follow-up. Продуктовое правило, согласия не требует."""
 
     event: FollowupKind
-    delay_hours: int
+    #: Часы, дробные допускаются: 0.5 — это напоминание через полчаса молчания.
+    #: Раньше поле было целым, и минимальной паузой были сутки-часы; владелец
+    #: попросил дожимать через полчаса — за это время клиент ещё помнит разговор.
+    delay_hours: float
     only_work_hours: bool = True
     template_id: str
     max_times: int = Field(ge=0)
@@ -817,6 +820,10 @@ class PoliciesFile(_Base):
     escalation_pause_minutes: int = Field(default=60, ge=1)
     followup_policy: list[FollowupRule] = Field(default_factory=list)
     followup_stop_words: list[str] = Field(default_factory=list)
+    #: Слова, которыми клиент закрывает разговор по-хорошему. Мягкая дожимка
+    #: после них не назначается: напоминать человеку, который только что
+    #: сказал «спасибо, до встречи», — навязчивость.
+    followup_closing_words: list[str] = Field(default_factory=list)
     forbidden_behaviour: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")

@@ -80,10 +80,29 @@ def test_schedule_card_groups_by_discipline(kb: KBSnapshot) -> None:
     assert text.count("🥊 Кикбоксинг") == 1, "вид занятий повторяется"
 
 
-def test_schedule_card_marks_unknown_age(kb: KBSnapshot) -> None:
-    """Пока возрастных групп в данных нет, карточка говорит об этом честно."""
+def test_schedule_card_shows_the_age_group(kb: KBSnapshot) -> None:
+    """Владелец назвал возраст групп — карточка обязана его показывать.
+
+    03.09.2026 на вопрос «какой возраст это время у вас» отвечал человек: «с 7
+    до 12». Теперь это в базе знаний у каждого занятия.
+    """
     gym = kb.gym("ksk_kairbekova_334")
     text = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
+
+    assert "(7–12)" in text
+    assert "уточнит администратор" not in text.lower()
+
+
+def test_schedule_card_is_honest_when_the_age_is_unknown(kb: KBSnapshot) -> None:
+    """Появится занятие без возраста — карточка снова скажет об этом прямо.
+
+    Правило осталось: выдумывать возраст группы бот не имеет права.
+    """
+    gym = kb.gym("ksk_kairbekova_334")
+    nameless = [slot.model_copy(update={"age_from": None, "age_to": None}) for slot in gym.schedule]
+
+    text = render_schedule_card(kb, gym_id=gym.id, slots=nameless, lang=Language.RU)
+
     assert "возраст группы уточнит администратор" in text.lower()
 
 

@@ -732,7 +732,7 @@ async def _run_turn(
                     kb_hash=kb.kb_hash,
                     correlation_id=correlation_id,
                 )
-            await _schedule_followups(db, conv, decision, kb=kb)
+            await _schedule_followups(db, conv, decision, kb=kb, client_text=text)
             await db.commit()
             await _flush_queue(deps, services)
             return decision
@@ -781,7 +781,7 @@ async def _run_turn(
                 kb_hash=kb.kb_hash,
                 correlation_id=correlation_id,
             )
-            await _schedule_followups(db, conv, decision, kb=kb)
+            await _schedule_followups(db, conv, decision, kb=kb, client_text=text)
             await db.commit()
             await _flush_queue(deps, services)
             return decision
@@ -1036,7 +1036,7 @@ async def _run_turn(
             correlation_id=correlation_id,
             escalation=EscalationReason.USER_REQUEST if services.paused else None,
         )
-        await _schedule_followups(db, conv, decision, kb=kb)
+        await _schedule_followups(db, conv, decision, kb=kb, client_text=text)
         await db.commit()
         await _flush_queue(deps, services)
         return decision
@@ -2044,7 +2044,12 @@ def _content_text(content: dict[str, Any]) -> str:
 
 
 async def _schedule_followups(
-    db: AsyncSession, conv: Conversation, decision: PipelineDecision, *, kb: KBSnapshot
+    db: AsyncSession,
+    conv: Conversation,
+    decision: PipelineDecision,
+    *,
+    kb: KBSnapshot,
+    client_text: str = "",
 ) -> None:
     """Планирует напоминания по итогу хода. Ошибка внутри ответ не отменяет.
 
@@ -2061,7 +2066,12 @@ async def _schedule_followups(
         # Клиент ответил — мягкие напоминания, запланированные раньше, не нужны.
         await cancel_followups(db, conv.id, reason="client_replied")
         await schedule_followups(
-            db, conv, decision=decision, policy=kb.policies.followup_policy
+            db,
+            conv,
+            decision=decision,
+            policy=kb.policies.followup_policy,
+            client_text=client_text,
+            closing_words=kb.policies.followup_closing_words,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("followup_schedule_failed", error=type(exc).__name__)

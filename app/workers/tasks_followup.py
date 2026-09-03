@@ -236,12 +236,28 @@ async def followup_sweep_cron(ctx: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 # Планирование и отмена
 # --------------------------------------------------------------------------- #
+def is_closing_phrase(text: str, *, closing_words: Sequence[str]) -> bool:
+    """Закрыл ли клиент разговор по-хорошему: «спасибо», «до встречи».
+
+    Проверяется вся реплика целиком, а не вхождение слова: «спасибо, а во
+    сколько занятие?» — это вопрос, а не прощание, и напомнить о себе после
+    него бот обязан. Поэтому реплика с вопросительным знаком закрывающей не
+    считается никогда, а длинная — тоже: это уже разговор.
+    """
+    body = " ".join((text or "").split()).strip().lower().rstrip(".!…")
+    if not body or "?" in body or len(body) > 60:
+        return False
+    return any(word.strip().lower() in body for word in closing_words if word.strip())
+
+
 async def schedule_followups(
     session: AsyncSession,
     conv: Conversation,
     *,
     decision: PipelineDecision,
     policy: Sequence[FollowupRule],
+    client_text: str = "",
+    closing_words: Sequence[str] = (),
 ) -> list[UUID]:
     """Планирует напоминания по итогу хода. Возвращает id созданных задач.
 
@@ -260,6 +276,13 @@ async def schedule_followups(
         await block_followups(session, conv.id, reason="stop_word")
         return []
     if int(conv.followup_stage) >= int(settings.followup_max_attempts):
+        return []
+
+    if is_closing_phrase(client_text, closing_words=closing_words):
+        # Разговор закончен по-хорошему. Напоминание через полчаса после
+        # «спасибо большое» — навязчивость; владелец просил дожимать тех, кто
+        # замолчал на середине, а не тех, кто попрощался.
+        log.info("followups_skipped_closing", conv_id=str(conv.id))
         return []
 
     lead = await repo_lead.get_by_conversation(session, conv.id)
