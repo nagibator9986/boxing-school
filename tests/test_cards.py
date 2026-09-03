@@ -456,3 +456,35 @@ def test_prompt_overview_carries_no_clock_times(kb: KBSnapshot) -> None:
     from app.kb.render import render_schedule_overview
 
     assert not re.search(r"\d{1,2}[:.]\d{2}", render_schedule_overview(kb))
+
+
+# --------------------------------------------------------------------------- #
+# Расписание не уходит дважды за один ход
+# --------------------------------------------------------------------------- #
+def test_route_caption_can_skip_the_schedule(kb: KBSnapshot) -> None:
+    """Клиент уже получил карточку расписания — в подписи к видео его быть не должно.
+
+    Живой аудит 03.09.2026: модель звала get_schedule и send_content, и человек
+    получал одно и то же расписание двумя сообщениями подряд.
+    """
+    from app.kb.render import render_route_caption, schedule_heading
+
+    gym_id = "mkr6_arystanbekova_6"
+    full = render_route_caption(kb, gym_id=gym_id, lang=Language.RU)
+    short = render_route_caption(kb, gym_id=gym_id, lang=Language.RU, with_schedule=False)
+    heading = schedule_heading(kb, gym_id=gym_id, lang=Language.RU)
+
+    assert heading in full, "опора теста: обычная подпись расписание содержит"
+    assert heading not in short
+    assert "Арыстанбекова 6" in short, "адрес обязан остаться — за ним и шлют видео"
+    assert "2gis.kz" in short
+
+
+def test_schedule_heading_matches_the_card(kb: KBSnapshot) -> None:
+    """Заголовок собирается одним рендером — иначе сравнение однажды разойдётся."""
+    from app.kb.render import schedule_heading
+
+    gym = kb.gym("mkr6_arystanbekova_6")
+    card = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
+
+    assert card.startswith(schedule_heading(kb, gym_id=gym.id, lang=Language.RU))

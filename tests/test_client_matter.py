@@ -138,3 +138,42 @@ async def test_sales_question_still_answered_by_the_bot(deps, llm) -> None:
     )
 
     assert [d.action.value for d in decisions] == ["reply"]
+
+
+# --------------------------------------------------------------------------- #
+# Просьба позвать человека: два разных случая
+# --------------------------------------------------------------------------- #
+def test_question_gets_a_short_handoff(kb: KBSnapshot) -> None:
+    """Клиент уже задал вопрос — просить написать его ещё раз нельзя.
+
+    03.09.2026 на «дайте номер телефона администратора» бот ответил «напишите,
+    пожалуйста, ваш вопрос». Клиент его написал секундой раньше.
+    """
+    verdict = guards.scan(
+        "Дайте номер телефона администратора",
+        lang=Language.RU,
+        lexicon=kb.lexicon,
+        policies=kb.policies,
+    )
+
+    assert verdict.fixed_reply_key == "escalation.manager_with_question"
+
+
+def test_bare_request_still_asks_for_the_question(kb: KBSnapshot) -> None:
+    """Нажал пункт «Написать менеджеру» и ничего не спросил — вопрос уместен."""
+    verdict = guards.scan(
+        "Написать менеджеру", lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies
+    )
+
+    assert verdict.fixed_reply_key == "escalation.manager_requested"
+
+
+def test_forbidden_to_invent_reasons_behind_the_schedule(kb: KBSnapshot) -> None:
+    """Причины расписания в базе знаний не записаны — выдумывать их запрещено.
+
+    Живой аудит: «в других залах расписание зависит от смены в школе». Этого
+    никто не говорил, а звучит как факт школы.
+    """
+    forbidden = " ".join(kb.policies.forbidden_behaviour).lower()
+
+    assert "причин расписания" in forbidden

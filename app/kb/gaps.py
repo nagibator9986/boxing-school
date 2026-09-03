@@ -78,6 +78,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "escalation.handoff",
     "escalation.child_writing",
     "escalation.manager_requested",
+    "escalation.manager_with_question",
     "escalation.client_matter",
     "escalation.complaint",
     "escalation.medical",

@@ -671,21 +671,25 @@ async def test_bot_stays_silent_if_the_manager_answered_first(deps, llm, monkeyp
     Момент входа человека воспроизводится подменой проверки паузы: в начале
     хода её ещё нет, к моменту отправки — уже есть.
     """
-    from app.core import pause as pause_module
+    from datetime import datetime, timezone
+
     from app.core import pipeline as pipeline_module
     from app.types import DecisionAction
 
     await say(deps, llm, "m-1", "Здравствуйте", [FakeTurn.answer("Здравствуйте! Чем помочь?")])
 
-    original = pause_module.is_paused
+    async def wrote_while_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        """Реплика человека помечена будущим: она пришла уже после начала хода.
 
-    async def paused_once_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
-        """Человек отвечает ровно в окно работы модели: до неё паузы нет, после — есть."""
-        if getattr(deps.llm, "generate_calls", 0):
-            return True
-        return await original(*args, **kwargs)
+        Раньше здесь подменялась проверка паузы, но паузу в том же ходу ставит и
+        сам бот — инструментом передачи администратору, — и по ней человека от
+        бота не отличить. Теперь признак один: когда человек писал в последний раз.
+        """
+        return datetime.now(tz=timezone.utc)
 
-    monkeypatch.setattr(pipeline_module.pause, "is_paused", paused_once_the_model_worked)
+    monkeypatch.setattr(
+        pipeline_module.pause, "operator_last_seen", wrote_while_the_model_worked
+    )
 
     decisions = await say(
         deps, llm, "m-2", "Сколько стоит?", [FakeTurn.answer("Сейчас расскажу подробнее.")]
@@ -704,21 +708,19 @@ async def test_withheld_reply_is_not_picked_up_later_by_the_sweep(deps, llm, mon
     написал, только с опозданием.
     """
     import sqlalchemy as sa
+    from datetime import datetime, timezone
 
-    from app.core import pause as pause_module
     from app.core import pipeline as pipeline_module
 
     await say(deps, llm, "s-1", "Здравствуйте", [FakeTurn.answer("Здравствуйте!")])
 
-    original = pause_module.is_paused
+    async def wrote_while_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        """Человек ответил в окно работы модели — его реплика свежее начала хода."""
+        return datetime.now(tz=timezone.utc)
 
-    async def paused_once_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
-        """Человек отвечает ровно в окно работы модели: до неё паузы нет, после — есть."""
-        if getattr(deps.llm, "generate_calls", 0):
-            return True
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(pipeline_module.pause, "is_paused", paused_once_the_model_worked)
+    monkeypatch.setattr(
+        pipeline_module.pause, "operator_last_seen", wrote_while_the_model_worked
+    )
     await say(deps, llm, "s-2", "А во сколько?", [FakeTurn.answer("Ответ, который уже не нужен.")])
 
     async with deps.sessionmaker() as session:

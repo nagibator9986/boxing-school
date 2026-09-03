@@ -825,6 +825,7 @@ async def _run_turn(
             injection_suspected=injection,
             gym_id=None,
             stage=await _client_stage(db, conv),
+            just_said=_just_said(text, kb=kb, now=now),
         )
         request = LLMRequest(
             system_instruction=system_instruction,
@@ -1636,7 +1637,18 @@ async def _withhold_if_operator_took_over(
     """
     if not services.messages and not services.outbox:
         return False
-    if not await pause.is_paused(deps.state, db, conv.id, conv.conv_key, now):
+
+    # Проверяется НЕ «стоит ли пауза», а вошёл ли человек именно за время этого
+    # хода. Разница решающая: паузу в том же ходу ставит и сам бот — инструмент
+    # ``escalate_to_manager``. По прежнему правилу бот отменял собственный
+    # ответ, и клиент, спросивший про тренера или пожаловавшийся на тренировку,
+    # не получал НИЧЕГО: карточка уходила администратору, а человеку — тишина.
+    #
+    # Признак живого человека один — ``operator_last_seen_at``, который
+    # ставится только при ``PauseReason.OPERATOR_REPLY``. Если он пуст или
+    # старше начала хода, значит человек не вмешивался, и ответ обязан уйти.
+    seen = await pause.operator_last_seen(db, conv.id)
+    if seen is None or seen < now:
         return False
 
     for outbox_id, _delay in services.outbox:
@@ -1780,6 +1792,23 @@ _STAGE_NOTES: Final[dict[str, str]] = {
         "По клиенту нужен звонок администратора — не обещай его сам."
     ),
 }
+
+
+def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:
+    """Что клиент сообщил прямо в этой реплике: телефон, возраст, имя.
+
+    Разбирается регулярками (:mod:`app.core.lexicon`), поэтому не зависит ни от
+    модели, ни от её внимательности. Нужна ровно для того, чтобы бот не
+    переспрашивал сказанное секунду назад: 03.09.2026 клиент написал «Айгерим,
+    телефон 87015551122» и в ответ получил «как зовут дочку?».
+    """
+    said: list[str] = []
+    if lexicon.extract_phone(text):
+        said.append("телефон")
+    age = lexicon.extract_age(text, lexicon=kb.lexicon, now=now)
+    if age is not None:
+        said.append(f"возраст ребёнка — {age}")
+    return tuple(said)
 
 
 async def _client_stage(db: AsyncSession, conv: Conversation) -> str | None:

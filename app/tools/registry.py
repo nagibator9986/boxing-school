@@ -197,6 +197,14 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
             "properties": {
                 "topic": {"type": "string", "enum": [ENUM_FAQ_TOPIC]},
                 "scope": {"type": "string", "enum": ["city", "region", "any"]},
+                "question": {
+                    "type": "string",
+                    "description": (
+                        "Вопрос клиента его словами. В одной теме бывает несколько "
+                        "разных ответов — например, «когда платить» и «каким способом "
+                        "платить», — и без вопроса вернётся не тот."
+                    ),
+                },
             },
             "required": ["topic"],
         },

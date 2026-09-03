@@ -32,6 +32,7 @@ def build_dynamic_note(
     injection_suspected: bool,
     gym_id: str | None = None,
     stage: str | None = None,
+    just_said: Sequence[str] = (),
 ) -> str:
     """Служебная заметка ПОСЛЕДНИМ элементом ``contents``.
 
@@ -57,6 +58,16 @@ def build_dynamic_note(
         known.append(f"имя родителя: {lead.parent_name}")
     if known:
         lines.append("Уже известно — переспрашивать не нужно: " + "; ".join(known) + ".")
+    if just_said:
+        # Отдельной строкой и в конце: то, что клиент назвал ПРЯМО СЕЙЧАС, он
+        # помнит лучше всего, и переспросить это — самый заметный промах.
+        # Живой аудит 03.09.2026: «Айгерим, телефон 87015551122» → «как зовут
+        # дочку?». Список «уже известно» модель прочитала, но не связала с
+        # последней репликой.
+        lines.append(
+            "В последнем сообщении клиент назвал: " + "; ".join(just_said) + ". "
+            "Это переспрашивать нельзя ни в каком виде."
+        )
     if stage:
         lines.append(stage)
 

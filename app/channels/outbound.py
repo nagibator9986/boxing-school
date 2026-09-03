@@ -357,18 +357,29 @@ def _replace_md_link(match: re.Match[str]) -> str:
 
 
 def _limit_emoji(text: str, limit: int) -> str:
-    """Оставляет первые ``limit`` эмодзи, остальные удаляет."""
-    kept = 0
-    out: list[str] = []
-    last = 0
-    for match in _EMOJI_CLUSTER_RE.finditer(text):
-        out.append(text[last : match.start()])
-        if kept < limit:
-            out.append(match.group(0))
-            kept += 1
-        last = match.end()
-    out.append(text[last:])
-    return "".join(out)
+    """Оставляет ``limit`` эмодзи на строку, остальные удаляет.
+
+    Считается по строкам, а не по сообщению целиком. Прежнее правило «не больше
+    двух на сообщение» писалось против эмодзи-фейерверка, но под него целиком
+    попадал список с маркерами: 03.09.2026 бот перечислил семь залов, и значок
+    📍 остался только у первых двух пунктов — вместо ровного списка вышла
+    лесенка. Значок в начале строки — это разметка, а не украшение, и режет
+    его теперь только повтор внутри той же строки.
+    """
+    lines: list[str] = []
+    for line in text.split("\n"):
+        kept = 0
+        out: list[str] = []
+        last = 0
+        for match in _EMOJI_CLUSTER_RE.finditer(line):
+            out.append(line[last : match.start()])
+            if kept < limit:
+                out.append(match.group(0))
+                kept += 1
+            last = match.end()
+        out.append(line[last:])
+        lines.append("".join(out))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #

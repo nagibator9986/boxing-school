@@ -368,3 +368,70 @@ def test_no_unused_card_texts(kb) -> None:
 
     declared = {key for key in kb.i18n.strings if key.startswith("card.")}
     assert not declared - used, f"ключи никем не читаются: {sorted(declared - used)}"
+
+
+def test_faq_never_counts_the_gyms_in_words(kb) -> None:
+    """Число залов словами в тексте живёт ровно до открытия следующего зала.
+
+    03.09.2026 бот в одном сообщении сказал «в Костанае шесть залов» и следом
+    перечислил семь: седьмой добавили в базу, а текст остался прежним. Список
+    бот и так собирает из базы знаний, поэтому число в тексте не нужно.
+    """
+    numerals = ("шесть зал", "семь зал", "восемь зал", "алты зал", "жеті зал", "6 залов", "7 залов")
+
+    for entry in kb.faq:
+        for lang in ("ru", "kk"):
+            text = (getattr(entry.answer, lang, "") or "").lower()
+            found = [word for word in numerals if word in text]
+            assert not found, f"в ответе {entry.id} ({lang}) зашито число залов: {found}"
+
+
+# --------------------------------------------------------------------------- #
+# Выбор записи внутри темы
+# --------------------------------------------------------------------------- #
+async def test_payment_method_question_reaches_a_human(kb) -> None:
+    """«Как оплатить» и «когда оплатить» — разные вопросы одной темы.
+
+    03.09.2026 клиент спросил, как оплатить абонемент, и получил ответ про
+    сроки: «оплачивается до 10-го числа». Инструмент брал первую отвеченную
+    запись темы, а запись про способы оплаты пустая — владелец их ещё не
+    прислал, и по ней положено звать человека.
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.tools.facts import get_kb_fact
+    from app.types import ChannelKind, Language, ToolContext, ToolStatus
+
+    from tests.conftest import RecordingServices
+
+    def context() -> ToolContext:
+        return ToolContext(
+            conversation_id=uuid4(),
+            conv_key="c",
+            channel=ChannelKind.WHATSAPP,
+            channel_id="w",
+            chat_id="7701",
+            lang=Language.RU,
+            kb=kb,
+            kb_hash=kb.kb_hash,
+            now=datetime(2026, 9, 3, 9, tzinfo=timezone.utc),
+            correlation_id="t",
+            services=RecordingServices(),
+        )
+
+    method = await get_kb_fact(context(), topic="payment", question="как оплатить абонемент")
+    assert method.status is ToolStatus.NEEDS_OPERATOR
+
+    deadline = await get_kb_fact(context(), topic="payment", question="когда нужно оплачивать")
+    assert deadline.status is ToolStatus.OK
+    assert (deadline.data or {}).get("id") == "payment_deadline"
+
+
+def test_question_match_ignores_a_single_common_word(kb) -> None:
+    """Совпадения одного общего слова мало: иначе выберется случайная запись."""
+    from app.tools.facts import _best_match
+
+    entries = kb.faq_entries("payment", __import__("app.types", fromlist=["Scope"]).Scope.ANY)
+
+    assert _best_match(entries, "занятие") is None

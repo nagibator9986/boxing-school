@@ -606,6 +606,18 @@ def _already_said(candidate: str, existing: str) -> bool:
     return words.issubset(significant(existing))
 
 
+def schedule_heading(snapshot: KBSnapshot, *, gym_id: str, lang: Language) -> str:
+    """Первая строка карточки расписания зала.
+
+    Нужна не только самой карточке: по ней инструменты узнают, что расписание
+    этого зала в текущем ходу клиенту уже ушло. Отдельная функция ради одного
+    источника — иначе сравнение однажды разойдётся с тем, что печатается.
+    """
+    gym = snapshot.gym(gym_id)
+    title = (gym.title.get(lang) or gym.title.ru or gym_id) if gym else gym_id
+    return f"{ICON_SCHEDULE} {_lang_text(snapshot, 'card.schedule_title', lang)} — {title}"
+
+
 def render_schedule_card(
     snapshot: KBSnapshot, *, gym_id: str, slots: Sequence[ScheduleSlot], lang: Language
 ) -> str:
@@ -616,8 +628,8 @@ def render_schedule_card(
     строкой прозой человек читает трижды, прежде чем понять, во сколько ему
     приходить. И ошибиться в дне при пересказе модель может, а рендер — нет.
     """
-    gym = snapshot.gym(gym_id)
-    title = (gym.title.get(lang) or gym.title.ru or gym_id) if gym else gym_id
+    # Название зала теперь собирает schedule_heading — оно же служит признаком
+    # «расписание этого зала уже отправлено» для инструментов.
     if not slots:
         return _lang_text(snapshot, "gap.schedule", lang)
 
@@ -625,7 +637,7 @@ def render_schedule_card(
     for slot in slots:
         by_discipline.setdefault(slot.discipline, []).append(slot)
 
-    parts: list[str] = [f"{ICON_SCHEDULE} {_lang_text(snapshot, 'card.schedule_title', lang)} — {title}"]
+    parts: list[str] = [schedule_heading(snapshot, gym_id=gym_id, lang=lang)]
     for discipline, group in by_discipline.items():
         name = _lang_text(snapshot, f"card.{discipline}", lang)
         lines = [f"{ICON_GYM} {name}"]
@@ -642,7 +654,9 @@ def render_schedule_card(
     return _blocks(parts)
 
 
-def render_route_caption(snapshot: KBSnapshot, *, gym_id: str, lang: Language) -> str:
+def render_route_caption(
+    snapshot: KBSnapshot, *, gym_id: str, lang: Language, with_schedule: bool = True
+) -> str:
     """Подпись к видео маршрута — в том же виде, в каком её пишет сама школа.
 
     Владелец годами отправляет клиентам видео дороги с одной и той же подписью:
@@ -657,12 +671,14 @@ def render_route_caption(snapshot: KBSnapshot, *, gym_id: str, lang: Language) -
             errors=(f"gyms.yaml: отсутствует зал '{gym_id}'",),
         )
     parts: list[str] = [render_gym_location(snapshot, gym_id=gym_id, lang=lang)]
-    if gym.schedule:
+    if gym.schedule and with_schedule:
         parts.append(render_schedule_card(snapshot, gym_id=gym_id, slots=gym.schedule, lang=lang))
     return _blocks(parts)
 
 
-def render_artifact_body(snapshot: KBSnapshot, *, artifact_id: str, lang: Language) -> str:
+def render_artifact_body(
+    snapshot: KBSnapshot, *, artifact_id: str, lang: Language, with_schedule: bool = True
+) -> str:
     """Готовый текст любого артефакта: из ``body`` или собранный кодом.
 
     Единая точка для слоя инструментов: ему незачем знать, какой артефакт
@@ -681,13 +697,16 @@ def render_artifact_body(snapshot: KBSnapshot, *, artifact_id: str, lang: Langua
             return render_gym_location(snapshot, gym_id=artifact.gym_id, lang=lang)
         return render_gyms_list_card(snapshot, scope=artifact.scope, lang=lang)
     if artifact.render_from == "route" and artifact.gym_id is not None:
-        return render_route_caption(snapshot, gym_id=artifact.gym_id, lang=lang)
+        return render_route_caption(
+            snapshot, gym_id=artifact.gym_id, lang=lang, with_schedule=with_schedule
+        )
     body = artifact.body.get(lang) if artifact.body is not None else None
     return body or _lang_text(snapshot, "gap.generic", lang)
 
 
 __all__ = [
     "render_artifact_body",
+    "schedule_heading",
     "render_schedule_overview",
     "render_artifacts_catalog",
     "render_escalation_rules",

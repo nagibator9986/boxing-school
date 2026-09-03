@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Final
+import re
+from typing import Any, Final, Sequence
 
 from app.kb.gaps import gap_for_topic, say_no_data
 from app.kb.models import FAQ_TOPICS, Bilingual, FaqEntry, KBSnapshot
@@ -84,7 +85,45 @@ def _gap_of(entry: FaqEntry | None, topic: str) -> GapRef | None:
     return gap_for_topic(topic)
 
 
-async def get_kb_fact(ctx: ToolContext, *, topic: str, scope: str = "any") -> ToolResult:
+#: Слова вопроса для сравнения с вариантами из базы знаний.
+_WORDS_RE: Final[re.Pattern[str]] = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _best_match(entries: Sequence[Any], question: str) -> Any | None:
+    """Запись темы, чьи варианты вопроса ближе всего к словам клиента.
+
+    В одной теме живут разные вопросы: «когда платить» и «каким способом
+    платить» — обе про оплату. Инструмент раньше брал первую отвеченную, и
+    вопрос о способе закрывался ответом о сроках. Совпадение считается по
+    словам вопроса клиента, а не по подстроке: «как оплатить абонемент» и
+    вариант «как оплатить» не совпадают целиком ни одним куском.
+    """
+    words = {word for word in _WORDS_RE.findall((question or "").lower()) if len(word) > 2}
+    if not words or not entries:
+        return None
+
+    best, best_score = None, 0.0
+    for entry in entries:
+        # ``question_variants`` — словарь «язык → список фраз», а не объект с
+        # полями: клиент может спросить и по-русски, и по-казахски, поэтому
+        # сравниваем со всеми вариантами сразу.
+        raw = entry.question_variants or {}
+        variants = [phrase for phrases in raw.values() for phrase in (phrases or [])]
+        for variant in variants:
+            tokens = {w for w in _WORDS_RE.findall(variant.lower()) if len(w) > 2}
+            if not tokens:
+                continue
+            score = len(tokens & words) / len(tokens)
+            if score > best_score:
+                best, best_score = entry, score
+    # Половина слов варианта — уже уверенное попадание; ниже это случайные
+    # совпадения вроде общего слова «занятие».
+    return best if best_score >= 0.5 else None
+
+
+async def get_kb_fact(
+    ctx: ToolContext, *, topic: str, scope: str = "any", question: str = ""
+) -> ToolResult:
     """data: {answer_ru, answer_kk, source, gap_ref}. Пустой answer -> no_data + фраза-заглушка,
     при escalate_if_empty=True -> needs_operator. render_hint=VERBATIM."""
     kb = ctx.kb
@@ -100,7 +139,14 @@ async def get_kb_fact(ctx: ToolContext, *, topic: str, scope: str = "any") -> To
 
     entries = kb.faq_entries(topic_key, parsed_scope)
     answered = [entry for entry in entries if entry.answered]
-    entry = answered[0] if answered else (entries[0] if entries else None)
+    entry = _best_match(entries, question) or (
+        answered[0] if answered else (entries[0] if entries else None)
+    )
+    if entry is not None and not entry.answered:
+        # Нашлась запись ровно по вопросу, но ответа владельца в ней нет.
+        # Подменять её соседней «отвеченной» нельзя: 03.09.2026 на «как оплатить
+        # абонемент» клиент получил ответ про сроки оплаты — когда, а не как.
+        answered = []
 
     # --- готовый ответ владельца ------------------------------------------- #
     if entry is not None and entry.answered:

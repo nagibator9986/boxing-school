@@ -239,10 +239,18 @@ def scan(
         # Отдельный текст, а не общий «чтобы не сказать неточность»: тот звучит
         # как «я не знаю ответа», хотя клиент просто попросил человека. После
         # выбора пункта «Написать менеджеру» это читается как отговорка.
+        #
+        # Текстов два. «Напишите ваш вопрос» уместно, когда клиент нажал пункт
+        # меню и ничего не спросил. Тому, кто спросил («дайте номер телефона
+        # администратора»), эта просьба говорит, что его не прочитали, — ему
+        # уходит короткое «передаю, он ответит здесь же».
+        asked = _asked_something(normalized, _intent_phrases(lexicon, IntentHint.MANAGER))
         return GuardVerdict(
             flags=(GuardFlag.MANAGER_REQUEST,),
             allowed_tools=SAFE_TOOLS,
-            fixed_reply_key="escalation.manager_requested",
+            fixed_reply_key=(
+                "escalation.manager_with_question" if asked else "escalation.manager_requested"
+            ),
             escalate=True,
             reason=EscalationReason.USER_REQUEST,
         )
@@ -400,6 +408,21 @@ def detect_stop_word(text: str, *, stop_words: Sequence[str]) -> bool:
     if not normalized:
         return False
     return _matches_word(normalized, tuple(stop_words or ()))
+
+
+def _asked_something(normalized: str, phrases: Sequence[str]) -> bool:
+    """Есть ли в сообщении что-то сверх самой просьбы позвать человека.
+
+    «Написать менеджеру» — это только просьба, и уместно попросить изложить
+    вопрос. «Дайте номер телефона администратора» — уже вопрос, и просить
+    написать его ещё раз значит показать, что сообщение не прочитали.
+
+    Считаются слова, которых нет ни в одной фразе интента: два и больше — это
+    самостоятельная мысль, а не вежливое «пожалуйста».
+    """
+    known = {word for phrase in phrases for word in phrase.lower().split()}
+    extra = [word for word in normalized.split() if len(word) > 2 and word not in known]
+    return len(extra) >= 2
 
 
 def detect_abuse(text: str) -> bool:

@@ -316,3 +316,27 @@ async def test_expired_instagram_window_needs_human_not_retry(client) -> None:
 
     assert not is_retriable(exc.value)
     assert disposition(exc.value) is not ErrorDisposition.RETRIABLE
+
+
+# --------------------------------------------------------------------------- #
+# Значки списка не режутся
+# --------------------------------------------------------------------------- #
+def test_list_markers_survive_sanitize() -> None:
+    """Значок в начале строки — разметка, а не украшение.
+
+    Правило «не больше двух эмодзи на сообщение» писалось против фейерверка, но
+    список залов попадал под него целиком: 03.09.2026 из семи пунктов значок
+    остался у двух, и список превратился в лесенку.
+    """
+    from app.channels.outbound import sanitize
+
+    text = "\n".join(f"📍 Зал номер {n}" for n in range(1, 8))
+
+    assert sanitize(text).count("📍") == 7
+
+
+def test_emoji_fireworks_inside_a_line_are_still_trimmed() -> None:
+    """Опора: правило про фейерверк осталось — просто считается по строке."""
+    from app.channels.outbound import sanitize
+
+    assert sanitize("Ура!!! 🥊🥊🥊🔥🔥😀 приходите").count("🥊") == 2

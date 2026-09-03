@@ -249,3 +249,61 @@ async def test_escalation_notice_of_the_same_turn_still_goes_out(deps, llm) -> N
         message = OutboundMessage.model_validate(row.payload)
 
         assert not await _stale_after_takeover(db, conv, row, message, now=datetime.now(tz=UTC))
+
+
+# --------------------------------------------------------------------------- #
+# Своя эскалация — не перехват
+# --------------------------------------------------------------------------- #
+async def test_bot_handing_over_still_answers_the_client(deps, llm) -> None:
+    """Бот передал диалог человеку сам — клиент обязан это услышать.
+
+    Живой аудит 03.09.2026: на «кто у вас тренер», на жалобу и на вопрос без
+    данных клиент не получал НИЧЕГО. Карточка администратору уходила, а человек
+    оставался в тишине. Причина — инструмент передачи ставит паузу, а проверка
+    «не вошёл ли человек» считала паузой приход человека и отменяла ответ.
+    """
+    from app.llm.client import FakeCall
+
+    llm.reset(
+        [
+            FakeTurn.tool(
+                FakeCall(
+                    "escalate_to_manager",
+                    {"reason": "no_data", "question_summary": "кто тренер"},
+                )
+            ),
+            FakeTurn.answer("Уточню у администратора и вернусь с ответом."),
+        ]
+    )
+
+    decisions = await process_inbound(
+        deps, webhook_payload("esc-1", "Кто у вас тренер?", chat_id=CHAT_ID)
+    )
+
+    texts = [out.text for d in decisions for out in d.outbound if out.text]
+    assert texts, "клиент остался без ответа при передаче администратору"
+    assert any(d.manager_cards for d in decisions), "администратор не получил карточку"
+
+
+async def test_human_entering_during_the_turn_still_cancels_the_reply(deps, llm, monkeypatch) -> None:
+    """Опора: главная страховка на месте.
+
+    Пока модель думает, человек успевает ответить сам. Такой ответ бота обязан
+    быть отменён — иначе он пишет поверх человека. Проверяется именно этот
+    случай, а не «стоит ли пауза»: паузу в том же ходу ставит и сам бот.
+    """
+    from app.core import pipeline as pipeline_module
+
+    await client_says(deps, llm, "race-1", "Здравствуйте")
+
+    async def wrote_while_the_model_worked(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return datetime.now(tz=UTC)
+
+    monkeypatch.setattr(
+        pipeline_module.pause, "operator_last_seen", wrote_while_the_model_worked
+    )
+
+    decisions = await client_says(deps, llm, "race-2", "А сколько стоит?")
+
+    assert actions(decisions) == ["silent"]
+    assert not [out for d in decisions for out in d.outbound]

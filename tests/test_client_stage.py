@@ -128,7 +128,7 @@ async def test_new_client_gets_no_stage_note(deps, llm) -> None:
 # --------------------------------------------------------------------------- #
 # Напоминание бота остаётся в его же истории
 # --------------------------------------------------------------------------- #
-async def test_followup_text_enters_the_model_history(deps, llm) -> None:
+async def test_followup_text_enters_the_model_history(deps, llm, monkeypatch) -> None:
     """Иначе следующий ход модель начинает с пустого места.
 
     Живой случай: бот спросил «как прошла первая тренировка», клиент ответил
@@ -139,6 +139,11 @@ async def test_followup_text_enters_the_model_history(deps, llm) -> None:
     from app.storage.models import FollowupTask
     from app.types import FollowupKind
     from app.workers import tasks_followup
+
+    # Тихие часы — отдельное правило со своими тестами. Здесь они только сделали
+    # бы результат зависимым от времени суток на машине: ночью напоминание
+    # переносится на утро и в историю, разумеется, не попадает.
+    monkeypatch.setattr(tasks_followup, "is_quiet_hours", lambda *a, **k: False)
 
     await say(deps, llm, "fu-1", "Здравствуйте, сколько стоит?")
 
@@ -173,3 +178,28 @@ async def test_followup_text_enters_the_model_history(deps, llm) -> None:
     assert any(
         message.text[:30] in str(item) for item in history
     ), "в истории нет текста напоминания"
+
+
+# --------------------------------------------------------------------------- #
+# Сказанное секунду назад не переспрашивают
+# --------------------------------------------------------------------------- #
+async def test_note_marks_what_the_client_just_said(deps, llm) -> None:
+    """Телефон и возраст из последней реплики попадают в заметку отдельно.
+
+    Список «уже известно» модель читала и раньше, но с последней репликой не
+    связывала: 03.09.2026 клиент написал «Айгерим, телефон 87015551122» и в
+    ответ получил «как зовут дочку?».
+    """
+    await say(deps, llm, "js-1", "Сыну 9 лет, телефон 87015551122")
+
+    note = await note_of_last_call(llm)
+    assert "В последнем сообщении клиент назвал" in note
+    assert "телефон" in note
+    assert "возраст ребёнка — 9" in note
+
+
+async def test_note_stays_clean_without_new_facts(deps, llm) -> None:
+    """Клиент ничего не назвал — лишней строки в заметке нет."""
+    await say(deps, llm, "js-2", "А где вы находитесь?")
+
+    assert "В последнем сообщении клиент назвал" not in await note_of_last_call(llm)

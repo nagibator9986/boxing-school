@@ -25,7 +25,7 @@ from typing import Final
 from app.config import get_settings
 from app.kb.gaps import say_no_data
 from app.kb.models import Artifact, KBSnapshot
-from app.kb.render import render_artifact_body
+from app.kb.render import render_artifact_body, schedule_heading
 from app.types import (
     CHANNEL_LIMITS,
     MAX_MESSAGE_CHARS,
@@ -203,6 +203,24 @@ def _channel_verdict(artifact: Artifact, channel: ChannelKind) -> str | None:
     return None
 
 
+def _schedule_sent_this_turn(ctx: ToolContext, gym_id: str | None) -> bool:
+    """Ушло ли расписание этого зала клиенту на текущем ходу.
+
+    Смотрит сообщения, собранные за ход: за его пределами список пуст, поэтому
+    «прислали вчера» и «прислали только что» не путаются. Сравнение идёт по
+    заголовку карточки — он собирается тем же рендером, что и сама карточка
+    (:func:`app.kb.render.schedule_heading`), поэтому не разойдётся с ней.
+    """
+    if not gym_id:
+        return False
+    try:
+        heading = schedule_heading(ctx.kb, gym_id=gym_id, lang=ctx.lang)
+    except Exception:  # noqa: BLE001 - подпись не имеет права уронить отправку
+        return False
+    collected = getattr(ctx.services, "messages", None) or ()
+    return any(heading in (getattr(message, "text", None) or "") for message in collected)
+
+
 async def _prefer_route_video(ctx: ToolContext, artifact: Artifact) -> Artifact:
     """Подменяет карточку адреса видео дороги, если канал его принимает.
 
@@ -351,7 +369,16 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
         # маршрута она собирается из базы знаний (адрес, ориентир, ссылка на
         # карту, расписание), а не лежит статикой. Читать здесь только
         # artifact.body значило бы отправить видео совсем без подписи.
-        raw_caption = render_artifact_body(kb, artifact_id=artifact.id, lang=lang)
+        # Расписание в подписи повторялось: модель звала get_schedule (карточка
+        # расписания ушла клиенту) и следом send_content, а подпись к видео
+        # собирается из адреса И расписания — так эти ролики рассылает школа
+        # вручную. В одном ходу клиент получал одно и то же дважды подряд.
+        raw_caption = render_artifact_body(
+            kb,
+            artifact_id=artifact.id,
+            lang=lang,
+            with_schedule=not _schedule_sent_this_turn(ctx, artifact.gym_id),
+        )
         if raw_caption and raw_caption.strip():
             caption_text = _clip(
                 raw_caption.strip(), min(MAX_MESSAGE_CHARS, limits.max_text_chars)
