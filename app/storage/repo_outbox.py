@@ -78,6 +78,30 @@ async def enqueue(session: AsyncSession, msg: OutboundMessage) -> UUID:
     return existing
 
 
+async def append_text(session: AsyncSession, outbox_id: UUID, extra: str) -> bool:
+    """Дописывает текст к ещё не отправленной строке очереди. ``False`` — нельзя.
+
+    Нужна, чтобы клиент не получал очередью четыре сообщения подряд там, где
+    хватает одного: карточку расписания, подпись к видео и вопрос бот собирает
+    разными инструментами, а читает это человек как поток.
+
+    Дописывается только в ``pending`` и только в текстовую строку: у сообщения
+    с файлом текст и вложение в одном запросе Wazzup запрещены.
+    """
+    row = await session.get(OutboxMessage, outbox_id)
+    if row is None or row.state != OutboxState.PENDING.value:
+        return False
+    payload = dict(row.payload or {})
+    if payload.get("content_uri") or not str(payload.get("text") or "").strip():
+        return False
+
+    payload["text"] = f"{payload['text']}\n\n{extra}".strip()
+    row.payload = payload
+    row.updated_at = utcnow()
+    await session.flush()
+    return True
+
+
 async def get(session: AsyncSession, outbox_id: UUID) -> OutboxMessage | None:
     """Строка очереди по id, без захвата."""
     return await session.get(OutboxMessage, outbox_id)

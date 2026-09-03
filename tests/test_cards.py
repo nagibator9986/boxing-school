@@ -80,17 +80,23 @@ def test_schedule_card_groups_by_discipline(kb: KBSnapshot) -> None:
     assert text.count("🥊 Кикбоксинг") == 1, "вид занятий повторяется"
 
 
-def test_schedule_card_shows_the_age_group(kb: KBSnapshot) -> None:
-    """Владелец назвал возраст групп — карточка обязана его показывать.
+def test_schedule_card_shows_the_age_group_when_it_is_known(kb: KBSnapshot) -> None:
+    """Возраст группы показывается, только если он подтверждён владельцем.
 
-    03.09.2026 на вопрос «какой возраст это время у вас» отвечал человек: «с 7
-    до 12». Теперь это в базе знаний у каждого занятия.
+    03.09.2026 вилку «7–12» проставили всем занятиям — и бот написал родителю
+    шестилетнего, что группы рассчитаны с 7 лет. Владелец: «такую информацию мы
+    не давали, у нас дети с 5 лет». Вилку убрали; карточка снова честно говорит,
+    что возраст уточнит администратор, а если он появится — покажет его.
     """
     gym = kb.gym("ksk_kairbekova_334")
-    text = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
+    known = [slot.model_copy(update={"age_from": 8, "age_to": 11}) for slot in gym.schedule]
 
-    assert "(7–12)" in text
-    assert "уточнит администратор" not in text.lower()
+    with_age = render_schedule_card(kb, gym_id=gym.id, slots=known, lang=Language.RU)
+    assert "(8–11)" in with_age
+    assert "уточнит администратор" not in with_age.lower()
+
+    as_is = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
+    assert "возраст группы уточнит администратор" in as_is.lower()
 
 
 def test_schedule_card_is_honest_when_the_age_is_unknown(kb: KBSnapshot) -> None:
@@ -488,3 +494,92 @@ def test_schedule_heading_matches_the_card(kb: KBSnapshot) -> None:
     card = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
 
     assert card.startswith(schedule_heading(kb, gym_id=gym.id, lang=Language.RU))
+
+
+# --------------------------------------------------------------------------- #
+# Поток сообщений
+# --------------------------------------------------------------------------- #
+async def test_consecutive_texts_of_one_turn_are_merged(kb: KBSnapshot) -> None:
+    """Клиент читает поток, а не «карточки инструментов».
+
+    03.09.2026 на одну реплику ему пришло четыре сообщения подряд: расписание,
+    видео, адрес с картой и вопрос. Владелец: «большой поток информации сразу
+    даётся клиенту, и клиент потом просто молчит». Соседние текстовые сообщения
+    одного хода теперь склеиваются, пока влезают в предел канала.
+    """
+    from app.core.pipeline import PipelineDeps, process_inbound
+    from app.kb import loader as kb_loader
+    from app.llm.client import FakeCall, FakeLLMClient, FakeTurn
+    from app.storage import db as storage_db
+    from app.storage.models import Base
+
+    from tests.conftest import MemoryStateStore, RecordingQueue, webhook_payload
+
+    kb_loader.swap(kb)
+    engine = storage_db.build_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    llm = FakeLLMClient([])
+    deps = PipelineDeps(
+        sessionmaker=storage_db.build_sessionmaker(engine),
+        state=MemoryStateStore(),
+        llm=llm,
+        kb=kb_loader.get_snapshot,
+        queue=RecordingQueue(),
+        settings=__import__("app.config", fromlist=["get_settings"]).get_settings(),
+    )
+    try:
+        # Инструмент отправляет карточку залов, следом модель пишет свою фразу.
+        llm.reset(
+            [
+                FakeTurn.tool(FakeCall("get_gyms", {"scope": "city"})),
+                FakeTurn.answer("Скажите, какой из них ближе к дому?"),
+            ]
+        )
+        decisions = await process_inbound(
+            deps, webhook_payload("mg-1", "Какие у вас залы?", chat_id="77015554321")
+        )
+    finally:
+        await engine.dispose()
+
+    texts = [out.text for d in decisions for out in d.outbound if out.text and not out.content_uri]
+    assert len(texts) == 1, f"клиенту ушло {len(texts)} сообщения вместо одного"
+    assert "Скажите, какой из них ближе к дому?" in texts[0]
+
+
+async def test_schedule_card_is_not_sent_twice_in_one_dialogue(kb: KBSnapshot) -> None:
+    """Ту же карточку второй раз клиент получать не должен.
+
+    Заказчик 03.09.2026: «слишком много информации — клиент теряется и молчит».
+    В живой переписке одно и то же расписание уходило дважды: сперва в подписи к
+    видео, потом отдельным блоком. Второй раз бот отвечает словами — данные для
+    этого он получает, поэтому вопрос без ответа не остаётся.
+    """
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from app.tools.schedule import get_schedule
+    from app.types import ChannelKind, RenderHint, ToolContext
+    from tests.conftest import RecordingServices
+
+    services = RecordingServices()
+    services.artifact_sends["schedule_ksk_kairbekova_334"] = 1
+    ctx = ToolContext(
+        conversation_id=uuid4(),
+        conv_key="conv:tg",
+        channel=ChannelKind.TELEGRAM,
+        channel_id="telegram-bot-api",
+        chat_id="777000111",
+        lang=Language.RU,
+        kb=kb,
+        kb_hash=kb.kb_hash,
+        now=datetime(2026, 8, 20, 9, 0, tzinfo=UTC),
+        correlation_id="test",
+        services=services,
+    )
+    result = await get_schedule(ctx, gym_id="ksk_kairbekova_334")
+
+    assert result.ok and result.data.get("already_shown")
+    assert not [message for message in services.outbound if message.text]
+    assert result.render_hint is RenderHint.SUMMARIZE, "клиент останется без ответа"
+    assert result.data["slots"] or result.data["card"], "модели нечем ответить словами"

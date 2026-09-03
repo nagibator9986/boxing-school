@@ -249,10 +249,52 @@ class _Services:
         карточка администратора учитывается отдельным полем ``manager_cards``,
         иначе метрики и тесты считают её ответом на сообщение родителя.
         """
+        merged = await self._merge_into_previous(message) if to_client else None
+        if merged is not None:
+            return merged
+
         outbox_id = await repo_outbox.enqueue(self.session, message)
         self.outbox.append((outbox_id, int(message.delay_ms or 0)))
         if to_client:
             self.messages.append(message)
+        return outbox_id
+
+    async def _merge_into_previous(self, message: OutboundMessage) -> UUID | None:
+        """Дописывает текст к предыдущему сообщению хода. ``None`` — не вышло.
+
+        Клиент читает не отдельные «карточки инструментов», а поток. В живой
+        переписке 03.09.2026 на одну реплику ему пришло четыре сообщения подряд:
+        расписание, видео, адрес с картой и вопрос. Владелец: «большой поток
+        информации сразу даётся клиенту, и клиент потом просто молчит».
+
+        Склеиваются только соседние текстовые сообщения и только пока сумма
+        влезает в предел канала. Файл цепочку разрывает: текст и вложение в
+        одном запросе Wazzup передавать нельзя.
+        """
+        text = (message.text or "").strip()
+        if not text or message.content_uri or not self.outbox or not self.messages:
+            return None
+
+        previous = self.messages[-1]
+        if previous.content_uri or not (previous.text or "").strip():
+            return None
+        if previous.chat_id != message.chat_id or previous.channel is not message.channel:
+            return None
+
+        _, hard = text_limits(message.channel, soft_limit=self.deps.settings.soft_message_chars)
+        joined = f"{previous.text}\n\n{text}".strip()
+        if len(joined) > hard:
+            return None
+
+        outbox_id = self.outbox[-1][0]
+        try:
+            if not await repo_outbox.append_text(self.session, outbox_id, text):
+                return None
+        except Exception as exc:  # noqa: BLE001 - склейка не важнее самого ответа
+            _log.warning("outbox_merge_failed", error=type(exc).__name__)
+            return None
+
+        self.messages[-1] = previous.model_copy(update={"text": joined})
         return outbox_id
 
     async def upsert_lead(self, draft: LeadDraft) -> UUID:
@@ -945,6 +987,7 @@ async def _run_turn(
             prompt_ngrams=ngrams,
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
+            known_names=_known_names(text, inbound=inbound, draft=draft, history=history),
         )
         if not pc.ok:
             _log.warning(
@@ -1743,6 +1786,30 @@ def _known_phones(
         candidates.append(inbound.chat_id)
     candidates.extend(postcheck.extract_phones(text))
     return tuple(value for value in candidates if value)
+
+
+def _known_names(
+    text: str, *, inbound: InboundMessage, draft: LeadDraft, history: Sequence[dict[str, Any]]
+) -> tuple[str, ...]:
+    """Имена, прозвучавшие в этом диалоге: от клиента или уже записанные в лид.
+
+    Всё остальное, что похоже на имя, бот выдумал. Слова берём из реплик самого
+    клиента, а не из своих прошлых ответов: иначе одна выдумка узаконила бы все
+    следующие.
+    """
+    names: list[str] = [
+        draft.parent_name or "",
+        draft.child_name or "",
+        inbound.contact_name or "",
+    ]
+    names.extend(re.findall(r"[А-ЯЁ][а-яё]{2,14}", text))
+    for item in history:
+        if item.get("role") != "user":
+            continue
+        parts = item.get("parts") or []
+        said = " ".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
+        names.extend(re.findall(r"[А-ЯЁ][а-яё]{2,14}", said))
+    return tuple(name for name in names if name)
 
 
 def _draft_from_text(

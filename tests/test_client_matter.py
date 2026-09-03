@@ -177,3 +177,30 @@ def test_forbidden_to_invent_reasons_behind_the_schedule(kb: KBSnapshot) -> None
     forbidden = " ".join(kb.policies.forbidden_behaviour).lower()
 
     assert "причин расписания" in forbidden
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "не успевает на тренировку в школе ещё",
+        "Мы сегодня не успеем на занятие",
+        "Он не успеет к 18:00",
+    ],
+)
+def test_missed_training_goes_to_a_human(text: str, kb: KBSnapshot) -> None:
+    """«Не успевает» — то же самое, что «не придёт», и это дело администратора.
+
+    03.09.2026 родитель написал «не успевает на тренировку в школе ещё». Бот не
+    узнал в этом пропуск, принял разговор за запись и начал рассказывать про
+    перерасчёт абонемента — а тренер о пропуске так и не узнал.
+    """
+    verdict = guards.scan(text, lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies)
+
+    assert verdict.blocked
+
+
+def test_promise_on_behalf_of_the_coach_is_forbidden(kb: KBSnapshot) -> None:
+    """Бот не имеет связи с тренерами и не может ничего им передать."""
+    forbidden = " ".join(kb.policies.forbidden_behaviour).lower()
+
+    assert "тренеру" in forbidden

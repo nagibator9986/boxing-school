@@ -289,6 +289,11 @@ _FORBIDDEN_CLAIMS: Final[tuple[str, ...]] = (
     "гарантирую результат", "гарантируем результат", "станет чемпионом",
     "обязательно выиграет", "точно выиграет", "получит разряд",
     "последнее место", "только сегодня", "цена завтра", "успейте сегодня",
+    # У бота нет связи с тренерами: он пишет в чат и зовёт администратора.
+    # 03.09.2026 родителю, предупредившему о пропуске, он ответил «спасибо, что
+    # предупредили — я передам тренеру». Никто ничего не передал.
+    "передам тренеру", "передам вашему тренеру", "сообщу тренеру",
+    "передам это тренеру", "предупрежу тренера", "скажу тренеру",
 )
 
 #: Следы служебного слоя, которых в сообщении клиенту быть не может.
@@ -339,6 +344,7 @@ def check(
     prompt_ngrams: frozenset[str],
     strict: bool = False,
     known_phones: Sequence[str] = (),
+    known_names: Sequence[str] = (),
 ) -> PostcheckVerdict:
     """Анти-галлюцинационный фильтр. Работает ПОСЛЕ ``safe_text`` и ДО постановки в outbox.
 
@@ -383,6 +389,14 @@ def check(
     denied = _false_denials(cleaned, kb)
     if denied:
         return _fail(PostcheckFailKind.FALSE_DENIAL, denied)
+
+    wrong_age = _wrong_age_limit(cleaned, kb)
+    if wrong_age:
+        return _fail(PostcheckFailKind.FALSE_DENIAL, wrong_age)
+
+    invented = _invented_name(cleaned, known_names, invocations)
+    if invented:
+        return _fail(PostcheckFailKind.FALSE_DENIAL, invented)
 
     if len(cleaned) > MAX_REPLY_CHARS:
         return _fail(PostcheckFailKind.TOO_LONG, (str(len(cleaned)),))
@@ -878,6 +892,104 @@ _MORNING_DENIAL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:вечером|по\s+вечерам|во\s+второй\s+половине\s+дня)",
     re.IGNORECASE,
 )
+
+
+#: Как бот называет возрастную границу приёма: «берём детей с 5 лет»,
+#: «принимаем с 7», «группы с 7 лет». Число — то, что проверяется.
+_AGE_LIMIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:бер[её]м|принима\w+|записыва\w+|занима\w+|групп\w+|набира\w+|мектеб\w*|қабылда\w+)"
+    r"[^.!?\n]{0,40}?\bс\s+(\d{1,2})\s*(?:лет|года|годов|жас\w*)",
+    re.IGNORECASE,
+)
+
+
+#: Имя ребёнка или родителя в ответе бота: «рады записать Айсулу», «ждём Бекзата».
+_NAME_IN_REPLY_RE: Final = re.compile(
+    r"(?:[Зз]апис\w+|[Жж]д[её]м|[Пп]ривед\w+|[Вв]стрет\w+)\s+"
+    r"(?!вас\b|ваш|его\b|её\b|ее\b|их\b|реб[её]нка|дочь|сына|мальчика|девочку)"
+    r"([А-ЯЁ][а-яё]{2,14})\b",
+    re.UNICODE,
+)
+
+#: Обращение сразу после приветствия: «Здравствуйте, Айгуль!». Запятая и слово
+#: с заглавной буквы вплотную к приветствию — это имя, других вариантов нет.
+#: С восклицательным знаком («Здравствуйте! Это школа…») шаблон не совпадает.
+_NAME_AFTER_HELLO_RE: Final = re.compile(
+    r"(?:[Зз]дравствуйте|[Дд]обрый день|[Дд]обрый вечер|[Дд]оброе утро|[Пп]ривет|"
+    r"[Сс]әлеметсіз бе|[Ққ]айырлы күн|[Сс]әлем),\s+([А-ЯЁ][а-яё]{2,14})\b",
+    re.UNICODE,
+)
+
+
+def _name_stem(word: str) -> str:
+    """Основа имени без падежного окончания: «Бекзата» и «Бекзат» — одно и то же."""
+    return word.lower()[:4]
+
+
+def _invented_name(text: str, known_names: Sequence[str], invocations) -> tuple[str, ...]:
+    """Имена, которых клиент не называл и которых нет в данных инструментов.
+
+    03.09.2026 на «хочу записать дочь на пробное» бот ответил «рады записать
+    Айсулу». Имени не было ни в переписке, ни в базе знаний — модель придумала
+    его целиком. Для родителя это выглядит как переписка с чужим ребёнком.
+
+    Проверяются два контекста: имя рядом с глаголом записи или ожидания и
+    обращение сразу после приветствия («Здравствуйте, Айгуль!»). Имя в начале
+    фразы («Айгерим, здравствуйте») правило НЕ ловит: там оно неотличимо от
+    любого другого слова с запятой («Ответ, который…», «Скажите, …»), а снятый
+    верный ответ дороже пропущенной выдумки. От остального защищает запрет в
+    ``kb/policies.yaml``.
+    """
+    allowed = {_name_stem(name) for name in known_names if name}
+    for inv in invocations:
+        payload = f"{inv.args} {inv.result.data if inv.result else ''}"
+        allowed.update(_name_stem(word) for word in re.findall(r"[А-ЯЁ][а-яё]{2,14}", payload))
+
+    found: list[str] = []
+    for match in (*_NAME_IN_REPLY_RE.finditer(text), *_NAME_AFTER_HELLO_RE.finditer(text)):
+        word = match.group(1)
+        if _name_stem(word) not in allowed:
+            found.append(word)
+    return tuple(dict.fromkeys(found))
+
+
+def _confirmed_min_age(kb: KBSnapshot) -> int | None:
+    """Возраст приёма, подтверждённый владельцем, — из ответа FAQ про возраст.
+
+    Единственный источник: то, что владелец написал сам. Отдельного поля для
+    этого нет намеренно — иначе оно разъедется с текстом, который читает клиент.
+    """
+    for entry in kb.faq:
+        if entry.id != "age_min":
+            continue
+        for text in (getattr(entry.answer, "ru", None), getattr(entry.answer, "kk", None)):
+            match = _AGE_LIMIT_RE.search(text or "")
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def _wrong_age_limit(text: str, kb: KBSnapshot) -> tuple[str, ...]:
+    """Возрастная граница, не совпадающая с подтверждённой владельцем.
+
+    03.09.2026 бот написал родителю шестилетнего: «по возрасту группы на
+    кикбоксинг рассчитаны на детей с 7 лет». Владелец: «такую информацию мы не
+    давали, у нас дети с 5 лет». Числа в такой фразе есть, но обычные проверки
+    их пропускают: возраст — не деньги и не время, и в данных инструментов его
+    не было.
+
+    Возраст самого ребёнка («ему 6 лет») под правило не попадает: оно ищет
+    именно границу приёма — «берём/принимаем/группы … с N лет».
+    """
+    confirmed = _confirmed_min_age(kb)
+    if confirmed is None:
+        return ()
+    bad = [
+        match.group(0)
+        for match in _AGE_LIMIT_RE.finditer(text)
+        if int(match.group(1)) != confirmed
+    ]
+    return tuple(dict.fromkeys(bad))
 
 
 def _has_morning_slots(kb: KBSnapshot) -> bool:

@@ -45,6 +45,11 @@ _WEEKDAY_ORDER: Final[dict[str, int]] = {
 _SHIFTS: Final[tuple[str, ...]] = ("first", "second", "unknown")
 
 
+#: Под этим ключом отправка карточки расписания видна счётчику повторов.
+#: Артефакта с таким id в ``kb/media.yaml`` нет — карточку собирает код.
+_SCHEDULE_ARTIFACT: Final[str] = "schedule_{gym_id}"
+
+
 def _route_sent_this_turn(ctx: ToolContext, gym_id: str) -> bool:
     """Ушло ли видео дороги этого зала на текущем ходу диалога.
 
@@ -183,6 +188,33 @@ async def get_schedule(
     # ЭТИМ ЖЕ ходом, второй блок подряд — одно и то же дважды. Но если клиент
     # спрашивает про время позже, расписание нужно отправить снова: он спросил,
     # и молчание в ответ на прямой вопрос хуже любого повтора.
+    # Та же карточка второй раз за диалог — это перегруз, на который заказчик
+    # жаловался 03.09.2026: клиент получает простыню, которую уже читал, и
+    # замолкает. Но и промолчать в ответ на прямой вопрос нельзя, поэтому во
+    # второй раз расписание идёт словами модели, а не блоком.
+    sent_before = await ctx.services.count_artifact_sends(
+        ctx.conversation_id, _SCHEDULE_ARTIFACT.format(gym_id=gym.id)
+    )
+    if sent_before:
+        caveats.append(
+            "Эту карточку расписания клиент в диалоге уже получал. Второй раз блоком "
+            "её не отправляем: если клиент спросил про время, назови дни и часы "
+            "коротко словами, строго из этих данных."
+        )
+        return ToolResult.success(
+            data={
+                "card": card,
+                "already_shown": True,
+                "status": status,
+                "gym_id": gym.id,
+                "slots": [_slot_payload(slot, lang) for slot in matched],
+                "total": len(matched),
+            },
+            render_hint=RenderHint.SUMMARIZE,
+            caveats=caveats,
+            meta={"gap_refs": []},
+        )
+
     if _route_sent_this_turn(ctx, gym.id):
         caveats.append(
             "Расписание этого зала клиент уже видел в подписи к видео дороги. "
@@ -211,6 +243,7 @@ async def get_schedule(
             lang=lang,
             kind=OutboundKind.ARTIFACT,
             text=card,
+            artifact_id=_SCHEDULE_ARTIFACT.format(gym_id=gym.id),
         )
     )
     caveats.append(
