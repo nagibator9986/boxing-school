@@ -61,6 +61,13 @@ _log = get_logger(__name__)
 #: Причины, после которых бот сам не возвращается: снимает только человек.
 _MANUAL_ONLY: Final[frozenset[PauseReason]] = frozenset({PauseReason.MANUAL})
 
+#: Паузы, которые бот ставит себе сам. Клиент за них не отвечает: если он пишет
+#: снова, а человек так и не подключился, молчать не за кем. Сбой самой модели
+#: (``LLM_FAILURE``) сюда не входит — там пауза защищает не диалог, а сервис.
+_BOTS_OWN_PAUSES: Final[frozenset[str]] = frozenset(
+    {PauseReason.ESCALATION.value, PauseReason.POSTCHECK_FAIL.value}
+)
+
 #: Запасная длительность, если в настройках значения нет.
 _DEFAULT_MINUTES: Final[int] = 30
 
@@ -181,11 +188,13 @@ async def resume(
     conv_id: UUID,
     conv_key: str,
     *,
-    by: Literal["timeout", "operator_command", "admin"],
+    by: Literal["timeout", "operator_command", "admin", "client_wrote_again"],
 ) -> None:
-    """Снимает паузу. Вызывается только таймаутом, командой оператора или админкой.
+    """Снимает паузу: таймаут, команда оператора, админка или новый вопрос клиента.
 
-    Сообщением клиента этот путь не достижим — так и задумано.
+    Последний случай — только для паузы, которую бот поставил себе сам, передавая
+    вопрос администратору (см. :func:`escalation_pause_lifted`). Паузу, которую
+    поставил человек, сообщение клиента не снимает никогда.
     """
     row = await _row(session, conv_id)
     if row is None:
@@ -206,6 +215,43 @@ async def operator_last_seen(session: AsyncSession, conv_id: UUID) -> datetime |
     """
     row = await _row(session, conv_id)
     return _aware(row.operator_last_seen_at) if row is not None else None
+
+
+async def escalation_pause_lifted(
+    state: StateStore, session: AsyncSession, conv_id: UUID, conv_key: str
+) -> bool:
+    """Снять ли паузу, потому что клиент написал снова, а человек не подключился.
+
+    Передав вопрос администратору — или сняв собственный ответ постфильтром, —
+    бот замолкал на час — и на всё, что клиент
+    писал дальше, тоже. В живом прогоне 20 диалогов это дважды оставляло клиента
+    без ответа: «а справка нужна какая-то?» и «давайте тогда в субботу на пробную
+    прийдём» уходили в тишину.
+
+    Час молчания задумывался как «не мешать администратору», но администратор
+    ещё не написал ни слова: как только он напишет, диалог замолчит по другой,
+    более сильной причине — ``PauseReason.OPERATOR_REPLY``, и её сообщение
+    клиента не снимает. Поэтому здесь снимается только пауза самого бота.
+    """
+    row = await _row(session, conv_id)
+    if row is None or not row.paused:
+        return False
+    if row.pause_reason not in _BOTS_OWN_PAUSES:
+        return False
+    if row.resume_policy == ResumePolicy.MANUAL_ONLY.value:
+        return False
+    seen = _aware(row.operator_last_seen_at)
+    started = _aware(row.last_escalated_at)
+    if seen is not None and (started is None or seen >= started):
+        # Человек написал уже после передачи — дальше диалог ведёт он.
+        # Реплика, оставшаяся от прошлого захода (его вернули через CRM,
+        # и бот снова работает), молчания не оправдывает.
+        return False
+    await _clear(
+        state, session, row, conv_key, by="client_wrote_again",
+        now=datetime.now(tz=timezone.utc),
+    )
+    return True
 
 
 def detect_operator(inbound: InboundMessage, *, known_outbox: bool) -> bool:

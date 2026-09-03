@@ -32,6 +32,7 @@ from app.kb.models import LexiconFile, PoliciesFile
 from app.types import EscalationReason, GuardFlag, IntentHint, Language
 
 __all__ = [
+    "has_parent_marker",
     "SAFE_TOOLS",
     "GuardVerdict",
     "detect_abuse",
@@ -333,6 +334,15 @@ def detect_injection(text: str) -> bool:
     if _CONTROL_RE.search(raw):
         return True
     return any(pattern.search(normalized) for pattern in _INJECTION_RE)
+
+
+def has_parent_marker(text: str) -> bool:
+    """Есть ли в реплике признак взрослого: «мой сын», «это мама», «балам».
+
+    Тот же список, по которому :func:`detect_child_writing` отличает родителя от
+    ребёнка. Нужен пайплайну, чтобы понять, что к клавиатуре подошёл взрослый.
+    """
+    return _matches_word(normalize(text or ""), _PARENT_MARKERS)
 
 
 def detect_child_writing(text: str, *, lang: Language) -> bool:

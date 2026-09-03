@@ -166,7 +166,9 @@ _ADDRESS_PREP_RE: Final[re.Pattern[str]] = re.compile(
     r"(?!\s*[а-яёәғқңөұүһі])"
 )
 _GYM_NAME_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:зал\w*|филиал\w*|клуб\w*|секци\w*)\s+(?:на|в|по|около|возле|рядом с)\s+"
+    # Заглавная буква в начале предложения: «Филиал в Алматы» шаблон пропускал,
+    # и выдуманный город проходил насквозь.
+    r"(?:[Зз]ал\w*|[Фф]илиал\w*|[Кк]луб\w*|[Сс]екци\w*)\s+(?:на|в|по|около|возле|рядом с)\s+"
     r"([А-ЯЁӘҒҚҢӨҰҮҺІ][\w\-]{2,})"
 )
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"[^\W_]+", re.UNICODE)
@@ -429,7 +431,7 @@ def check(
     if bad_address:
         return _fail(PostcheckFailKind.ADDRESS, bad_address)
 
-    bad_gyms = _unconfirmed_gyms(cleaned, facts)
+    bad_gyms = _unconfirmed_gyms(cleaned, facts, kb)
     if bad_gyms:
         return _fail(PostcheckFailKind.GYM_NAME, bad_gyms)
 
@@ -851,13 +853,40 @@ def _has_address_cue(text: str, position: int) -> bool:
     return _ADDRESS_CUE_RE.search(window) is not None
 
 
-def _unconfirmed_gyms(text: str, facts: _Facts) -> tuple[str, ...]:
+def _kb_places(kb: KBSnapshot) -> frozenset[str]:
+    """Все места школы из базы: названия залов, адреса, ориентиры, посёлки.
+
+    Проверка названий задумывалась как «нет в реестре KB», а сверялась только с
+    данными инструментов текущего хода. Из-за этого 03.09.2026 снялся верный
+    ответ на «мы в Тобыле, сколько стоит?»: цену инструмент вернул, а название
+    посёлка — нет, и «зал в Тобыле» посчиталось выдумкой.
+    """
+    # Алиасы районов сюда НЕ входят: «Затобольск» клиенту знаком, но зала там
+    # нет, и «есть зал в Затобольске» — выдумка, а не место школы.
+    keys: set[str] = set()
+    for gym in kb.gyms.gyms:
+        for value in (gym.settlement, gym.id):
+            if value:
+                keys.add(_place_key(value))
+        for label in (gym.title, gym.address, gym.landmark):
+            for text in (getattr(label, "ru", None), getattr(label, "kk", None)):
+                for word in _WORD_RE.findall(text or ""):
+                    if len(word) > 3:
+                        keys.add(_place_key(word))
+    return frozenset(key for key in keys if key)
+
+
+def _unconfirmed_gyms(text: str, facts: _Facts, kb: KBSnapshot) -> tuple[str, ...]:
     """Названия залов и районов, которых нет в реестре KB.
 
     Ловится узкий шаблон «зал/филиал/секция + предлог + Слово с большой буквы»:
     именно так модель придумывает несуществующий филиал. Строчные обороты
     («зал в центре») не трогаются — это не название.
+
+    Место из базы знаний выдумкой не считается, даже если инструмент этого хода
+    его не возвращал: «зал в Тобыле» — правда, «зал в Астане» — нет.
     """
+    known = _kb_places(kb)
     bad: list[str] = []
     for match in _GYM_NAME_RE.finditer(text):
         name = match.group(1)
@@ -865,6 +894,8 @@ def _unconfirmed_gyms(text: str, facts: _Facts) -> tuple[str, ...]:
         if not key:
             continue
         if key in facts.places or key[:6] in facts.corpus.replace(" ", ""):
+            continue
+        if key in known or any(other.startswith(key[:5]) for other in known):
             continue
         bad.append(name)
     return tuple(dict.fromkeys(bad))

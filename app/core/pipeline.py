@@ -555,6 +555,13 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
         await conv_session.record_inbound(db, conv, inbound, author=Author.CLIENT)
 
         paused = await pause.is_paused(deps.state, db, conv.id, conv.conv_key, now)
+        if paused and await pause.escalation_pause_lifted(
+            deps.state, db, conv.id, conv.conv_key
+        ):
+            # Клиент задал новый вопрос, а администратор в диалог ещё не входил:
+            # молчать в ответ незачем — карточка ему уже ушла.
+            _log.info("escalation_pause_lifted", conv_key=conv.conv_key)
+            paused = False
         if paused:
             # На паузе бот молчит, но диалог продолжает жить: реплика клиента
             # обязана попасть и в базу, и в историю модели — иначе после возврата
@@ -875,6 +882,7 @@ async def _run_turn(
             gym_id=None,
             stage=await _client_stage(db, conv),
             just_said=_just_said(text, kb=kb, now=now),
+            child_at_keyboard=await _child_talk_continues(db, conv, text),
         )
         request = LLMRequest(
             system_instruction=system_instruction,
@@ -1868,6 +1876,47 @@ _STAGE_NOTES: Final[dict[str, str]] = {
 }
 
 
+#: Начало ответа, которым бот просит позвать взрослого. По нему видно, что
+#: разговор уже опознан как детский, — отдельного поля в базе для этого нет.
+_CHILD_REPLY_MARKERS: Final[tuple[str, ...]] = (
+    "согласие родителей",
+    "ата-ананың келісімі",
+)
+
+#: Сколько последних реплик просматривается в поисках этого признака.
+_CHILD_LOOKBACK: Final[int] = 20
+
+
+async def _child_talk_continues(
+    db: AsyncSession, conv: Conversation, text: str
+) -> bool:
+    """Продолжается ли разговор, в котором пишет сам ребёнок.
+
+    Признак «пишет ребёнок» живёт в одном сообщении: «мне 9 лет» его даёт,
+    «родители не знают пока» — уже нет. В живом прогоне 20 диалогов на второй
+    реплике бот забывал, с кем говорит, и продолжал собирать данные для записи у
+    девятилетнего.
+
+    Взрослый маркер в новой реплике («это мама», «мой сын») разговор возвращает:
+    к клавиатуре подошёл тот, кто может записать.
+
+    Признак ищется в отправленных сообщениях, а не в истории модели: просьбу
+    позвать взрослого отправляет guard, не спрашивая модель, и в её историю она
+    не попадает вовсе.
+    """
+    if guards.has_parent_marker(text):
+        return False
+    try:
+        transcript = await repo_message.load_transcript(db, conv.id, limit=_CHILD_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
+        _log.warning("child_lookup_failed", error=type(exc).__name__)
+        return False
+    return any(
+        author is Author.BOT and any(marker in (said or "").lower() for marker in _CHILD_REPLY_MARKERS)
+        for author, said in transcript
+    )
+
+
 def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:
     """Что клиент сообщил прямо в этой реплике: телефон, возраст, имя.
 
@@ -1882,6 +1931,9 @@ def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:
     age = lexicon.extract_age(text, lexicon=kb.lexicon, now=now)
     if age is not None:
         said.append(f"возраст ребёнка — {age}")
+    name = lexicon.extract_name(text)
+    if name:
+        said.append(f"имя — {name}")
     return tuple(said)
 
 

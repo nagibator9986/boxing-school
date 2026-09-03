@@ -307,3 +307,114 @@ async def test_human_entering_during_the_turn_still_cancels_the_reply(deps, llm,
 
     assert actions(decisions) == ["silent"]
     assert not [out for d in decisions for out in d.outbound]
+
+
+# --------------------------------------------------------------------------- #
+# Пауза, которую бот поставил себе сам
+# --------------------------------------------------------------------------- #
+async def test_client_question_lifts_the_bots_own_escalation_pause(deps, llm) -> None:
+    """Бот передал вопрос человеку и замолчал на час — включая новые вопросы.
+
+    Живой прогон 20 диалогов: на «а справка нужна какая-то?» и «давайте тогда в
+    субботу на пробную прийдём» клиент не получил ничего. Администратор к этому
+    моменту не написал ни слова, так что молчать было не за кем.
+    """
+    import sqlalchemy as sa
+
+    await client_says(deps, llm, "esc-1", "Здравствуйте")
+    async with deps.sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        await pause.set_pause(
+            deps.state, db, conv.id, conv.conv_key,
+            minutes=60, reason=PauseReason.ESCALATION, now=datetime.now(tz=UTC),
+        )
+        await db.commit()
+
+    after = await client_says(deps, llm, "esc-2", "А справка нужна какая-то?")
+
+    assert actions(after) == ["reply"], "клиент остался без ответа"
+
+
+async def test_operator_pause_is_not_lifted_by_the_client(deps, llm) -> None:
+    """Паузу человека сообщение клиента не снимает — это главная страховка владельца."""
+    await client_says(deps, llm, "esc-3", "Здравствуйте")
+    await human_says(deps, "esc-echo", "Здравствуйте, отвечает администратор")
+
+    after = await client_says(deps, llm, "esc-4", "А справка нужна?")
+
+    assert actions(after) == ["silent"], "бот заговорил поверх человека"
+
+
+async def test_old_operator_trace_does_not_keep_the_bot_silent(deps, llm) -> None:
+    """Человек писал до передачи, и его уже вернули — молчать не за кем.
+
+    Иначе один давний ответ администратора глушил бы бота после каждой
+    следующей эскалации до конца переписки.
+    """
+    import sqlalchemy as sa
+
+    from app.storage.models import EscalationState
+
+    await client_says(deps, llm, "old-1", "Здравствуйте")
+    async with deps.sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        now = datetime.now(tz=UTC)
+        await pause.set_pause(
+            deps.state, db, conv.id, conv.conv_key,
+            minutes=60, reason=PauseReason.ESCALATION, now=now,
+        )
+        row = (await db.execute(sa.select(EscalationState))).scalars().one()
+        row.operator_last_seen_at = now - timedelta(hours=3)
+        row.last_escalated_at = now
+        await db.commit()
+
+    after = await client_says(deps, llm, "old-2", "А во сколько занятия?")
+
+    assert actions(after) == ["reply"]
+
+
+async def test_operator_reply_after_the_handover_keeps_the_bot_silent(deps, llm) -> None:
+    """Человек ответил уже после передачи — дальше ведёт он, бот молчит."""
+    import sqlalchemy as sa
+
+    from app.storage.models import EscalationState
+
+    await client_says(deps, llm, "new-1", "Здравствуйте")
+    async with deps.sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        now = datetime.now(tz=UTC)
+        await pause.set_pause(
+            deps.state, db, conv.id, conv.conv_key,
+            minutes=60, reason=PauseReason.ESCALATION, now=now,
+        )
+        row = (await db.execute(sa.select(EscalationState))).scalars().one()
+        row.last_escalated_at = now - timedelta(minutes=5)
+        row.operator_last_seen_at = now
+        await db.commit()
+
+    after = await client_says(deps, llm, "new-2", "А во сколько занятия?")
+
+    assert actions(after) == ["silent"], "бот заговорил поверх человека"
+
+
+async def test_postcheck_pause_is_also_lifted_by_a_new_question(deps, llm) -> None:
+    """Бот снял собственный ответ фильтром — клиент за это молчанием не платит.
+
+    Живой прогон 20 диалогов: на «да, подходит» постфильтр снял ответ модели,
+    диалог встал на паузу, и следующая реплика клиента — «Асель, 87015551122»,
+    то самое имя с телефоном на точке записи — ушла в тишину.
+    """
+    import sqlalchemy as sa
+
+    await client_says(deps, llm, "pc-1", "Здравствуйте")
+    async with deps.sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        await pause.set_pause(
+            deps.state, db, conv.id, conv.conv_key,
+            minutes=60, reason=PauseReason.POSTCHECK_FAIL, now=datetime.now(tz=UTC),
+        )
+        await db.commit()
+
+    after = await client_says(deps, llm, "pc-2", "Асель, 87015551122")
+
+    assert actions(after) == ["reply"], "клиент остался без ответа на точке записи"
