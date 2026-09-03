@@ -17,7 +17,7 @@
           <textarea name="{{ spec.key }}" rows="4" placeholder="+7 777 000 00 00, 8 708 000 0000">{{ value }}</textarea>
         {% elif spec.kind == 'minutes' %}
           <label>{{ spec.title }}</label>
-          <input type="number" name="{{ spec.key }}" value="{{ value }}" min="1" max="1440" style="max-width:140px"> <span class="mini">минут</span>
+          <input type="number" name="{{ spec.key }}" value="{{ value }}" min="0" max="1440" style="max-width:140px"> <span class="mini">минут</span>
         {% else %}
           <label>{{ spec.title }}</label>
           <input type="text" name="{{ spec.key }}" value="{{ value }}" placeholder="21:00-09:00" style="max-width:220px">

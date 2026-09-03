@@ -200,3 +200,54 @@ def test_old_failures_do_not_linger(bot_db: Path) -> None:
         add_llm_call(bot_db, error="llm_quota", minutes_ago=180)
 
     assert collect_issues(BotData(bot_db), FakeSettings()) == []
+
+
+# --------------------------------------------------------------------------- #
+# Забытые диалоги
+# --------------------------------------------------------------------------- #
+def pause_dialog(bot_db: Path, *, hours_ago: int) -> None:
+    """Диалог на паузе, где клиент писал заданное время назад."""
+    stamp = (datetime.now(tz=UTC) - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    conv_id = uuid4().hex
+    engine = sa.create_engine(f"sqlite:///{bot_db}")
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                "INSERT INTO conversation (id, conv_key, channel_id, chat_type, chat_id,"
+                " lang_locked, state, msg_in_count, msg_out_count, bot_miss_count,"
+                " followup_stage, followup_blocked, created_at, updated_at, last_inbound_at)"
+                " VALUES (:id, :key, 'ch', 'whatsapp', '77010000000', 0, 'paused_operator',"
+                " 1, 1, 0, 0, 0, :now, :now, :now)"
+            ),
+            {"id": conv_id, "key": f"ch:whatsapp:{conv_id}", "now": stamp},
+        )
+        conn.execute(
+            sa.text(
+                "INSERT INTO escalation_state (conversation_id, paused, escalation_count,"
+                " resume_policy) VALUES (:id, 1, 0, 'manual_only')"
+            ),
+            {"id": conv_id},
+        )
+    engine.dispose()
+
+
+def test_forgotten_dialog_is_reported(bot_db: Path) -> None:
+    """Пауза после человека бессрочная — забытый диалог молчит навсегда.
+
+    Обратная сторона решения «бот резко затихает»: о таком диалоге должен
+    напомнить интерфейс, иначе клиент останется без ответа насовсем.
+    """
+    pause_dialog(bot_db, hours_ago=30)
+
+    issues = collect_issues(BotData(bot_db), FakeSettings())
+
+    assert len(issues) == 1
+    assert "Диалогов без ответа больше суток: 1" in issues[0].title
+    assert issues[0].level == "warn"
+
+
+def test_fresh_pause_is_not_reported(bot_db: Path) -> None:
+    """Человек отвечает прямо сейчас — тревожить его незачем."""
+    pause_dialog(bot_db, hours_ago=1)
+
+    assert collect_issues(BotData(bot_db), FakeSettings()) == []

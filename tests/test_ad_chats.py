@@ -116,16 +116,24 @@ async def test_operator_after_the_client_still_silences_the_bot(deps, llm) -> No
     assert actions(after) == ["silent"]
 
 
-async def test_operator_first_then_client_is_answered(deps, llm) -> None:
-    """Оборотная сторона правила, названная прямо.
+async def test_human_writing_first_silences_the_bot(deps, llm) -> None:
+    """Человек написал из аккаунта первым — бот молчит с этой секунды.
 
-    Исходящее до первой реплики клиента бот считает автоприветствием и на
-    следующее сообщение отвечает. Если человек начал переписку сам и хочет вести
-    её дальше, ему достаточно ответить ещё раз — эхо после реплики клиента снова
-    ставит паузу.
+    Сначала правило звучало как «любое исходящее до первой реплики клиента —
+    автоприветствие». Владелец показал, чем это плохо: он писал клиенту сам, а
+    бот продолжал вмешиваться в разговор. Теперь признака два — текст
+    автоприветствия и молчание клиента, — и одного «клиент не писал» мало.
     """
-    await echo(deps, "manual-echo", "Здравствуйте, это школа бокса")
+    entered = await echo(deps, "manual-echo", "Здравствуйте, это школа бокса, пишет Азамат")
+    assert [d.reason for d in entered] == ["operator_entered"]
 
-    answer = await client_says(deps, llm, "manual-1", "Здравствуйте", answer="Здравствуйте!")
+    after = await client_says(deps, llm, "manual-1", "Здравствуйте", answer="Здравствуйте!")
 
-    assert actions(answer) == ["reply"]
+    assert actions(after) == ["silent"], "бот заговорил поверх человека"
+
+
+async def test_unknown_outgoing_text_is_not_taken_for_the_ad_greeting(deps, llm) -> None:
+    """Совпадение ищется по настроенному тексту, а не по «первое исходящее»."""
+    entered = await echo(deps, "manual-echo-2", "Добрый день! Отправляю вам расписание")
+
+    assert [d.reason for d in entered] == ["operator_entered"]

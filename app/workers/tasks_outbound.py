@@ -30,11 +30,13 @@ from typing import Any, Final
 from uuid import UUID
 
 from app.channels.errors import ErrorDisposition, disposition, normalize_code
+from app.core import pause
 from app.channels.outbound import build_send_request, check_send_allowed, next_backoff_ms
 from app.logging_conf import bind_correlation, clear_correlation, get_logger
 from app.observability import metrics
 from app.types import (
     LeadStatus,
+    OutboundKind,
     OutboundMessage,
     WazzupBadContactError,
     WazzupChannelError,
@@ -124,6 +126,16 @@ async def send_outbox_job(ctx: dict[str, Any], outbox_id: str) -> None:
                 if conversation_id is not None
                 else None
             )
+            if await _stale_after_takeover(session, conv, claimed, message, now=now):
+                await repo_outbox.mark_skipped(session, oid, error="operator_took_over")
+                await session.commit()
+                log.info(
+                    "outbox_skipped_operator",
+                    outbox_id=str(oid),
+                    kind=message.kind.value,
+                )
+                return
+
             deny = check_send_allowed(
                 channel=message.channel,
                 last_inbound_at=_aware(getattr(conv, "last_inbound_at", None)),
@@ -307,6 +319,44 @@ async def _deliver(
         attempt=attempt,
         wazzup_message_id=wazzup_message_id,
     )
+
+
+#: Что уходит клиенту даже в диалоге, который ведёт человек. Ответ самого
+#: человека из CRM — очевидно; карточка администратору идёт не клиенту, а ему.
+_SENT_DESPITE_TAKEOVER: Final[frozenset[OutboundKind]] = frozenset(
+    {OutboundKind.OPERATOR_REPLY, OutboundKind.MANAGER_CARD}
+)
+
+
+async def _stale_after_takeover(
+    session: Any,
+    conv: Any,
+    row: Any,
+    message: OutboundMessage,
+    *,
+    now: datetime,
+) -> bool:
+    """Устарела ли строка: человек вошёл в разговор уже после её постановки.
+
+    Проверка окна канала здесь была, а этой не было. Строка ответа лежит в
+    очереди до минуты, и за эту минуту в диалог мог войти живой человек: бот
+    писал поверх него — ровно то, на что жаловался владелец.
+
+    Сравнивается не «стоит ли пауза», а что было раньше: реплика человека или
+    постановка строки. Иначе «передаю администратору» не ушло бы никогда — эту
+    строку ставит тот же ход, который и объявляет паузу.
+    """
+    if message.kind in _SENT_DESPITE_TAKEOVER or conv is None:
+        return False
+    try:
+        seen = await pause.operator_last_seen(session, conv.id)
+    except Exception as exc:  # noqa: BLE001 - отправку не роняем из-за проверки
+        log.warning("takeover_check_failed", error=type(exc).__name__)
+        return False
+    if seen is None:
+        return False
+    queued = _aware(getattr(row, "created_at", None)) or now
+    return seen > queued
 
 
 async def _handle_error(

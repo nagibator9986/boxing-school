@@ -63,13 +63,14 @@ def _as_minutes(value: str, fallback: int) -> int:
 
     Верхняя граница — сутки: пауза длиннее означает «бот выключен в этом
     диалоге навсегда», а для этого есть отдельное решение человека, а не
-    случайно введённое число.
+    случайно введённое число. Ноль — как раз это решение: «молчать, пока бота
+    не вернут вручную».
     """
     try:
         minutes = int(str(value).strip())
     except (TypeError, ValueError):
         return fallback
-    return min(1440, max(1, minutes))
+    return min(1440, max(0, minutes))
 
 
 def _as_bool(value: str, fallback: bool) -> bool:
@@ -93,11 +94,13 @@ class RuntimeSettings:
     work_end: str = "20:00"
     lead_notify: bool = True
     trial_free: bool = True
-    operator_pause_minutes: int = 120
+    operator_pause_minutes: int = 0
     #: Номера, которым бот не отвечает, как их ввёл владелец. Разбор — в
     #: :mod:`app.core.ignore_list`: здесь строка хранится как есть, чтобы в
     #: интерфейсе она выглядела так же, как её вписали.
     ignored_numbers: str = ""
+    #: Текст автоприветствия рекламы; см. ``Settings.auto_greeting_texts``.
+    auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ"
 
     # ------------------------------------------------------------------ чтение
     @classmethod
@@ -115,7 +118,7 @@ class RuntimeSettings:
         work_end = f"{int(work_match.group(3)):02d}:{work_match.group(4)}" if work_match else "20:00"
         return cls(
             followup_enabled=_as_bool(values.get("followup_enabled", ""), True),
-            operator_pause_minutes=_as_minutes(values.get("operator_pause_minutes", ""), 120),
+            operator_pause_minutes=_as_minutes(values.get("operator_pause_minutes", ""), 0),
             quiet_start=quiet[0],
             quiet_end=quiet[1],
             work_start=work_start,
@@ -123,6 +126,7 @@ class RuntimeSettings:
             lead_notify=_as_bool(values.get("lead_notify", ""), True),
             trial_free=_as_bool(values.get("trial_free", ""), True),
             ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
+            auto_greeting_texts=(values.get("auto_greeting_texts", "") or "").strip(),
         )
 
     # ------------------------------------------------------------ применение
@@ -140,6 +144,7 @@ class RuntimeSettings:
                 "followup_quiet_hours_end": self.quiet_end,
                 "pause_operator_minutes": self.operator_pause_minutes,
                 "ignored_numbers": self.ignored_numbers,
+                "auto_greeting_texts": self.auto_greeting_texts,
             }
         )
 

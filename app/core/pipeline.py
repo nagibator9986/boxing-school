@@ -1147,17 +1147,20 @@ async def _handle_echo(
             db, conv, [{"role": "model", "parts": [{"text": inbound.text}]}]
         )
 
-    if not await conv_session.client_has_written(db, conv):
-        # Клиент ещё ни разу не написал — перехватывать диалог не у кого.
+    if _is_auto_greeting(inbound.text, _owner_settings(deps)) and not await (
+        conv_session.client_has_written(db, conv)
+    ):
+        # Автоприветствие рекламы: WhatsApp Business шлёт его сам в чат,
+        # открытый из объявления, и оно возвращается к нам эхом, которого нет в
+        # нашем outbox. Бот принимал его за живого оператора, ставил паузу на
+        # два часа и молчал на всё, что писал клиент дальше.
         #
-        # Так выглядит чат, пришедший с рекламы: WhatsApp Business сам шлёт
-        # автоприветствие («ЖМИ ОТПРАВИТЬ!»), и оно возвращается к нам эхом,
-        # которого нет в нашем outbox. Бот принимал его за живого оператора,
-        # ставил себе паузу на два часа и молчал на всё, что писал клиент
-        # дальше: 02.09.2026 так были потеряны два сообщения человека, который
-        # пришёл записывать ребёнка. Реплика в историю попадает — модель должна
-        # видеть, с чего начался разговор, — но паузы не будет.
-        _log.info("echo_before_first_client_message", conv_key=conv.conv_key)
+        # Проверяются ОБА признака — текст и то, что клиент ещё не писал. Одного
+        # «клиент не писал» мало: под него подпадало и первое сообщение живого
+        # человека из аккаунта, а такое обязано глушить бота немедленно. Ровно
+        # на это владелец и пожаловался: «после того как кто-то пишет с самого
+        # аккаунта, бот должен резко затихать».
+        _log.info("auto_greeting_ignored", conv_key=conv.conv_key)
         return _decision(
             DecisionAction.SILENT,
             "auto_greeting",
@@ -1739,6 +1742,24 @@ def _draft_from_text(
         child_gender=lexicon.extract_gender(text, lexicon=kb.lexicon),
         messages_count=int(conv.msg_in_count or 0),
     )
+
+
+def _is_auto_greeting(text: str | None, settings: Settings) -> bool:
+    """Похоже ли исходящее на автоприветствие, настроенное в WhatsApp Business.
+
+    Сравнение по подстроке без учёта регистра: владелец вписывает узнаваемый
+    кусок («ЖМИ ОТПРАВИТЬ»), а не всё сообщение с эмодзи и переносами. Пустая
+    настройка означает, что автоприветствия нет и любое исходящее из аккаунта —
+    это человек.
+    """
+    body = (text or "").strip().casefold()
+    if not body:
+        return False
+    for line in (settings.auto_greeting_texts or "").splitlines():
+        needle = line.strip().casefold()
+        if needle and needle in body:
+            return True
+    return False
 
 
 async def _record_llm(

@@ -291,8 +291,8 @@ class AdminConsole:
         value = text.strip().replace(" ", "").replace("—", "-").replace("–", "-")
 
         if spec is not None and spec.kind == "minutes":
-            if not value.isdigit() or not 1 <= int(value) <= 1440:
-                return "Нужно число минут — от 1 до 1440."
+            if not value.isdigit() or not 0 <= int(value) <= 1440:
+                return "Нужно число минут — от 0 до 1440. Ноль: молчать до возврата вручную."
             value = str(int(value))
         elif spec is not None and spec.kind == "phones":
             # Список номеров: формат записи свободный, проверять нечего, кроме

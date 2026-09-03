@@ -519,7 +519,7 @@ async def test_sweep_ignores_telegram_rows(sessionmaker) -> None:
     import sqlalchemy as sa
 
     from app.storage import repo_outbox
-    from app.storage.models import Base, Conversation
+    from app.storage.models import Conversation
     from app.types import ChannelKind, Language, OutboundKind, OutboundMessage
 
     async with sessionmaker() as session:

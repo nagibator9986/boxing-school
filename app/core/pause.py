@@ -52,6 +52,7 @@ __all__ = [
     "is_resume_command",
     "pause_minutes_for",
     "resume",
+    "operator_last_seen",
     "set_pause",
 ]
 
@@ -93,8 +94,7 @@ async def is_paused(
         return False
 
     # База знает про паузу, а Redis её потерял — восстанавливаем быстрый путь.
-    if deadline is not None:
-        await _mark(state, conv_key, deadline, now)
+    await _mark(state, conv_key, deadline, now)
     return True
 
 
@@ -118,8 +118,12 @@ async def set_pause(
     Новое окно — ``now + minutes``; если действующее окно длиннее, оно
     сохраняется: продление никогда не укорачивает паузу.
     """
-    minutes = max(1, int(minutes))
-    deadline = now + timedelta(minutes=minutes)
+    # Ноль минут — «молчать, пока бота не вернут вручную». Так владелец задаёт
+    # паузу после ответа человека: срок здесь означал, что бот сам возвращается
+    # в разговор, который человек ведёт до сих пор, — а он просил обратного:
+    # «после того как кто-то пишет с самого аккаунта, бот должен резко затихать».
+    forever = int(minutes) <= 0
+    deadline = None if forever else now + timedelta(minutes=max(1, int(minutes)))
 
     row = await _row(session, conv_id)
     if row is None:
@@ -127,14 +131,20 @@ async def set_pause(
         session.add(row)
 
     current = _aware(row.paused_until)
-    if row.paused and current is not None and current > deadline:
+    if not forever and row.paused and current is not None and current > deadline:
         deadline = current
+    if row.paused and row.resume_policy == ResumePolicy.MANUAL_ONLY.value:
+        # Паузу без срока продление сроком не укорачивает.
+        deadline = None
+        forever = True
 
     row.paused = True
     row.paused_until = deadline
     row.pause_reason = reason.value
     row.resume_policy = (
-        ResumePolicy.MANUAL_ONLY.value if reason in _MANUAL_ONLY else ResumePolicy.TIMEOUT.value
+        ResumePolicy.MANUAL_ONLY.value
+        if forever or reason in _MANUAL_ONLY
+        else ResumePolicy.TIMEOUT.value
     )
     row.resumed_at = None
     if reason is PauseReason.OPERATOR_REPLY:
@@ -161,7 +171,7 @@ async def set_pause(
         conv_key=conv_key,
         reason=reason.value,
         minutes=minutes,
-        until=deadline.isoformat(),
+        until=deadline.isoformat() if deadline is not None else "до возврата вручную",
     )
 
 
@@ -187,6 +197,17 @@ async def resume(
 # --------------------------------------------------------------------------- #
 # Признаки оператора
 # --------------------------------------------------------------------------- #
+async def operator_last_seen(session: AsyncSession, conv_id: UUID) -> datetime | None:
+    """Когда человек последний раз писал в этот диалог. ``None`` — не писал.
+
+    Нужна отправщику: строка ответа могла пролежать в очереди минуту, и за эту
+    минуту в разговор мог войти человек. Отправить её после этого — то самое
+    «бот продолжает вмешиваться», на которое жаловался владелец.
+    """
+    row = await _row(session, conv_id)
+    return _aware(row.operator_last_seen_at) if row is not None else None
+
+
 def detect_operator(inbound: InboundMessage, *, known_outbox: bool) -> bool:
     """См. :func:`app.channels.normalize.is_operator_echo`.
 
@@ -226,7 +247,9 @@ def pause_minutes_for(reason: PauseReason, settings: Settings) -> int:
         PauseReason.MANUAL: settings.pause_user_request_minutes,
         PauseReason.BUDGET_GUARD: _minutes_till_midnight(settings),
     }
-    return max(1, int(mapping.get(reason, _DEFAULT_MINUTES)))
+    # Ноль сохраняется: это осмысленное значение — «до возврата вручную».
+    minutes = int(mapping.get(reason, _DEFAULT_MINUTES))
+    return minutes if minutes <= 0 else max(1, minutes)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,8 +282,26 @@ async def _clear(
     _log.info("bot_resumed", conv_key=conv_key, by=by)
 
 
-async def _mark(state: StateStore, conv_key: str, deadline: datetime, now: datetime) -> None:
-    """Ставит быстрый ключ паузы с TTL до конца окна."""
+#: TTL быстрого ключа для паузы без срока. Истина всё равно в базе: когда ключ
+#: истечёт, ``is_paused`` прочитает строку и поставит его заново. Сутки — чтобы
+#: не держать в Redis запись, которую снимут кнопкой через минуту.
+_ENDLESS_PAUSE_TTL_S: Final[int] = 24 * 60 * 60
+
+
+async def _mark(
+    state: StateStore, conv_key: str, deadline: datetime | None, now: datetime
+) -> None:
+    """Ставит быстрый ключ паузы с TTL до конца окна.
+
+    ``deadline is None`` — пауза без срока: ключ живёт сутки и переставляется
+    при следующем чтении, пока человек не вернёт бота.
+    """
+    if deadline is None:
+        try:
+            await state.set(key_pause(conv_key), "manual", _ENDLESS_PAUSE_TTL_S)
+        except Exception as exc:  # pragma: no cover - истина всё равно в базе
+            _log.warning("pause_mark_failed", error=str(exc))
+        return
     ttl = int((deadline - now).total_seconds())
     if ttl <= 0:
         return

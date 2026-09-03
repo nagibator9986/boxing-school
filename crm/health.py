@@ -46,6 +46,7 @@ def collect_issues(bot, settings) -> list[Issue]:
     issues.extend(_config_issues(settings))
     issues.extend(_model_issues(bot))
     issues.extend(_delivery_issues(bot))
+    issues.extend(_forgotten_dialogs(bot))
     return sorted(issues, key=lambda item: 0 if item.is_error else 1)
 
 
@@ -126,6 +127,33 @@ def _model_issues(bot) -> list[Issue]:
             "error",
             f"Модель отвечает с ошибками: {errors} из {calls} за час",
             f"Клиенты получают карточки из базы знаний вместо ответа. Причина — {reason}.",
+        )
+    ]
+
+
+#: Через сколько часов молчания диалог считается забытым.
+STALE_PAUSE_HOURS: Final[int] = 24
+
+
+def _forgotten_dialogs(bot) -> list[Issue]:
+    """Диалоги, где бот замолчал после ответа человека, а человек не вернулся.
+
+    Пауза после вмешательства человека бессрочная — так просил владелец. Цена
+    этого решения в том, что забытый диалог молчит навсегда, поэтому о нём
+    напоминает обзор.
+    """
+    try:
+        stale = bot.stale_paused_dialogs(hours=STALE_PAUSE_HOURS)
+    except Exception:  # noqa: BLE001 - обзор не имеет права падать из-за проверки
+        return []
+    if not stale:
+        return []
+    return [
+        Issue(
+            "warn",
+            f"Диалогов без ответа больше суток: {stale}",
+            "В них писал человек, и бот замолчал. Ответьте сами или верните бота "
+            "кнопкой в карточке клиента.",
         )
     ]
 

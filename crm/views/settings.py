@@ -48,11 +48,14 @@ def index() -> Any:
                 if spec.kind == "bool":
                     value = "on" if flag(request.form, spec.key) else "off"
                 elif spec.kind == "minutes":
-                    minutes = integer(request.form, spec.key, default=0)
-                    if not 1 <= minutes <= 1440:
+                    # Ноль — осмысленное значение: «молчать до возврата вручную».
+                    # Поэтому нечисло нельзя превращать в ноль по умолчанию:
+                    # опечатка «полчаса» выключала бы бота в диалоге навсегда.
+                    raw = text(request.form, spec.key)
+                    minutes = integer(request.form, spec.key, default=-1)
+                    if not raw.isdigit() or not 0 <= minutes <= 1440:
                         problems.append(
-                            f"{spec.title}: нужно число минут от 1 до 1440, получено «"
-                            f"{text(request.form, spec.key)}»"
+                            f"{spec.title}: нужно число минут от 0 до 1440, получено «{raw}»"
                         )
                         continue
                     value = str(minutes)

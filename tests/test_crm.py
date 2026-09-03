@@ -920,12 +920,10 @@ def test_operator_pause_is_editable_and_reaches_the_bot(client: Any, sandbox: Cr
 
 
 def test_absurd_pause_is_refused(client: Any, sandbox: CrmConfig) -> None:
-    """Ноль и сутки с лишним не принимаются.
+    """Сутки с лишним и слова не принимаются: это опечатка, а не решение."""
+    before = load_runtime_settings(sandbox.admin_db).operator_pause_minutes
 
-    Ноль означал бы «бот отвечает поверх человека сразу», а число из десяти
-    цифр — «бот выключен навсегда»; и то и другое — почти наверняка опечатка.
-    """
-    for wrong in ("0", "99999", "полчаса"):
+    for wrong in ("99999", "полчаса"):
         response = client.post(
             "/settings/",
             data={
@@ -936,6 +934,27 @@ def test_absurd_pause_is_refused(client: Any, sandbox: CrmConfig) -> None:
             },
             follow_redirects=True,
         )
-        assert "от 1 до 1440" in response.data.decode(), wrong
+        assert "от 0 до 1440" in response.data.decode(), wrong
 
-    assert load_runtime_settings(sandbox.admin_db).operator_pause_minutes == 120
+    assert load_runtime_settings(sandbox.admin_db).operator_pause_minutes == before
+
+
+def test_zero_pause_means_silence_until_a_human_returns(client: Any, sandbox: CrmConfig) -> None:
+    """Ноль — не опечатка, а осмысленный выбор владельца.
+
+    Раньше он отвергался как «бот отвечает поверх человека сразу». Смысл
+    обратный: разговор, начатый человеком, остаётся за человеком, пока бота не
+    вернут кнопкой или строкой «#бот».
+    """
+    client.post(
+        "/settings/",
+        data={
+            "form_complete": "1",
+            "quiet_hours": "21:00-09:00",
+            "work_hours": "10:00-20:00",
+            "operator_pause_minutes": "0",
+        },
+        follow_redirects=True,
+    )
+
+    assert load_runtime_settings(sandbox.admin_db).operator_pause_minutes == 0

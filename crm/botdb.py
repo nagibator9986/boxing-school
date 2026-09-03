@@ -655,6 +655,24 @@ class BotData:
             return False
         return bool(changed)
 
+    def stale_paused_dialogs(self, *, hours: int = 24) -> int:
+        """Диалоги, где бот молчит дольше срока и никто не ответил.
+
+        Пауза после ответа человека теперь бессрочная — так просил владелец:
+        «бот должен резко затихать». Обратная сторона в том, что забытый диалог
+        молчит навсегда, и напомнить о нём должен интерфейс.
+        """
+        edge = (datetime.now(tz=_UTC) - timedelta(hours=max(1, int(hours)))).strftime(
+            "%Y-%m-%d %H:%M:%S.%f"
+        )
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM escalation_state e"
+            "  JOIN conversation c ON c.id = e.conversation_id"
+            " WHERE e.paused = 1 AND c.last_inbound_at IS NOT NULL AND c.last_inbound_at < ?",
+            (edge,),
+        )
+        return int(rows[0]["n"]) if rows else 0
+
     # ------------------------------------------------------- здоровье модели
     def llm_health(self, *, hours: int = 1) -> dict[str, Any]:
         """Сколько вызовов модели за период, сколько с ошибкой и какой.
