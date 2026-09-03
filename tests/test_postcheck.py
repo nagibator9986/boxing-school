@@ -936,3 +936,35 @@ def test_known_name_and_nameless_reply_pass(text: str, known: tuple[str, ...], k
     склонять имя, которое ему только что назвали.
     """
     assert verdict(text, kb, known_names=known).ok
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Заниматься боксом можно уже с трёх лет.",
+        "У нас занимаются дети с трех лет.",
+        "Берём с семи лет.",
+    ],
+)
+def test_age_limit_spelled_in_words_is_blocked(text: str, kb) -> None:
+    """Границу приёма модель называет и прописью — проверка на цифры её теряла.
+
+    В живом прогоне 03.09.2026 бот трижды из восьми ответил «заниматься можно с
+    трёх лет». Цифры в такой фразе нет, и правило пропускало её целиком, хотя по
+    смыслу это ровно та же выдумка, что «берём с 7 лет».
+    """
+    assert not verdict(text, kb).ok
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Принимаем детей с пяти лет.",
+        "Принимаем детей с 5 лет.",
+        "Ему 6 лет — подойдёт группа новичков.",
+        "Занятия идут с пяти вечера.",
+    ],
+)
+def test_correct_age_in_words_and_time_pass(text: str, kb) -> None:
+    """Верная граница прописью — правда, а «с пяти вечера» — вообще не возраст."""
+    assert verdict(text, kb).ok
