@@ -238,7 +238,7 @@ class Settings(BaseSettings):
     #: из-за него нельзя. Совпадение ищется как подстрока, без учёта регистра;
     #: несколько вариантов разделяются переводом строки. Пустое значение —
     #: любое исходящее считается ответом человека.
-    auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ"
+    auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ\nThank you for contacting us"
     bot_miss_limit: int = 2
     rate_limit_inbound_per_conv: int = 20
     rate_limit_window_seconds: int = 300

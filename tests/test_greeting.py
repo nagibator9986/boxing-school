@@ -162,3 +162,38 @@ async def test_reopened_dialog_returns_to_work(deps, llm) -> None:
 
     answer = replies(await say(deps, llm, "gr-13", "Здравствуйте"))
     assert "1. Записаться" not in answer
+
+
+# --------------------------------------------------------------------------- #
+# Приветствие живого человека
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "text",
+    ["Здравствуйте 🤝", "Салем 👋", "Привет!!! 😀", "Сәлеметсіз бе ✋", "здравствуйте 🥊🥊"],
+)
+async def test_greeting_with_emoji_still_shows_the_menu(deps, llm, kb, text: str) -> None:
+    """Эмодзи в приветствии — норма, а не исключение.
+
+    Живая переписка 03.09.2026: «Здравствуйте 🤝» — и клиент получил общий ответ
+    модели вместо меню из четырёх пунктов. Хвост шаблона перечислял «пробел,
+    восклицательный, точка, запятая, скобка», и эмодзи в него не попадало.
+    """
+    answer = replies(await say(deps, llm, f"em-{abs(hash(text))}", text))
+
+    # На казахское приветствие меню приходит по-казахски — это верно, поэтому
+    # сравниваем с обоими вариантами шаблона, а не только с русским.
+    assert answer in {
+        kb.text("greeting.first", Language.RU),
+        kb.text("greeting.first", Language.KK),
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Здравствуйте, сколько стоит?", "Привет, есть места?", "Здравствуйте 10 лет сыну"],
+)
+async def test_greeting_with_a_question_is_still_answered(deps, llm, text: str) -> None:
+    """Опора: вопрос рядом с приветствием по-прежнему отвечает модель."""
+    answer = replies(await say(deps, llm, f"q-{abs(hash(text))}", text))
+
+    assert "1. Записаться" not in answer

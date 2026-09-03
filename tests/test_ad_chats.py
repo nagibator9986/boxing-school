@@ -74,7 +74,7 @@ def replies(decisions: Sequence[PipelineDecision]) -> str:
 async def test_ad_greeting_does_not_silence_the_bot(deps, llm) -> None:
     """Автоприветствие рекламы приходит раньше клиента — перехватывать некого."""
     first = await echo(deps, "ad-echo", AD_GREETING)
-    assert [d.reason for d in first] == ["auto_greeting"]
+    assert [d.reason for d in first] == ["auto_reply"]
 
     answer = await client_says(
         deps,
@@ -137,3 +137,26 @@ async def test_unknown_outgoing_text_is_not_taken_for_the_ad_greeting(deps, llm)
     entered = await echo(deps, "manual-echo-2", "Добрый день! Отправляю вам расписание")
 
     assert [d.reason for d in entered] == ["operator_entered"]
+
+
+async def test_auto_reply_in_the_middle_of_a_talk_does_not_silence_the_bot(deps, llm) -> None:
+    """Автоответ WhatsApp приходит и посреди разговора — это не человек.
+
+    Живая переписка 03.09.2026: клиент спросил про расписание, ему ушло
+    «Hello! Thank you for contacting us. We'll get back to you soon.» — и бот
+    замолчал навсегда. Дальше всю переписку вёл человек, а на вопрос об оплате
+    клиент ждал ответа тридцать семь минут.
+
+    Раньше признаком автоматики было «клиент ещё ни разу не писал». Здесь
+    клиент уже написал — и признак не сработал.
+    """
+    await client_says(deps, llm, "mid-1", "Здравствуйте")
+
+    auto = await echo(deps, "mid-2", "Hello! Thank you for contacting us. We'll get back to you soon.")
+    assert [d.reason for d in auto] == ["auto_reply"]
+
+    after = await client_says(
+        deps, llm, "mid-3", "Можно график расписания?", answer="Конечно, подскажу."
+    )
+
+    assert actions(after) == ["reply"], "бот замолчал из-за автоответа WhatsApp"

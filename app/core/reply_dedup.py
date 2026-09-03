@@ -63,7 +63,19 @@ _OFFER_TOPICS: Final[dict[str, tuple[str, ...]]] = {
     "карте": ("2gis", "🗺"),
     "карту": ("2gis", "🗺"),
     "видео": ("видео",),
+    # Карточка залов заканчивается просьбой «напишите номер зала». Своими
+    # словами бот просил о том же ещё раз: «посмотрите по списку, какой из
+    # залов ближе к вам?» — два разных призыва к одному действию подряд.
+    "по списку": ("номер зала",),
+    "какой из залов": ("номер зала",),
+    "какой зал": ("номер зала",),
+    "выберите зал": ("номер зала",),
+    "каком зале": ("номер зала",),
+    "каком из зал": ("номер зала",),
 }
+
+#: Границы предложений: точка, восклицательный, вопросительный знак.
+_SENTENCE_SPLIT: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?])\s+")
 
 #: Слова-связки, которыми обрастает пересказ адреса: «зал находится по адресу
 #: улица Каирбекова, 24, в здании магазина «Рахат»». Данных они не несут, а
@@ -130,8 +142,16 @@ def strip_card_repeats(reply: str, cards: Sequence[str] | Iterable[str]) -> str:
         if not line.strip():
             kept.append(line)
             continue
-        if _is_repeat(line, card_words) or _is_stale_offer(line, cards_lower):
+        if _is_repeat(line, card_words):
             continue
-        kept.append(line)
+        # Предложения разбираются по отдельности: в живой переписке нужное и
+        # лишнее стояли в одной строке — «В районе Береке нашего зала нет.
+        # Посмотрите по списку, какой из залов ближе к вам?». Выбрасывать
+        # строку целиком значило бы потерять ответ на вопрос клиента.
+        sentences = [s for s in _SENTENCE_SPLIT.split(line) if s.strip()]
+        useful = [s for s in sentences if not _is_stale_offer(s, cards_lower)]
+        if not useful:
+            continue
+        kept.append(" ".join(useful) if len(useful) != len(sentences) else line)
 
     return "\n".join(kept).strip()

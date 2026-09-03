@@ -231,18 +231,19 @@ def pause_dialog(bot_db: Path, *, hours_ago: int) -> None:
     engine.dispose()
 
 
-def test_forgotten_dialog_is_reported(bot_db: Path) -> None:
+def test_waiting_client_is_reported(bot_db: Path) -> None:
     """Пауза после человека бессрочная — забытый диалог молчит навсегда.
 
-    Обратная сторона решения «бот резко затихает»: о таком диалоге должен
-    напомнить интерфейс, иначе клиент останется без ответа насовсем.
+    Порог был сутки, и это величина не из той жизни: в переписке о покупке
+    клиент, прождавший полчаса, уже ушёл. 03.09.2026 так и вышло — вопрос
+    «оплата какая?» остался без ответа на тридцать семь минут.
     """
-    pause_dialog(bot_db, hours_ago=30)
+    pause_dialog(bot_db, hours_ago=3)
 
     issues = collect_issues(BotData(bot_db), FakeSettings())
 
     assert len(issues) == 1
-    assert "Диалогов без ответа больше суток: 1" in issues[0].title
+    assert "Клиенты ждут ответа: 1" in issues[0].title
     assert issues[0].level == "warn"
 
 

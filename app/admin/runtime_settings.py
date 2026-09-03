@@ -100,7 +100,7 @@ class RuntimeSettings:
     #: интерфейсе она выглядела так же, как её вписали.
     ignored_numbers: str = ""
     #: Текст автоприветствия рекламы; см. ``Settings.auto_greeting_texts``.
-    auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ"
+    auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ\nThank you for contacting us"
 
     # ------------------------------------------------------------------ чтение
     @classmethod
