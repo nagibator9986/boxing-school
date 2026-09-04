@@ -227,6 +227,46 @@ class PipelineDeps:
 # --------------------------------------------------------------------------- #
 # Реализация ToolServices
 # --------------------------------------------------------------------------- #
+def _human_joined_mid_turn(seen: datetime | None, turn_started_at: datetime | None) -> bool:
+    """Написал ли человек из аккаунта уже ПОСЛЕ начала этого хода.
+
+    Проверять «писал ли когда-нибудь» нельзя: администратор мог ответить час
+    назад и вернуть бота кнопкой в CRM. Тогда его давняя реплика навсегда
+    лишала бы бота ранней отправки — та же ошибка, что однажды заставляла бота
+    молчать после каждой передачи.
+    """
+    if seen is None or turn_started_at is None:
+        return False
+    return seen >= turn_started_at
+
+
+def _send_without_waiting(
+    message: OutboundMessage, *, position: int, cards_early: bool
+) -> bool:
+    """Стоит ли отправлять это сообщение сразу, не дожидаясь конца хода.
+
+    Замер 03.09.2026: карточка цен готова через 1,5 секунды, а уходила клиенту
+    через 2,8 — 1,2 секунды она лежала в очереди, пока модель дописывала
+    короткий вопрос следом.
+
+    Ранняя отправка не бесплатна: короткая карточка сливается с ответом модели
+    в ОДНО сообщение (:meth:`_Services._merge_into_previous`), и отправить её
+    заранее — значит разбить ответ надвое. Владелец жаловался именно на поток
+    сообщений, поэтому по умолчанию рано уходит только файл, и лишь когда он
+    первый в ходе: иначе видео обгонит расписание, к которому оно приложено.
+
+    ``cards_early`` включает полный режим — первая карточка тоже не ждёт. Это
+    минус секунда на самых частых вопросах (цены, расписание) ценой второго
+    сообщения.
+    """
+    if position != 0:
+        return False
+    if message.content_uri:
+        return True
+    return cards_early and message.kind is OutboundKind.ARTIFACT
+
+
+
 @dataclass(slots=True)
 class _Services:
     """Протокол :class:`~app.types.ToolServices` поверх текущей транзакции.
@@ -244,6 +284,9 @@ class _Services:
     cards: list[ManagerCard] = field(default_factory=list)
     lead_id: UUID | None = None
     paused: bool = False
+    #: Начало хода. Нужно, чтобы отличить реплику человека, пришедшую ПОКА бот
+    #: думал, от той, что была раньше и уже отработана.
+    turn_started_at: datetime | None = None
 
     async def enqueue_outbound(self, message: OutboundMessage) -> UUID:
         """Кладёт исходящее клиенту в outbox. Прямых вызовов Wazzup в пайплайне нет."""
@@ -264,7 +307,35 @@ class _Services:
         self.outbox.append((outbox_id, int(message.delay_ms or 0)))
         if to_client:
             self.messages.append(message)
+            await self._send_early(outbox_id, message)
         return outbox_id
+
+    async def _send_early(self, outbox_id: UUID, message: OutboundMessage) -> None:
+        """Отправляет крупную карточку, не дожидаясь конца хода.
+
+        Замер 03.09.2026: карточка цен готова через 1,5 с, а уходила клиенту
+        через 2,8 — 1,2 секунды она просто лежала в очереди, пока модель
+        дописывала короткий вопрос следом. Карточку собирает код, от этого
+        вопроса она не зависит, и ждать ей незачем.
+        """
+        if not _send_without_waiting(
+            message,
+            position=len(self.messages) - 1,
+            cards_early=bool(self.deps.settings.send_cards_early),
+        ):
+            return
+        # Человек мог войти в диалог, пока работала модель. Проверка дешёвая, а
+        # отправленное сообщение назад не вернёшь.
+        try:
+            seen = await pause.operator_last_seen(self.session, self.conv.id)
+            if _human_joined_mid_turn(seen, self.turn_started_at):
+                return
+            await self.session.commit()
+        except Exception as exc:  # noqa: BLE001 - ход важнее ранней отправки
+            _log.warning("early_send_commit_failed", error=type(exc).__name__)
+            return
+        self.outbox.remove((outbox_id, int(message.delay_ms or 0)))
+        await _enqueue_job(self.deps, outbox_id, int(message.delay_ms or 0))
 
     async def _merge_into_previous(self, message: OutboundMessage) -> UUID | None:
         """Дописывает текст к предыдущему сообщению хода. ``None`` — не вышло.
@@ -705,7 +776,7 @@ async def _run_turn(
                 correlation_id=correlation_id,
             )
 
-        services = _Services(deps=deps, session=db, conv=conv)
+        services = _Services(deps=deps, session=db, conv=conv, turn_started_at=now)
 
         # --- 6. Язык ------------------------------------------------------- #
         lang_decision = language.detect(
@@ -1323,7 +1394,7 @@ async def _fixed_reply_turn(
                 correlation_id=correlation_id,
             )
         lang = Language.parse(conv.lang) or Language.RU
-        services = _Services(deps=deps, session=db, conv=conv)
+        services = _Services(deps=deps, session=db, conv=conv, turn_started_at=now)
         await _say(deps, services, conv, inbound, kb=kb, lang=lang, key=key, now=now)
         await db.commit()
         await _flush_queue(deps, services)
