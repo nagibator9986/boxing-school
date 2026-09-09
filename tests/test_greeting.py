@@ -70,7 +70,10 @@ async def test_first_greeting_shows_the_menu(deps, llm, kb) -> None:
     answer = replies(await say(deps, llm, "gr-1", "Здравствуйте"))
 
     assert kb.text("greeting.first", Language.RU) == answer
-    assert "4. Написать менеджеру" in answer
+    assert "3. Написать менеджеру" in answer
+    assert "уже занимаемся" not in answer, (
+        "ветка действующих клиентов из меню убрана: под бота открыт отдельный номер"
+    )
 
 
 async def test_second_greeting_in_the_same_talk_does_not_repeat_the_menu(deps, llm) -> None:

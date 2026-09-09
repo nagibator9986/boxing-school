@@ -138,6 +138,94 @@ gyms:
     days: *id001
     time_start: "19:00"
     time_end: "20:30"
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "17:00"
+    time_end: "18:30"
+    shift: any
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "17:00"
+    time_end: "18:30"
+    shift: any
+    note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
   capacity_note: null
   media:
   - gym_location_plaza_szm_70
@@ -258,6 +346,28 @@ gyms:
     time_end: "20:30"
     shift: any
     note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
   capacity_note: null
   media:
   - gym_location_center_kairbekova_24
@@ -315,6 +425,28 @@ gyms:
     days: *id003
     time_start: "18:45"
     time_end: "19:45"
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
   capacity_note: null
   media:
   - gym_location_magazin15_voinov_8b

@@ -269,6 +269,26 @@ async def update_status(
     return True
 
 
+async def sent_texts(session: AsyncSession, conv_id: UUID, *, limit: int = 20) -> list[str]:
+    """Тексты, которые бот уже поставил в очередь этому клиенту.
+
+    Считается по ``outbox``, а не по переписке: строка попадает в ``message``
+    только после успешной отправки воркером, а знать, что карточка уже ушла,
+    нужно сразу — иначе модель пересказывает её на следующем же ходу.
+    """
+    stmt = (
+        sa.select(OutboxMessage.payload)
+        .where(
+            OutboxMessage.conversation_id == conv_id,
+            OutboxMessage.state.in_(("pending", "sending", "sent")),
+        )
+        .order_by(OutboxMessage.created_at.desc())
+        .limit(max(1, limit))
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [str((row or {}).get("text") or "") for row in rows]
+
+
 async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id: str) -> int:
     """Сколько раз артефакт уже уходил в этом диалоге.
 

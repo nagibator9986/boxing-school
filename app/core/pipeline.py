@@ -49,6 +49,7 @@ from app.channels.wazzup_schemas import WebhookPayload, parse_webhook
 from app.config import Settings
 from app.core import (
     debounce,
+    funnel,
     reply_dedup,
     dedup,
     degraded,
@@ -61,7 +62,7 @@ from app.core import (
 )
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
-from app.kb.render import render_system_prompt
+from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
 from app.llm.prompt import build_system_instruction, prompt_ngrams
 from app.logging_conf import get_logger
@@ -152,14 +153,23 @@ _BARE_GREETING_RE: Final[re.Pattern[str]] = re.compile(
 #: про пробное занятие вместо рассказа о школе.
 _GREETING_CHOICES: Final[dict[str, str]] = {
     "1": "Хочу записать ребёнка на бесплатное пробное занятие",
-    "2": "Расскажите подробнее о школе, ценах и залах",
-    "3": "Мы уже занимаемся, у меня вопрос по оплате, расписанию или группе",
+    "2": "Расскажите про цены, залы и расписание",
     # Пункт про менеджера разворачивается во фразу со словом из словаря
     # интентов: её ловит guard и передаёт диалог человеку БЕЗ обращения к
-    # модели. Так «4» отрабатывает мгновенно и одинаково, а не зависит от
+    # модели. Так пункт отрабатывает мгновенно и одинаково, а не зависит от
     # того, как модель поймёт цифру.
-    "4": "Хочу написать менеджеру",
+    "3": "Хочу написать менеджеру",
 }
+
+
+#: Пункт меню, на который отвечает код, а не модель: факты о ценах и залах.
+_MENU_FACTS_DIGIT: Final[str] = "2"
+
+
+def _menu_digit(text: str) -> str | None:
+    """Голая цифра выбора пункта. ``None`` — клиент написал что-то другое."""
+    stripped = (text or "").strip().rstrip(".)")
+    return stripped if stripped in _GREETING_CHOICES else None
 
 
 def expand_menu_choice(text: str, *, after_greeting: bool) -> str:
@@ -292,14 +302,27 @@ class _Services:
         """Кладёт исходящее клиенту в outbox. Прямых вызовов Wazzup в пайплайне нет."""
         return await self._enqueue(message, to_client=True)
 
-    async def _enqueue(self, message: OutboundMessage, *, to_client: bool) -> UUID:
+    async def enqueue_standalone(self, message: OutboundMessage) -> UUID:
+        """То же, но сообщение остаётся отдельным и не сливается с соседним.
+
+        Нужно там, где склейка вредит: список залов и прайс, слитые в одно
+        полотно, читаются как «слишком много информации» — ровно то, на что
+        жаловался владелец.
+        """
+        return await self._enqueue(message, to_client=True, allow_merge=False)
+
+    async def _enqueue(
+        self, message: OutboundMessage, *, to_client: bool, allow_merge: bool = True
+    ) -> UUID:
         """Общая запись в outbox. ``to_client=False`` — служебное письмо сотруднику.
 
         В ``PipelineDecision.outbound`` попадает только то, что увидит клиент:
         карточка администратора учитывается отдельным полем ``manager_cards``,
         иначе метрики и тесты считают её ответом на сообщение родителя.
         """
-        merged = await self._merge_into_previous(message) if to_client else None
+        merged = (
+            await self._merge_into_previous(message) if to_client and allow_merge else None
+        )
         if merged is not None:
             return merged
 
@@ -818,7 +841,27 @@ async def _run_turn(
         # «Написать менеджеру» не срабатывал: guard видел голое «4», просьба к
         # человеку не опознавалась, и цифру разбирала модель — медленнее и
         # с ответом «чтобы не сказать вам неточность» вместо «передаю менеджеру».
-        text = expand_menu_choice(text, after_greeting=await conv_session.bot_turns(db, conv) == 1)
+        after_greeting = await conv_session.bot_turns(db, conv) == 1
+        chosen = _menu_digit(text) if after_greeting else None
+        text = expand_menu_choice(text, after_greeting=after_greeting)
+
+        # --- 6b. Пункт «цены, залы и расписание» отвечает кодом ------------ #
+        # Владелец 09.09.2026, увидев на этот пункт «здесь лучше ответит
+        # администратор»: «Зачем тогда 2 пункт?». Причина была в том, что ответ
+        # собирала модель: в одном прогоне из десяти она называла цену словами,
+        # без вызова инструмента, и анти-галлюцинационный фильтр справедливо
+        # снимал ответ — а клиент получал отказ на пункт, который бот сам ему и
+        # предложил. Теперь карточки собирает код: сорваться тут нечему, и
+        # отвечает пункт мгновенно.
+        if chosen == _MENU_FACTS_DIGIT:
+            decision = await _answer_menu_facts(
+                deps, db, services, conv, inbound,
+                kb=kb, lang=lang, correlation_id=correlation_id, now=now,
+            )
+            if decision is not None:
+                await db.commit()
+                await _flush_queue(deps, services)
+                return decision
 
         # --- 7. Guards ----------------------------------------------------- #
         verdict = guards.scan(text, lang=lang, lexicon=kb.lexicon, policies=kb.policies)
@@ -954,6 +997,7 @@ async def _run_turn(
             stage=await _client_stage(db, conv),
             just_said=_just_said(text, kb=kb, now=now),
             child_at_keyboard=await _child_talk_continues(db, conv, text),
+            cards_sent=await _cards_already_sent(db, conv),
         )
         request = LLMRequest(
             system_instruction=system_instruction,
@@ -1117,13 +1161,28 @@ async def _run_turn(
         if not reply.strip():
             # От ответа ничего не осталось: карточка и была ответом.
             _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
+        # Бот-продажник ведёт разговор: ответ, который ничего не спрашивает,
+        # упирается в тишину. Правило есть и в промпте, но модель регулярно
+        # заканчивает фактом — здесь тот же шаг доводится кодом.
+        tail_question: str | None = None
+        if not services.paused:
+            tail_question = funnel.pending_question(
+                reply,
+                draft=draft,
+                kb=kb,
+                lang=lang,
+                farewell=_client_said_goodbye(text, kb=kb),
+            )
         if lang_decision.needs_bridge:
             bridge = _kb_text(kb, TEXT_BRIDGE_KK, lang)
             if bridge and bridge not in reply:
                 reply = f"{reply}\n\n{bridge}"
 
         if reply.strip():
-            await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
+            await _enqueue_reply(
+                deps, services, conv, inbound, lang=lang, text=reply, now=now,
+                tail_question=tail_question,
+            )
         await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
         if int(conv.bot_miss_count or 0):
             await repo_conversation.set_bot_miss(db, conv.id, 0)
@@ -1699,6 +1758,81 @@ async def _fail_safe_conversation(
 # --------------------------------------------------------------------------- #
 # Outbox
 # --------------------------------------------------------------------------- #
+async def _answer_menu_facts(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    correlation_id: str,
+    now: datetime,
+) -> PipelineDecision | None:
+    """Пункт меню «цены, залы и расписание»: карточки из базы, без модели.
+
+    ``None`` — собрать ответ не вышло (нет артефактов), и ход идёт обычным
+    путём: пусть лучше отвечает модель, чем клиент не получит ничего.
+    """
+    try:
+        gyms_card = render_artifact_body(kb, artifact_id="gyms_list_city", lang=lang)
+        price_card = render_artifact_body(kb, artifact_id="price_card_city", lang=lang)
+    except Exception as exc:  # noqa: BLE001 - молчание хуже ответа модели
+        _log.warning("menu_facts_render_failed", error=type(exc).__name__)
+        return None
+    if not gyms_card.strip() or not price_card.strip():
+        return None
+
+    # Список залов уже зовёт выбрать зал, поэтому к прайсу идёт СЛЕДУЮЩИЙ шаг
+    # воронки — возраст. Два призыва об одном и том же читаются как навязчивость.
+    question = (kb.text("funnel.age", lang) or "").strip()
+    body = f"{price_card}\n\n{question}" if question else price_card
+
+    for part, kind in ((gyms_card, OutboundKind.ARTIFACT), (body, OutboundKind.BOT_REPLY)):
+        await _enqueue_reply(
+            deps, services, conv, inbound, lang=lang, text=part, now=now, kind=kind,
+            standalone=True,
+        )
+    # Ответ обязан попасть в историю модели: иначе на следующем ходу она не
+    # знает, что клиент уже видел цены и залы, и присылает их второй раз.
+    await conv_session.save_turn(
+        db,
+        conv,
+        [{"role": "model", "parts": [{"text": f"{gyms_card}\n\n{body}"}]}],
+    )
+    decision = _decision(
+        DecisionAction.REPLY,
+        "menu_facts",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        cards=services.cards,
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+    await _schedule_followups(db, conv, decision, kb=kb, client_text=inbound.text or "")
+    return decision
+
+
+#: Хвост последней части, в котором ищем вопрос перед тем, как дописать свой.
+_FUNNEL_TAIL_CHARS: Final[int] = 160
+
+
+def _with_room_for(part: str, question: str, *, limit: int) -> str:
+    """Дописывает вопрос к части, освобождая место обрезкой по границе абзаца."""
+    tail = f"\n\n{question}"
+    room = max(0, limit - len(tail))
+    body = part.strip()
+    if len(body) > room:
+        body = body[:room].rstrip()
+        cut = body.rfind("\n\n")
+        if cut > room // 2:
+            body = body[:cut].rstrip()
+    return f"{body}{tail}"
+
+
 async def _enqueue_reply(
     deps: PipelineDeps,
     services: _Services,
@@ -1709,8 +1843,16 @@ async def _enqueue_reply(
     text: str,
     now: datetime,
     kind: OutboundKind = OutboundKind.BOT_REPLY,
+    standalone: bool = False,
+    tail_question: str | None = None,
 ) -> None:
-    """Режет ответ по лимитам канала и кладёт части в outbox."""
+    """Режет ответ по лимитам канала и кладёт части в outbox.
+
+    ``tail_question`` — шаг воронки, который обязан уцелеть. Длинный ответ
+    режется по лимиту канала, и хвост с вопросом отбрасывается: в живом прогоне
+    09.09.2026 клиент на «ему 9 лет» получил обрезанный список залов и ни одного
+    вопроса. Поэтому вопрос дописывается к ПОСЛЕДНЕЙ отправляемой части.
+    """
     settings = deps.settings
     soft, hard = text_limits(inbound.channel, soft_limit=settings.soft_message_chars)
     parts = split_text(
@@ -1722,9 +1864,12 @@ async def _enqueue_reply(
     )
     if not parts:
         return
+    if tail_question and "?" not in parts[-1][-_FUNNEL_TAIL_CHARS:]:
+        parts[-1] = _with_room_for(parts[-1], tail_question, limit=hard)
 
+    send = services.enqueue_standalone if standalone else services.enqueue_outbound
     for index, part in enumerate(parts):
-        await services.enqueue_outbound(
+        await send(
             OutboundMessage(
                 conversation_id=conv.id,
                 channel_id=inbound.channel_id,
@@ -1957,6 +2102,9 @@ _CHILD_REPLY_MARKERS: Final[tuple[str, ...]] = (
 #: Сколько последних реплик просматривается в поисках этого признака.
 _CHILD_LOOKBACK: Final[int] = 20
 
+#: Столько же реплик хватает, чтобы понять, какие карточки клиент уже получил.
+_CARD_LOOKBACK: Final[int] = 20
+
 
 async def _child_talk_continues(
     db: AsyncSession, conv: Conversation, text: str
@@ -1986,6 +2134,46 @@ async def _child_talk_continues(
         author is Author.BOT and any(marker in (said or "").lower() for marker in _CHILD_REPLY_MARKERS)
         for author, said in transcript
     )
+
+
+#: Заголовки карточек, которые собирает код. По ним видно, что клиент их уже
+#: получал, — и модели незачем пересказывать то же самое своими словами.
+_CARD_MARKERS: Final[tuple[tuple[str, str], ...]] = (
+    ("🥊 Наши залы", "список залов"),
+    ("💳", "прайс"),
+    ("🗓 Расписание", "расписание зала"),
+)
+
+
+async def _cards_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
+    """Какие готовые карточки клиент в этом диалоге уже видел.
+
+    Живой прогон 09.09.2026: клиент выбрал пункт меню, получил список залов и
+    прайс, а на «ему 9 лет» модель пересказала тот же список залов своими
+    словами. Дедуп внутри хода этого не ловит — карточка ушла ходом раньше.
+    """
+    try:
+        texts = await repo_message.sent_texts(db, conv.id, limit=_CARD_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
+        _log.warning("sent_cards_lookup_failed", error=type(exc).__name__)
+        return ()
+    seen: list[str] = []
+    for said in texts:
+        for marker, label in _CARD_MARKERS:
+            if marker in said and label not in seen:
+                seen.append(label)
+    return tuple(seen)
+
+
+def _client_said_goodbye(text: str, *, kb: KBSnapshot) -> bool:
+    """Попрощался ли клиент. Импорт локальный: воркеры тянут за собой очередь."""
+    try:
+        from app.workers.tasks_followup import is_closing_phrase
+
+        return is_closing_phrase(text, closing_words=kb.policies.followup_closing_words)
+    except Exception as exc:  # noqa: BLE001 - наводящий вопрос не важнее ответа
+        _log.warning("closing_check_failed", error=type(exc).__name__)
+        return False
 
 
 def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:

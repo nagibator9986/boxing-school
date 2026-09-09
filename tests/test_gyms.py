@@ -463,7 +463,7 @@ async def test_unknown_district_offers_the_whole_list(kb) -> None:
     assert "gyms_list_city" in result.caveats[0]
 
 
-def test_menu_choice_four_hands_over_to_a_human(kb) -> None:
+def test_manager_menu_choice_hands_over_to_a_human(kb) -> None:
     """Пункт «Написать менеджеру» передаёт диалог человеку без обращения к модели.
 
     Цифра разворачивается во фразу со словом из словаря интентов, а её ловит
@@ -474,8 +474,8 @@ def test_menu_choice_four_hands_over_to_a_human(kb) -> None:
     from app.core.pipeline import expand_menu_choice
     from app.types import EscalationReason, GuardFlag, Language
 
-    expanded = expand_menu_choice("4", after_greeting=True)
-    assert expanded != "4", "цифра не развернулась в фразу"
+    expanded = expand_menu_choice("3", after_greeting=True)
+    assert expanded != "3", "цифра не развернулась в фразу"
 
     verdict = scan(expanded, lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies)
     assert verdict.escalate is True
@@ -506,6 +506,7 @@ def test_greeting_offers_the_manager_option(kb) -> None:
     """В приветствии есть пункт «Написать менеджеру» на обоих языках."""
     from app.types import Language
 
-    assert "4." in kb.text("greeting.first", Language.RU)
+    assert "3." in kb.text("greeting.first", Language.RU)
     assert "менеджер" in kb.text("greeting.first", Language.RU).lower()
-    assert "4." in kb.text("greeting.first", Language.KK)
+    assert "3." in kb.text("greeting.first", Language.KK)
+    assert "4." not in kb.text("greeting.first", Language.RU), "в меню осталось четыре пункта"

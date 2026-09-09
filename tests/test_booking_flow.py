@@ -459,11 +459,7 @@ async def test_greeting_with_a_question_is_not_replaced_by_menu(deps, llm) -> No
 
 @pytest.mark.parametrize(
     ("digit", "expected_fragment"),
-    [
-        ("1", "пробное"),
-        ("2", "школе"),
-        ("3", "уже занимаемся"),
-    ],
+    [("1", "пробное")],
 )
 async def test_bare_digit_after_greeting_expands_to_the_chosen_option(
     deps, llm, digit: str, expected_fragment: str
@@ -480,6 +476,38 @@ async def test_bare_digit_after_greeting_expands_to_the_chosen_option(
 
     sent = llm.requests[-1].user_text.lower()
     assert expected_fragment in sent, f"цифра {digit} не развернулась: {sent!r}"
+
+
+async def test_facts_menu_item_answers_from_the_knowledge_base(deps, llm) -> None:
+    """Пункт «цены, залы и расписание» собирает код, а не модель.
+
+    Владелец 09.09.2026 увидел на этот пункт «здесь лучше ответит администратор»
+    и спросил: «Зачем тогда 2 пункт?». Ответ собирала модель, и в одном прогоне
+    из десяти она называла цену словами без вызова инструмента — фильтр
+    справедливо снимал ответ, а клиент получал отказ на пункт, который бот сам
+    ему и предложил.
+    """
+    await say(deps, llm, "facts-1", "Здравствуйте", [])
+    calls_before = llm.generate_calls
+    # Пустой сценарий: обращение к модели здесь означало бы, что ответ снова
+    # зависит от её настроения.
+    decisions = await say(deps, llm, "facts-2", "2", [])
+
+    assert llm.generate_calls == calls_before, "пункт меню ушёл к модели"
+    text = " ".join(replies(decisions))
+    assert "Каирбекова 24" in text, "нет списка залов"
+    assert "25 000" in text, "нет цен"
+    assert text.rstrip().endswith("?"), "ответ не ведёт клиента дальше"
+
+
+async def test_facts_menu_item_arrives_as_two_messages(deps, llm) -> None:
+    """Залы и прайс приходят раздельно: слитые в полотно, они не читаются."""
+    await say(deps, llm, "facts-3", "Здравствуйте", [])
+    decisions = await say(deps, llm, "facts-4", "2", [])
+
+    sent = [out.text or "" for d in decisions for out in d.outbound]
+
+    assert len(sent) == 2, f"ожидались два сообщения, пришло {len(sent)}: {sent}"
 
 
 async def test_digit_later_in_dialogue_is_left_alone(deps, llm) -> None:
@@ -625,7 +653,7 @@ async def test_every_city_gym_has_a_route_video_or_none(kb) -> None:
         assert artifact.channels.get("telegram") == "allow"
 
 
-async def test_menu_item_four_reaches_a_human_without_the_model(deps, llm) -> None:
+async def test_manager_menu_item_reaches_a_human_without_the_model(deps, llm) -> None:
     """Пункт «Написать менеджеру» отрабатывает кодом, без обращения к модели.
 
     Разворот цифры в фразу стоит ДО проверок. Пока он стоял после них, guard
@@ -635,7 +663,7 @@ async def test_menu_item_four_reaches_a_human_without_the_model(deps, llm) -> No
     """
     await say(deps, llm, "m-greet", "Здравствуйте", [])
     # Пустой сценарий: любой вызов модели здесь означал бы, что ход пошёл не тем путём.
-    decisions = await say(deps, llm, "m-four", "4", [])
+    decisions = await say(deps, llm, "m-three", "3", [])
 
     assert not tools(decisions), "ход не должен обращаться к инструментам"
     text = " ".join(replies(decisions))
@@ -651,13 +679,16 @@ async def test_menu_item_four_reaches_a_human_without_the_model(deps, llm) -> No
 async def test_menu_digit_outside_the_greeting_is_not_a_menu_choice(deps, llm) -> None:
     """Цифра в середине разговора остаётся цифрой.
 
-    После приветствия «4» — это выбор пункта, а дальше в диалоге может быть
+    После приветствия «3» — это выбор пункта, а дальше в диалоге может быть
     возраст ребёнка, число детей или номер зала.
     """
     from app.core.pipeline import expand_menu_choice
 
-    assert expand_menu_choice("4", after_greeting=False) == "4"
-    assert expand_menu_choice("4", after_greeting=True) != "4"
+    assert expand_menu_choice("3", after_greeting=False) == "3"
+    assert expand_menu_choice("3", after_greeting=True) != "3"
+    # Четвёртого пункта в меню больше нет: под бота открыт отдельный номер,
+    # и ветка «мы уже занимаемся» из меню убрана.
+    assert expand_menu_choice("4", after_greeting=True) == "4"
 
 
 async def test_bot_stays_silent_if_the_manager_answered_first(deps, llm, monkeypatch) -> None:
