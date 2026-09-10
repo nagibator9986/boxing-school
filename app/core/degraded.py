@@ -90,6 +90,11 @@ def _location(kb: KBSnapshot, lang: Language) -> str | None:
     return _without_line(card, kb.text("card.pick_gym", lang)) if card else None
 
 
+def without_line(card: str, line: str) -> str | None:
+    """Публичная обёртка: та же операция нужна и обычному ходу, не только аварийному."""
+    return _without_line(card, line)
+
+
 def _without_line(card: str, line: str) -> str | None:
     """Убирает строку из готовой карточки, не оставляя пустого хвоста."""
     wanted = (line or "").strip()

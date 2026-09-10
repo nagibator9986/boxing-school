@@ -79,7 +79,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
@@ -333,6 +333,11 @@ class _Facts:
     corpus: str = ""
     places: set[str] = field(default_factory=set)
 
+    def with_numbers(self, extra: Sequence[str]) -> "_Facts":
+        """Копия фактов с дополнительными подтверждёнными числами."""
+        merged = replace(self, numbers=set(self.numbers) | {str(value) for value in extra if value})
+        return merged
+
 
 # --------------------------------------------------------------------------- #
 # Публичное
@@ -347,6 +352,7 @@ def check(
     strict: bool = False,
     known_phones: Sequence[str] = (),
     known_names: Sequence[str] = (),
+    known_numbers: Sequence[str] = (),
 ) -> PostcheckVerdict:
     """Анти-галлюцинационный фильтр. Работает ПОСЛЕ ``safe_text`` и ДО постановки в outbox.
 
@@ -410,6 +416,13 @@ def check(
     bad_times = tuple(value for value in times if value not in facts.times)
     if bad_times:
         return _fail(PostcheckFailKind.TIME, bad_times)
+
+    # Числа из карточек, которые бот уже отправил клиенту, — это данные базы, а
+    # не выдумка модели. 10.09.2026 код прислал прайс, а на следующем ходу
+    # модель повторила из него цену: инструмент в том ходу не вызывался, и ответ
+    # снимался — клиент вместо ответа получал «ответит администратор».
+    if known_numbers:
+        facts = facts.with_numbers(known_numbers)
 
     money, unknown = _classify_numbers(cleaned, facts, strict=strict)
     if money:

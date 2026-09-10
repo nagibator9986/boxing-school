@@ -522,21 +522,26 @@ gyms:
   active: true
   status: open
   title:
-    ru: Полевая — БЦ «Кеме»
-    kk: Полевая — «Кеме» БО
+    ru: Западный микрорайон — БЦ «Кеме»
+    kk: Батыс шағын ауданы — «Кеме» БО
   address:
-    ru: Полевая 7/3
-    kk: Полевая көшесі 7/3
+    ru: Полевая 7/3, бизнес-центр «Кеме»
+    kk: Полевая көшесі 7/3, «Кеме» бизнес-орталығы
   landmark:
-    ru: бизнес-центр «Кеме»
-    kk: «Кеме» бизнес-орталығы
+    ru: напротив 5-й поликлиники
+    kk: 5-емханаға қарама-қарсы
   district:
-    ru: null
-    kk: null
+    ru: Западный микрорайон
+    kk: Батыс шағын ауданы
   district_aliases:
   - полевая
   - кеме
   - бц кеме
+  - западный
+  - западный микрорайон
+  - зпд
+  - поликлиник
+  - батыс
   geo_lat: null
   geo_lon: null
   map_url: https://2gis.kz/kostanay/geo/70000001117090364
@@ -573,6 +578,7 @@ gyms:
   is_head: false
   active: true
   status: open
+  list_with_city: true
   title:
     ru: Тобыл
     kk: Тобыл

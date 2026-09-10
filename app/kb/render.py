@@ -406,6 +406,19 @@ def _clean_address(gym: Gym, lang: Language) -> str:
 # --------------------------------------------------------------------------- #
 # Тела артефактов
 # --------------------------------------------------------------------------- #
+def city_list_order(snapshot: KBSnapshot) -> list[Gym]:
+    """Залы в том порядке, в каком они пронумерованы в карточке по городу.
+
+    Единственный источник нумерации: клиент отвечает номером из этого списка,
+    и порядок в карточке обязан совпадать с тем, как код этот номер разбирает.
+    """
+    city = list(snapshot.active_gyms(Scope.CITY))
+    suburb = [
+        gym for gym in snapshot.active_gyms(Scope.REGION) if getattr(gym, "list_with_city", False)
+    ]
+    return [*city, *suburb]
+
+
 def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
     """Тело артефакта ``gyms_list_*`` (``render_from: gyms``).
 
@@ -424,9 +437,21 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     else:
         title_key = "card.gyms_all_title"
 
+    # Пригород идёт в списке города следом за городскими залами. Владелец
+    # 10.09.2026: «восьмого зала нашего нету — город Тобыл, Тәуелсіздік 51»:
+    # в списке из семи он видел потерянную точку. Прайс там свой, поэтому зал
+    # помечен, а не подмешан молча.
+    suburb: list[Gym] = []
+    listed = gyms
+    if scope is Scope.CITY:
+        listed = city_list_order(snapshot)
+        suburb = [gym for gym in listed if gym not in gyms]
+
     parts: list[str] = [f"{ICON_GYM} {_lang_text(snapshot, title_key, lang)}"]
-    for number, gym in enumerate(gyms, start=1):
+    for number, gym in enumerate(listed, start=1):
         name = gym.title.get(lang) or gym.title.ru or gym.id
+        if gym in suburb:
+            name = f"{name} ({_lang_text(snapshot, 'card.suburb_note', lang)})"
         address = _clean_address(gym, lang)
         parts.append(f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}")
 
@@ -438,8 +463,11 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     # точек потеряли. Прайс при этом разный, поэтому смешивать их в один
     # нумерованный список нельзя: строка отдельная и без номеров.
     if scope is Scope.CITY:
+        listed = {gym.settlement for gym in suburb}
         elsewhere = {
-            gym.settlement for gym in snapshot.active_gyms(Scope.REGION) if gym.settlement
+            gym.settlement
+            for gym in snapshot.active_gyms(Scope.REGION)
+            if gym.settlement and gym.settlement not in listed
         }
         if elsewhere:
             # Числом, а не перечислением: семь названий в строке не помещаются на

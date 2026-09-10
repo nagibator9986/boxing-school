@@ -298,6 +298,12 @@ class Gym(_Base):
     is_head: bool = False
     active: bool = True
     status: GymStatus = GymStatus.OPEN
+    #: Показывать этот зал в списке по городу, хотя он и за городской чертой.
+    #: Владелец 10.09.2026: «восьмого зала нашего нету — город Тобыл,
+    #: Тәуелсіздік 51». Тобыл в десяти километрах, туда ездят из города, и в
+    #: списке из семи залов владелец видел потерянную точку. Прайс там свой,
+    #: поэтому зал идёт с пометкой, а не молча в общий список.
+    list_with_city: bool = False
     title: Bilingual
     address: Bilingual = EMPTY_BILINGUAL
     landmark: Bilingual = EMPTY_BILINGUAL

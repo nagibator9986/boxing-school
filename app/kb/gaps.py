@@ -99,6 +99,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "card.gyms_all_title",
     "card.pick_gym",
     "card.also_elsewhere",
+    "card.suburb_note",
     "card.map",
     "card.landmark",
     "card.schedule_title",

@@ -62,6 +62,7 @@ from app.core import (
 )
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
+from app.kb import render
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
 from app.llm.prompt import build_system_instruction, prompt_ngrams
@@ -164,6 +165,38 @@ _GREETING_CHOICES: Final[dict[str, str]] = {
 
 #: Пункт меню, на который отвечает код, а не модель: факты о ценах и залах.
 _MENU_FACTS_DIGIT: Final[str] = "2"
+
+
+async def _gym_choice(db: AsyncSession, conv: Conversation, text: str, *, kb: KBSnapshot) -> str | None:
+    """Голая цифра после списка залов — это номер зала. Разворачивает её в фразу.
+
+    Живой прогон 10.09.2026: карточка звала «напишите номер зала», клиент писал
+    «7», и модель отвечала «в семь лет ребёнок уже отлично понимает тренера».
+    Цифру в этом месте нельзя оставлять на усмотрение модели ровно по той же
+    причине, по какой её нельзя оставлять в меню: кнопок в мессенджерах нет,
+    номер — это и есть ответ клиента.
+    """
+    stripped = (text or "").strip().rstrip(".)")
+    if not stripped.isdigit():
+        return None
+    order = render.city_list_order(kb)
+    number = int(stripped)
+    # Границы проверяются отдельно от признака карточки: «0» и «25» — это не
+    # залы, а без проверки «0» молча взял бы последний зал списка (в Python
+    # order[-1] — элемент с конца), и клиент получил бы чужое расписание.
+    if not 1 <= number <= len(order):
+        return None
+    try:
+        recent = await repo_message.sent_texts(db, conv.id, limit=3)
+    except Exception as exc:  # noqa: BLE001 - разбор номера не важнее ответа
+        _log.warning("gym_choice_lookup_failed", error=type(exc).__name__)
+        return None
+    heading = (kb.text("card.gyms_city_title", Language.RU) or "").strip()
+    if not heading or not any(heading in said for said in recent):
+        return None
+    gym = order[number - 1]
+    address = gym.address.ru or ""
+    return f"Расскажите про зал «{gym.title.ru}» ({address}): расписание и как добраться"
 
 
 def _menu_digit(text: str) -> str | None:
@@ -844,6 +877,11 @@ async def _run_turn(
         after_greeting = await conv_session.bot_turns(db, conv) == 1
         chosen = _menu_digit(text) if after_greeting else None
         text = expand_menu_choice(text, after_greeting=after_greeting)
+        if chosen is None:
+            picked = await _gym_choice(db, conv, text, kb=kb)
+            if picked is not None:
+                _log.info("gym_picked_by_number", conv_key=conv.conv_key)
+                text = picked
 
         # --- 6b. Пункт «цены, залы и расписание» отвечает кодом ------------ #
         # Владелец 09.09.2026, увидев на этот пункт «здесь лучше ответит
@@ -1118,6 +1156,7 @@ async def _run_turn(
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
             known_names=_known_names(text, inbound=inbound, draft=draft, history=history),
+            known_numbers=await _numbers_already_sent(db, conv),
         )
         if not pc.ok:
             _log.warning(
@@ -1622,10 +1661,18 @@ async def _degrade(
             else EscalationReason.LLM_FAILURE
         )
 
-    # Модель молчит — но цену, адреса и расписание собирает код, а не она.
-    # Клиенту уходит настоящий ответ, если вопрос из тех, что закрывает KB.
+    # Модель молчит или сказала неправду — но цену, адреса и расписание собирает
+    # код, а не она. Клиенту уходит настоящий ответ, если вопрос из тех, что
+    # закрывает база знаний.
+    #
+    # Раньше карточка подставлялась только при сбое модели, а при снятом
+    # постфильтром ответе — нет, хотя это самый частый случай: 10.09.2026 на
+    # «дорого, есть подешевле?» модель посчитала выгоду сама, фильтр справедливо
+    # снял ответ, и клиент вместо прайса со скидками получил отговорку. Карточку
+    # собирает код — выдумкой она не бывает, и после снятого ответа она нужна
+    # даже больше.
     body: str | None = None
-    if key == TEXT_FALLBACK and intents:
+    if key in (TEXT_FALLBACK, TEXT_HANDOFF) and intents:
         card = degraded.kb_answer(kb, intents=tuple(intents), lang=lang)
         if card:
             tail = _kb_text(kb, degraded.TAIL_KEY, lang)
@@ -1784,9 +1831,12 @@ async def _answer_menu_facts(
     if not gyms_card.strip() or not price_card.strip():
         return None
 
-    # Список залов уже зовёт выбрать зал, поэтому к прайсу идёт СЛЕДУЮЩИЙ шаг
-    # воронки — возраст. Два призыва об одном и том же читаются как навязчивость.
-    question = (kb.text("funnel.age", lang) or "").strip()
+    # Вопрос в ходе ровно один и стоит в ПОСЛЕДНЕМ сообщении. Пока «какой зал»
+    # висел на карточке залов, а к прайсу дописывался вопрос про возраст,
+    # цифра в ответе была двусмысленной: на «7» бот отвечал «в семь лет ребёнок
+    # уже отлично понимает тренера» вместо расписания седьмого зала.
+    question = (kb.text("card.pick_gym", lang) or "").strip()
+    gyms_card = degraded.without_line(gyms_card, question) or gyms_card
     body = f"{price_card}\n\n{question}" if question else price_card
 
     for part, kind in ((gyms_card, OutboundKind.ARTIFACT), (body, OutboundKind.BOT_REPLY)):
@@ -2143,6 +2193,28 @@ _CARD_MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("💳", "прайс"),
     ("🗓 Расписание", "расписание зала"),
 )
+
+
+async def _numbers_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
+    """Числа из карточек, которые бот уже отправил клиенту в этом диалоге.
+
+    Карточки собирает код по базе знаний, поэтому их цифры — подтверждённые
+    данные, а не выдумка модели. Без этого списка бот, повторивший собственную
+    же цену на следующем ходу, попадал под анти-галлюцинационный фильтр: в том
+    ходу инструмент не вызывался, и подтвердить сумму было нечем.
+    """
+    try:
+        texts = await repo_message.sent_texts(db, conv.id, limit=_CARD_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001 - подтверждение не важнее ответа
+        _log.warning("sent_numbers_lookup_failed", error=type(exc).__name__)
+        return ()
+    numbers: list[str] = []
+    for said in texts:
+        for raw in re.findall(r"\d[\d  \u00a0]*", said):
+            digits = re.sub(r"\D", "", raw)
+            if digits and digits not in numbers:
+                numbers.append(digits)
+    return tuple(numbers)
 
 
 async def _cards_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:

@@ -42,6 +42,7 @@ def verdict(
     strict: bool = False,
     known_phones=(),
     known_names=(),
+    known_numbers=(),
 ):
     """Короткий вызов пост-фильтра с общими для тестов умолчаниями."""
     return check(
@@ -53,6 +54,7 @@ def verdict(
         strict=strict,
         known_phones=known_phones,
         known_names=known_names,
+        known_numbers=known_numbers,
     )
 
 
@@ -1002,3 +1004,26 @@ def test_invented_place_is_still_blocked(text: str, kb) -> None:
     «Филиал» с заглавной буквы шаблон раньше не видел вовсе.
     """
     assert not verdict(text, kb).ok
+
+
+# --------------------------------------------------------------------------- #
+# Цена из уже отправленной карточки — не выдумка
+# --------------------------------------------------------------------------- #
+def test_price_from_a_sent_card_is_confirmed(kb) -> None:
+    """Бот повторяет цену, которую сам прислал карточкой ходом раньше.
+
+    10.09.2026 код отправил прайс, а на следующем ходу модель сослалась на ту же
+    сумму. Инструмент в том ходу не вызывался, подтвердить сумму было нечем — и
+    фильтр снимал верный ответ, а клиент получал «ответит администратор».
+    """
+    text = "Стандартный абонемент — 25 000 ₸, как в прайсе выше."
+
+    assert not verdict(text, kb).ok, "опора теста: без карточки сумма не подтверждена"
+    assert verdict(text, kb, known_numbers=("25000",)).ok
+
+
+def test_invented_price_is_still_blocked_after_a_card(kb) -> None:
+    """Другая сумма остаётся выдумкой, даже когда карточка уже ушла."""
+    text = "Могу отдать за 12 345 ₸."
+
+    assert not verdict(text, kb, known_numbers=("25000", "30000", "3200")).ok

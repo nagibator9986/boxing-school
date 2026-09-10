@@ -143,7 +143,12 @@ async def test_handover_to_a_human_is_not_followed_by_a_sales_question(
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "text",
-    ["Дорого, есть подешевле?", "Есть скидки для двоих детей?", "Қымбат екен"],
+    [
+        "Дорого, есть подешевле?",
+        "Есть скидки для двоих детей?",
+        "А если двое детей?",
+        "Қымбат екен",
+    ],
 )
 def test_price_objection_is_answered_with_the_price_card(text: str, kb: KBSnapshot) -> None:
     """Живой прогон 09.09.2026: на «дорого, есть подешевле?» бот звал администратора.
@@ -215,3 +220,35 @@ async def test_model_is_told_which_cards_the_client_saw(kb, state, sessionmaker,
 
     assert "уже получил готовые карточки" in note, note
     assert "список залов" in note and "прайс" in note
+
+
+async def test_removed_answer_is_replaced_by_the_price_card(kb, state, sessionmaker, settings) -> None:
+    """Фильтр снял ответ про деньги — клиент получает прайс, а не отговорку.
+
+    Живой прогон 10.09.2026: на «дорого, есть подешевле?» модель посчитала
+    выгоду сама, без вызова инструмента; фильтр справедливо снял ответ, и клиент
+    вместо карточки со скидками услышал «здесь лучше ответит администратор».
+    Карточку собирает код — выдумкой она не бывает, и после снятого ответа она
+    нужна даже больше.
+    """
+    from app.core.pipeline import PipelineDeps, process_inbound
+    from app.kb import loader as kb_loader
+    from app.llm.client import FakeLLMClient, FakeTurn
+
+    from tests.conftest import RecordingQueue, webhook_payload
+
+    kb_loader.swap(kb)
+    # Ответ с выдуманной суммой: инструмент цены в этом ходу не вызывался.
+    llm = FakeLLMClient([FakeTurn.answer("Есть вариант за 12 345 ₸, забирайте.")])
+    deps = PipelineDeps(
+        sessionmaker=sessionmaker, state=state, llm=llm, kb=kb_loader.get_snapshot,
+        queue=RecordingQueue(), settings=settings,
+    )
+
+    decisions = await process_inbound(
+        deps, webhook_payload("pc-1", "Дорого, есть подешевле?", chat_id="77015558800")
+    )
+    text = "\n".join(out.text or "" for d in decisions for out in d.outbound)
+
+    assert "12 345" not in text, "выдуманная сумма ушла клиенту"
+    assert "₸" in text and "25 000" in text, f"клиент не получил прайс: {text!r}"
