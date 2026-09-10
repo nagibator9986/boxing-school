@@ -17,6 +17,7 @@ from collections.abc import Iterable, Sequence
 from typing import Final
 
 from app.kb import gaps as gaps_module
+from app.kb.models import min_accepted_age
 from app.kb.models import FaqEntry, Gym, KBSnapshot, PlanPrice, ScheduleSlot
 from app.types import KBValidationError, Language, Scope
 
@@ -450,8 +451,6 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     parts: list[str] = [f"{ICON_GYM} {_lang_text(snapshot, title_key, lang)}"]
     for number, gym in enumerate(listed, start=1):
         name = gym.title.get(lang) or gym.title.ru or gym.id
-        if gym in suburb:
-            name = f"{name} ({_lang_text(snapshot, 'card.suburb_note', lang)})"
         address = _clean_address(gym, lang)
         parts.append(f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}")
 
@@ -678,7 +677,15 @@ def render_schedule_card(
         parts.append("\n".join(lines))
 
     if any(not slot.age_known for slot in slots):
-        parts.append(_lang_text(snapshot, "card.age_unknown", lang).capitalize() + ".")
+        # У школы нет возрастных групп: в базе у слотов возраст пуст, и раньше
+        # карточка честно отвечала «уточнит администратор». Владелец 10.09.2026:
+        # «там нет у нас возрастных групп, мы всех принимаем с 5 лет» — значит
+        # уточнять нечего, и правильный ответ уже есть в базе знаний.
+        accepted = min_accepted_age(snapshot)
+        if accepted is not None:
+            parts.append(snapshot.text("card.age_from", lang, age=accepted))
+        else:
+            parts.append(_lang_text(snapshot, "card.age_unknown", lang).capitalize() + ".")
     return _blocks(parts)
 
 

@@ -65,6 +65,47 @@ FAQ_TOPICS: Final[tuple[str, ...]] = (
     "sessions_count", "group_size", "competitions", "summer",
 )
 
+#: Возраст приёма школа называет и прописью: «заниматься можно с трёх лет» —
+#: живой ответ бота 03.09.2026, который проверка на цифры пропускала целиком.
+AGE_WORDS: Final[dict[str, int]] = {
+    "двух": 2, "трёх": 3, "трех": 3, "четырёх": 4, "четырех": 4, "пяти": 5,
+    "шести": 6, "семи": 7, "восьми": 8, "девяти": 9, "десяти": 10,
+    "одиннадцати": 11, "двенадцати": 12,
+}
+
+AGE_LIMIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:бер[её]м|принима\w+|записыва\w+|занима\w+|групп\w+|набира\w+|мектеб\w*|қабылда\w+)"
+    r"[^.!?\n]{0,40}?\bс\s+(\d{1,2}|" + "|".join(AGE_WORDS) + r")\s*(?:лет|года|годов|жас\w*)",
+    re.IGNORECASE,
+)
+
+
+def age_value(token: str) -> int | None:
+    """Число из «5» или «пяти». ``None`` — слово не про возраст."""
+    token = (token or "").strip().lower()
+    if token.isdigit():
+        return int(token)
+    return AGE_WORDS.get(token)
+
+
+def min_accepted_age(snapshot: "KBSnapshot") -> int | None:
+    """С какого возраста школа принимает детей. ``None`` — в базе не сказано.
+
+    Единственный источник — ответ FAQ «с какого возраста», который пишет сам
+    владелец. Отдельного числового поля нет намеренно: оно разъехалось бы с
+    текстом, который читает клиент. Этим же числом пользуются карточка
+    расписания и анти-галлюцинационный фильтр — чтобы они не разошлись.
+    """
+    for entry in snapshot.faq:
+        if entry.id != "age_min":
+            continue
+        for text in (getattr(entry.answer, "ru", None), getattr(entry.answer, "kk", None)):
+            match = AGE_LIMIT_RE.search(text or "")
+            if match:
+                return age_value(match.group(1))
+    return None
+
+
 #: Закрытый список групп ключей ``i18n`` (INTERFACES §16.1). Группы `consent` нет.
 #: ``card`` — подписи готовых карточек (список залов, прайс, расписание). Они
 #: попадают клиенту дословно и обязаны быть на обоих языках, поэтому живут здесь,

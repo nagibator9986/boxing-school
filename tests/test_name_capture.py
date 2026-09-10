@@ -168,3 +168,77 @@ def test_note_is_silent_about_the_child_by_default() -> None:
     )
 
     assert "сам ребёнок" not in note
+
+
+# --------------------------------------------------------------------------- #
+# Чьё имя назвал клиент
+# --------------------------------------------------------------------------- #
+def test_name_after_the_question_belongs_to_the_child(kb: KBSnapshot) -> None:
+    """«Асель, 87015551122» в ответ на «как зовут сына?» — это имя сына.
+
+    Живой прогон 10.09.2026: заметка говорила просто «имя — Асель», в известном
+    уже стояло имя родителя из контакта, и модель переспрашивала имя ребёнка,
+    хотя клиент только что его назвал.
+    """
+    from app.core.pipeline import _just_said
+
+    said = _just_said("Асель, 87015551122", kb=kb, now=NOW, name_is_childs=True)
+
+    assert any(item.startswith("имя ребёнка — Асель") for item in said), said
+
+
+def test_name_without_the_question_stays_neutral(kb: KBSnapshot) -> None:
+    """Без вопроса об имени бот не решает за клиента, чьё это имя."""
+    from app.core.pipeline import _just_said
+
+    said = _just_said("Айгерим, 87015551122", kb=kb, now=NOW)
+
+    assert any(item == "имя — Айгерим" for item in said), said
+
+
+async def test_question_about_the_child_name_is_detected(kb, state, sessionmaker, settings) -> None:
+    """Признак берётся из того, что бот реально отправил клиенту."""
+    from app.core.pipeline import PipelineDeps, _bot_asked_child_name, process_inbound
+    from app.kb import loader as kb_loader
+    from app.llm.client import FakeLLMClient, FakeTurn
+
+    import sqlalchemy as sa
+
+    from app.storage.models import Conversation
+    from tests.conftest import RecordingQueue, webhook_payload
+
+    kb_loader.swap(kb)
+    llm = FakeLLMClient([FakeTurn.answer("Отлично! Как зовут сына?")])
+    deps = PipelineDeps(
+        sessionmaker=sessionmaker, state=state, llm=llm, kb=kb_loader.get_snapshot,
+        queue=RecordingQueue(), settings=settings,
+    )
+    await process_inbound(deps, webhook_payload("nq-1", "Да, подходит", chat_id="77015553300"))
+
+    async with sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        assert await _bot_asked_child_name(db, conv)
+
+
+async def test_no_name_question_means_no_assumption(kb, state, sessionmaker, settings) -> None:
+    """Бот спрашивал про район — значит имя в ответе может быть чьим угодно."""
+    from app.core.pipeline import PipelineDeps, _bot_asked_child_name, process_inbound
+    from app.kb import loader as kb_loader
+    from app.llm.client import FakeLLMClient, FakeTurn
+
+    import sqlalchemy as sa
+
+    from app.storage.models import Conversation
+    from tests.conftest import RecordingQueue, webhook_payload
+
+    kb_loader.swap(kb)
+    llm = FakeLLMClient([FakeTurn.answer("В каком районе удобнее заниматься?")])
+    deps = PipelineDeps(
+        sessionmaker=sessionmaker, state=state, llm=llm, kb=kb_loader.get_snapshot,
+        queue=RecordingQueue(), settings=settings,
+    )
+    await process_inbound(deps, webhook_payload("nq-2", "Ребёнку 9 лет", chat_id="77015553301"))
+
+    async with sessionmaker() as db:
+        conv = (await db.execute(sa.select(Conversation))).scalars().one()
+        assert not await _bot_asked_child_name(db, conv)

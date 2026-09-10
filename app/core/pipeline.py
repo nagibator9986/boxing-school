@@ -1033,7 +1033,9 @@ async def _run_turn(
             injection_suspected=injection,
             gym_id=None,
             stage=await _client_stage(db, conv),
-            just_said=_just_said(text, kb=kb, now=now),
+            just_said=_just_said(
+                text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
+            ),
             child_at_keyboard=await _child_talk_continues(db, conv, text),
             cards_sent=await _cards_already_sent(db, conv),
         )
@@ -2248,7 +2250,27 @@ def _client_said_goodbye(text: str, *, kb: KBSnapshot) -> bool:
         return False
 
 
-def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:
+#: Так звучит вопрос об имени ребёнка на обоих языках. Нужен, чтобы понять,
+#: ЧЬЁ имя назвал клиент: «Асель, 87015551122» в ответ на «как зовут сына?» —
+#: это имя сына, а бот принимал его за имя родителя и переспрашивал.
+_NAME_QUESTION_MARKERS: Final[tuple[str, ...]] = ("зовут", "имя реб", "аты кім", "есімі")
+
+
+async def _bot_asked_child_name(db: AsyncSession, conv: Conversation) -> bool:
+    """Спрашивал ли бот последним сообщением имя ребёнка."""
+    try:
+        recent = await repo_message.sent_texts(db, conv.id, limit=2)
+    except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
+        _log.warning("name_question_lookup_failed", error=type(exc).__name__)
+        return False
+    return any(
+        marker in said.lower() for said in recent for marker in _NAME_QUESTION_MARKERS
+    )
+
+
+def _just_said(
+    text: str, *, kb: KBSnapshot, now: datetime, name_is_childs: bool = False
+) -> tuple[str, ...]:
     """Что клиент сообщил прямо в этой реплике: телефон, возраст, имя.
 
     Разбирается регулярками (:mod:`app.core.lexicon`), поэтому не зависит ни от
@@ -2264,7 +2286,7 @@ def _just_said(text: str, *, kb: KBSnapshot, now: datetime) -> tuple[str, ...]:
         said.append(f"возраст ребёнка — {age}")
     name = lexicon.extract_name(text)
     if name:
-        said.append(f"имя — {name}")
+        said.append(f"имя ребёнка — {name}" if name_is_childs else f"имя — {name}")
     return tuple(said)
 
 

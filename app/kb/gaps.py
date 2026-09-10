@@ -99,7 +99,6 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "card.gyms_all_title",
     "card.pick_gym",
     "card.also_elsewhere",
-    "card.suburb_note",
     "card.map",
     "card.landmark",
     "card.schedule_title",
@@ -107,6 +106,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "card.price_region_title",
     "card.subscription",
     "card.age_unknown",
+    "card.age_from",
     # Названия видов занятий подставляются по коду дисциплины: card.{discipline}.
     "card.boxing",
     "card.kickboxing",

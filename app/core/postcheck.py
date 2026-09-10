@@ -84,7 +84,7 @@ from typing import Any, Final, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from app.kb.models import KBSnapshot
+from app.kb.models import AGE_LIMIT_RE, KBSnapshot, age_value, min_accepted_age
 from app.types import (
     MAX_MESSAGE_CHARS,
     Language,
@@ -940,27 +940,6 @@ _MORNING_DENIAL_RE: Final[re.Pattern[str]] = re.compile(
 
 #: Как бот называет возрастную границу приёма: «берём детей с 5 лет»,
 #: «принимаем с 7», «группы с 7 лет». Число — то, что проверяется.
-#: Возраст модель называет и прописью: «заниматься можно с трёх лет» — живой
-#: ответ 03.09.2026, который проверка на цифры пропускала целиком.
-_AGE_WORDS: Final[dict[str, int]] = {
-    "двух": 2, "трёх": 3, "трех": 3, "четырёх": 4, "четырех": 4, "пяти": 5,
-    "шести": 6, "семи": 7, "восьми": 8, "девяти": 9, "десяти": 10,
-    "одиннадцати": 11, "двенадцати": 12,
-}
-
-_AGE_LIMIT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:бер[её]м|принима\w+|записыва\w+|занима\w+|групп\w+|набира\w+|мектеб\w*|қабылда\w+)"
-    r"[^.!?\n]{0,40}?\bс\s+(\d{1,2}|" + "|".join(_AGE_WORDS) + r")\s*(?:лет|года|годов|жас\w*)",
-    re.IGNORECASE,
-)
-
-
-def _age_value(token: str) -> int | None:
-    """Число из «5» или «пяти». ``None`` — слово не про возраст."""
-    token = token.strip().lower()
-    if token.isdigit():
-        return int(token)
-    return _AGE_WORDS.get(token)
 
 
 #: Имя ребёнка или родителя в ответе бота: «рады записать Айсулу», «ждём Бекзата».
@@ -1013,22 +992,6 @@ def _invented_name(text: str, known_names: Sequence[str], invocations) -> tuple[
     return tuple(dict.fromkeys(found))
 
 
-def _confirmed_min_age(kb: KBSnapshot) -> int | None:
-    """Возраст приёма, подтверждённый владельцем, — из ответа FAQ про возраст.
-
-    Единственный источник: то, что владелец написал сам. Отдельного поля для
-    этого нет намеренно — иначе оно разъедется с текстом, который читает клиент.
-    """
-    for entry in kb.faq:
-        if entry.id != "age_min":
-            continue
-        for text in (getattr(entry.answer, "ru", None), getattr(entry.answer, "kk", None)):
-            match = _AGE_LIMIT_RE.search(text or "")
-            if match:
-                return _age_value(match.group(1))
-    return None
-
-
 def _wrong_age_limit(text: str, kb: KBSnapshot) -> tuple[str, ...]:
     """Возрастная граница, не совпадающая с подтверждённой владельцем.
 
@@ -1041,13 +1004,13 @@ def _wrong_age_limit(text: str, kb: KBSnapshot) -> tuple[str, ...]:
     Возраст самого ребёнка («ему 6 лет») под правило не попадает: оно ищет
     именно границу приёма — «берём/принимаем/группы … с N лет».
     """
-    confirmed = _confirmed_min_age(kb)
+    confirmed = min_accepted_age(kb)
     if confirmed is None:
         return ()
     bad = [
         match.group(0)
-        for match in _AGE_LIMIT_RE.finditer(text)
-        if _age_value(match.group(1)) not in (None, confirmed)
+        for match in AGE_LIMIT_RE.finditer(text)
+        if age_value(match.group(1)) not in (None, confirmed)
     ]
     return tuple(dict.fromkeys(bad))
 

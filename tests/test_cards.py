@@ -50,7 +50,6 @@ def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
 
     assert "8. Тобыл" in text, text
-    assert "цены ниже" in text
     # Остальные райцентры в нумерованный список по-прежнему не попадают.
     assert "Житикара" not in text
     region_left = len({
@@ -107,29 +106,45 @@ def test_schedule_card_shows_the_age_group_when_it_is_known(kb: KBSnapshot) -> N
 
     03.09.2026 вилку «7–12» проставили всем занятиям — и бот написал родителю
     шестилетнего, что группы рассчитаны с 7 лет. Владелец: «такую информацию мы
-    не давали, у нас дети с 5 лет». Вилку убрали; карточка снова честно говорит,
-    что возраст уточнит администратор, а если он появится — покажет его.
+    не давали, у нас дети с 5 лет». Вилку убрали.
     """
     gym = kb.gym("ksk_kairbekova_334")
     known = [slot.model_copy(update={"age_from": 8, "age_to": 11}) for slot in gym.schedule]
 
     with_age = render_schedule_card(kb, gym_id=gym.id, slots=known, lang=Language.RU)
+
     assert "(8–11)" in with_age
-    assert "уточнит администратор" not in with_age.lower()
-
-    as_is = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
-    assert "возраст группы уточнит администратор" in as_is.lower()
+    assert "принимаем детей" not in with_age.lower(), "у слотов есть возраст — общий приём не нужен"
 
 
-def test_schedule_card_is_honest_when_the_age_is_unknown(kb: KBSnapshot) -> None:
-    """Появится занятие без возраста — карточка снова скажет об этом прямо.
+def test_schedule_card_names_the_accepted_age(kb: KBSnapshot) -> None:
+    """Возрастных групп нет — карточка называет возраст приёма из базы знаний.
 
-    Правило осталось: выдумывать возраст группы бот не имеет права.
+    Владелец 10.09.2026: «там нет у нас возрастных групп, мы всех принимаем с
+    5 лет». Раньше карточка отвечала «возраст группы уточнит администратор» —
+    уточнять нечего, ответ уже есть в базе. Число берётся из ответа FAQ про
+    возраст: карточка и текст, который читает клиент, обязаны совпадать.
     """
-    gym = kb.gym("ksk_kairbekova_334")
-    nameless = [slot.model_copy(update={"age_from": None, "age_to": None}) for slot in gym.schedule]
+    from app.kb.models import min_accepted_age
 
-    text = render_schedule_card(kb, gym_id=gym.id, slots=nameless, lang=Language.RU)
+    gym = kb.gym("ksk_kairbekova_334")
+    text = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
+    accepted = min_accepted_age(kb)
+
+    assert accepted is not None, "в базе знаний не сказано, с какого возраста принимают"
+    assert f"с {accepted} лет" in text, text
+    assert "уточнит администратор" not in text.lower()
+
+
+def test_schedule_card_falls_back_when_the_base_is_silent(kb: KBSnapshot) -> None:
+    """Если в базе о возрасте не сказано — карточка честно зовёт администратора.
+
+    Выдумывать возраст бот не имеет права ни при каких условиях.
+    """
+    silent = kb.model_copy(update={"faq": tuple()})
+    gym = kb.gym("ksk_kairbekova_334")
+
+    text = render_schedule_card(silent, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
 
     assert "возраст группы уточнит администратор" in text.lower()
 
