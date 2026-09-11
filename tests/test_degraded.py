@@ -237,3 +237,33 @@ async def test_owner_is_told_what_to_pay_for(dead_deps, monkeypatch) -> None:
     assert [code for code, _ in raised] == ["llm_quota"]
     assert "кредит" in raised[0][1].lower()
     assert "ai.studio" in raised[0][1]
+
+
+def test_degraded_price_follows_the_clients_settlement(kb) -> None:
+    """Посёлок назван — только его прайс; не назван — оба, как раньше."""
+    from app.core.degraded import kb_answer
+    from app.kb.render import render_price_card
+    from app.types import IntentHint, Language, Scope
+
+    city = render_price_card(kb, scope=Scope.CITY, lang=Language.RU).strip()
+    region = render_price_card(kb, scope=Scope.REGION, lang=Language.RU).strip()
+    price = (IntentHint.PRICE,)
+
+    both = kb_answer(kb, intents=price, lang=Language.RU)
+    assert city in both and region in both
+    only_city = kb_answer(kb, intents=price, lang=Language.RU, scope=Scope.CITY)
+    assert city in only_city and region not in only_city
+    only_region = kb_answer(kb, intents=price, lang=Language.RU, scope=Scope.REGION)
+    assert region in only_region and city not in only_region
+
+
+def test_degraded_card_already_sent_is_not_repeated(kb) -> None:
+    """Прайс уже ушёл ходом раньше — второй раз его не шлём."""
+    from app.core.degraded import kb_answer
+    from app.kb.render import render_price_card
+    from app.types import IntentHint, Language, Scope
+
+    city = render_price_card(kb, scope=Scope.CITY, lang=Language.RU).strip()
+    sent = (f"{city}\n\nХотите записать ребёнка на пробное?",)
+
+    assert kb_answer(kb, intents=(IntentHint.PRICE,), lang=Language.RU, scope=Scope.CITY, already_sent=sent) is None

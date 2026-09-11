@@ -30,7 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
 from app.llm.config import build_json_config
@@ -90,7 +90,11 @@ class LeadExtraction(BaseModel):
     parent_name: str | None = None
     parent_relation: str | None = None
     phone: str | None = None
-    child_name: str | None = None
+    #: Владелец 10.09.2026: для записи нужна фамилия, а не только имя.
+    child_name: str | None = Field(
+        default=None,
+        description="Фамилия и имя ребёнка, как их назвал родитель: «Иванов Али».",
+    )
     child_age: int | None = None
     child_birth_year: int | None = None
     child_gender: Literal["m", "f", "unknown"] = "unknown"

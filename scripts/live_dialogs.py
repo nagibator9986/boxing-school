@@ -115,6 +115,23 @@ SCENARIOS = [
    (False, "Здравствуйте 🤝 не успевает на тренировку в школе ещё"),
    (False, "Давайте тогда в субботу на пробную прийдем"),
  ]),
+ ("21. Полная запись: меню → номер зала → время", ChannelKind.WHATSAPP, [
+   (False, "Здравствуйте"), (False, "2"), (False, "3"), (False, "Да"),
+   (False, "Сериков Ержан, 8 лет"), (False, "В 17:30, на кикбоксинг"), (False, "Тогда в 17:00"),
+ ]),
+ ("25. Имя и возраст без времени — бот спрашивает, а не записывает сам", ChannelKind.WHATSAPP, [
+   (False, "Хочу записать дочку на пробное в КСК"), (False, "Касымова Аружан, 7 лет"),
+ ]),
+ ("22. Запись в КСК во вторник в 17:00 — обе секции", ChannelKind.WHATSAPP, [
+   (False, "Хочу записать сына на пробное в КСК во вторник в 17:00"),
+   (False, "На бокс"), (False, "Иванов Али, 9 лет"),
+ ]),
+ ("23. Что взять с собой", ChannelKind.WHATSAPP, [
+   (False, "Что взять с собой на первую тренировку?"),
+ ]),
+ ("24. Тобыл: цена", ChannelKind.WHATSAPP, [
+   (False, "Мы из Тобыла, сколько стоит абонемент?"),
+ ]),
 ]
 
 
@@ -137,7 +154,10 @@ def fmt(text: str, prefix: str = "  ") -> str:
 
 
 async def run(title, channel, steps, chat, lines):
-    settings = get_settings()
+    # Очередь чата соблюдается и здесь, но пауза после видео (media_settle_seconds)
+    # нужна живому Wazzup, который скачивает файл. В прогоне её нет смысла ждать:
+    # иначе текст после видео переставился бы и не попал в отчёт.
+    settings = get_settings().model_copy(update={"media_settle_seconds": 0.0})
     engine = storage_db.build_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

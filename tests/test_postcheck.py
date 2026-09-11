@@ -43,6 +43,7 @@ def verdict(
     known_phones=(),
     known_names=(),
     known_numbers=(),
+    known_times=(),
 ):
     """Короткий вызов пост-фильтра с общими для тестов умолчаниями."""
     return check(
@@ -55,6 +56,7 @@ def verdict(
         known_phones=known_phones,
         known_names=known_names,
         known_numbers=known_numbers,
+        known_times=known_times,
     )
 
 
@@ -1027,3 +1029,44 @@ def test_invented_price_is_still_blocked_after_a_card(kb) -> None:
     text = "Могу отдать за 12 345 ₸."
 
     assert not verdict(text, kb, known_numbers=("25000", "30000", "3200")).ok
+
+
+def test_time_already_sent_by_the_bot_is_trusted(kb) -> None:
+    """Расписание пришло ходом раньше — повтор его времени не выдумка, а чужое время — выдумка."""
+    assert not verdict("Бокс идёт в 17:00–18:30.", kb).ok
+    assert verdict("Бокс идёт в 17:00–18:30.", kb, known_times=("17:00", "18:30")).ok
+    assert not verdict("Бокс идёт в 20:00.", kb, known_times=("17:00", "18:30")).ok
+
+
+def test_quoted_rule_examples_are_not_prompt_leak(kb) -> None:
+    """Цитата из правил — фраза для клиента, а не устройство системы.
+
+    Живой прогон 10.09.2026: модель дословно повторила пример из правила про один
+    вопрос — «сколько лет ребёнку и в каком районе вам удобно?», фильтр снял ответ
+    как утечку промпта, и диалог встал на паузу во втором же ходе записи.
+    """
+    import re
+
+    from app.core.postcheck import find_prompt_leak
+    from app.kb.render import render_system_prompt
+    from app.llm.prompt import build_system_instruction
+
+    ngrams = _leak_ngrams(kb)
+    assert find_prompt_leak("Подскажите, сколько лет ребёнку и в каком районе вам удобно?", ngrams) is None
+    quotes = re.findall(r"«([^»]*)»", build_system_instruction(render_system_prompt(kb)))
+    assert quotes, "в правилах не нашлось цитат — тест ничего не проверяет"
+    for quote in quotes:
+        assert find_prompt_leak(quote, ngrams) is None, quote
+
+
+def test_rules_carry_no_concrete_times() -> None:
+    """Время из примера в правилах модель переносит в ответ клиенту.
+
+    Живой прогон 10.09.2026: на «во вторник в 17:00» модель ответила «17:30» из
+    примера правила 6c, фильтр трижды снял ответ, и запись ушла администратору.
+    """
+    import re
+
+    from app.llm.prompt import build_system_instruction
+
+    assert not re.findall(r"(?<!\d)\d{1,2}:\d{2}(?!\d)", build_system_instruction(""))

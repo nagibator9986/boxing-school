@@ -26,9 +26,22 @@ from datetime import datetime
 from typing import Any, Final, Mapping
 
 from app.config import get_settings
+from app.kb import render
 from app.kb.gaps import say_no_data
-from app.kb.models import Gym
+from app.kb.models import Gym, KBSnapshot, ScheduleSlot
+from app.kb.sessions import (
+    SessionChoice,
+    TrialSession,
+    client_named_age,
+    client_named_day,
+    client_named_discipline,
+    client_named_name,
+    client_named_time,
+    normalize_time,
+    resolve_trial_session,
+)
 from app.types import (
+    TRIAL_CONFIRMATION_ARTIFACT,
     EscalationReason,
     GapRef,
     Gender,
@@ -40,6 +53,8 @@ from app.types import (
     ManagerCardKind,
     MAX_CHILD_AGE,
     MIN_CHILD_AGE,
+    OutboundKind,
+    OutboundMessage,
     PhoneSource,
     RenderHint,
     ToolContext,
@@ -87,6 +102,73 @@ def format_local_dt(moment: datetime) -> str:
     return local.strftime("%d.%m.%Y %H:%M")
 
 
+def _school_tz() -> str:
+    """Часовой пояс школы; при битой настройке — Алматы, как в карточках."""
+    try:
+        return get_settings().timezone or "Asia/Almaty"
+    except Exception:  # pragma: no cover - настройки чинятся на старте
+        return "Asia/Almaty"
+
+
+_SURNAME_HINT: Final[str] = (
+    "Для записи нужна фамилия ребёнка. Спроси её коротко. Если родитель не хочет "
+    "называть фамилию — вызови инструмент снова с no_surname=true."
+)
+
+_CHOICE_HINTS: Final[dict[str, str]] = {
+    "need_time": (
+        "Родитель ещё не выбрал время пробного. Спроси одним вопросом, какое время "
+        "удобнее, и назови варианты: {options}. Затем вызови инструмент снова с session_time."
+    ),
+    "unknown_time": "Такого времени в расписании зала нет. Предложи родителю варианты: {options}.",
+    "unknown_day": "В этот день такого занятия нет. Предложи родителю варианты: {options}.",
+    "unknown_discipline": "Такой секции в этом зале нет. Варианты: {options}.",
+    "need_discipline": (
+        "В это время идут и бокс, и кикбоксинг. Спроси родителя, на какую секцию "
+        "записать, и передай discipline. Варианты: {options}."
+    ),
+}
+
+
+def _ask_child_hint(kb: KBSnapshot, lang: Language, *, name: bool, age: bool) -> str:
+    """Подсказка модели: спросить ребёнка формулировкой базы, а не своей «как зовут»."""
+    key = "funnel.name_age" if name and age else ("funnel.name" if name else "funnel.age")
+    what = "фамилию, имя и возраст" if name and age else ("фамилию и имя" if name else "возраст")
+    question = (kb.text(key, lang) or "").strip()
+    return f"Родитель ещё не называл {what} ребёнка — не придумывай. Спроси дословно: «{question}»"
+
+
+def _options_line(kb: KBSnapshot, slots: tuple[ScheduleSlot, ...]) -> str:
+    """Варианты для родителя: «Кикбоксинг — Пн, Ср, Пт 19:00; Бокс — Вт, Чт, Сб 09:00»."""
+    by_discipline: dict[str, list[str]] = {}
+    for slot in slots:
+        label = kb.text(f"card.{slot.discipline}", Language.RU)
+        entry = f"{render.days_label(slot.days, Language.RU)} {slot.time_start}"
+        if entry not in by_discipline.setdefault(label, []):
+            by_discipline[label].append(entry)
+    return "; ".join(f"{label} — {', '.join(entries)}" for label, entries in by_discipline.items())
+
+
+def _choice_hint(kb: KBSnapshot, choice: SessionChoice) -> str:
+    template = _CHOICE_HINTS.get(choice.problem or "", "Уточни у родителя удобное время: {options}.")
+    return template.format(options=_options_line(kb, choice.options) or "—")
+
+
+def _slot_text(kb: KBSnapshot, session: TrialSession) -> str:
+    """Время пробного для карточки администратору: «Ср 09.09 19:00, Кикбоксинг»."""
+    day = render.days_label([session.weekday], Language.RU)
+    label = kb.text(f"card.{session.discipline}", Language.RU)
+    return f"{day} {session.starts_at:%d.%m} {session.time_start}, {label}"
+
+
+def _what_to_bring(kb: KBSnapshot, lang: Language) -> str | None:
+    """Что взять на первую тренировку — ответ базы знаний, единственный источник."""
+    entry = next((item for item in kb.faq if item.id == "gear_first_lesson"), None)
+    if entry is None or not entry.answered:
+        return None
+    return entry.answer.get(lang) or entry.answer.ru
+
+
 # --------------------------------------------------------------------------- #
 # Служебное
 # --------------------------------------------------------------------------- #
@@ -110,6 +192,20 @@ _NAME_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
         "қыз",
         "қызым",
         "балам",
+        # Косвенные падежи: модель пишет «сына» и «дочку», а не «сын» и «дочь».
+        "сына",
+        "сыну",
+        "сыночка",
+        "дочку",
+        "дочки",
+        "дочери",
+        "ребёнка",
+        "ребенка",
+        "мальчика",
+        "девочку",
+        "баланы",
+        "ұлымды",
+        "қызымды",
         "неизвестно",
         "не указано",
         "нет имени",
@@ -130,6 +226,10 @@ def _clean_name(value: str | None, limit: int = MAX_NAME_CHARS) -> str | None:
     if not cleaned or _LETTER_RE.search(cleaned) is None:
         return None
     if cleaned.casefold().strip(".,!?") in _NAME_PLACEHOLDERS:
+        return None
+    # «Айгуль сын» — имя мамы из контакта и слово «сын»: живой прогон 10.09.2026
+    # записал ребёнка именно так. Слово родства внутри имени — признак подмены.
+    if any(token.casefold().strip(".,!?") in _NAME_PLACEHOLDERS for token in cleaned.split()):
         return None
     return cleaned
 
@@ -226,6 +326,10 @@ async def create_trial_lead(
     parent_agreed: bool = False,
     child_gender: str = "unknown",
     preferred_time_text: str | None = None,
+    session_time: str | None = None,
+    session_day: str | None = None,
+    discipline: str | None = None,
+    no_surname: bool = False,
     parent_name: str | None = None,
     phone: str | None = None,
     motivation: str | None = None,
@@ -256,7 +360,9 @@ async def create_trial_lead(
 
     name = _clean_name(child_name)
     if name is None:
-        return ToolResult.invalid_input("child_name не похоже на имя")
+        return ToolResult.invalid_input(
+            "child_name не похоже на имя ребёнка: спроси у родителя фамилию и имя ребёнка"
+        )
 
     if isinstance(child_age, bool) or not isinstance(child_age, int):
         return ToolResult.invalid_input("child_age обязан быть целым числом")
@@ -276,6 +382,84 @@ async def create_trial_lead(
             say=say_no_data(kb, GapRef.C3),
             reason=EscalationReason.NO_DATA,
             gap_ref=GapRef.C3,
+        )
+
+    # --- конкретное занятие -------------------------------------------------- #
+    # Владелец 10.09.2026: «пускай бот полностью сам конвертирует — мы записали вас
+    # на 19:00». Дату считает код по расписанию зала; модель её не называет.
+    session: TrialSession | None = None
+    choice: SessionChoice | None = None
+    said_time: str | None = None
+    if gym.schedule:
+        # Время, день и секцию выбирает родитель, а не модель. Живой прогон
+        # 10.09.2026: на «Сериков Ержан, 8 лет» модель сама подставила «бокс,
+        # суббота 17:00» и отправила подтверждение — клиент ничего из этого не
+        # называл. Аргумент, которого нет в словах клиента, считается не выбранным.
+        texts = ctx.client_texts
+        said_time = normalize_time(session_time) if client_named_time(session_time, texts) else None
+        choice = resolve_trial_session(
+            gym,
+            time_text=said_time,
+            day=session_day if client_named_day(session_day, texts) else None,
+            discipline=discipline if client_named_discipline(discipline, texts) else None,
+            now=ctx.now,
+            tz_name=_school_tz(),
+            min_lead_hours=float(kb.policies.trial_min_lead_hours),
+        )
+        session = choice.session
+
+    # Чего не хватает для записи — спрашивается разом, одним сообщением. Не ошибка,
+    # а следующий вопрос родителю. Варианты времени уходят данными, а не текстом
+    # ошибки: иначе фильтр не признал бы время в «вам удобнее в 17:00 или 19:00?».
+    needs: list[str] = []
+    hints: list[str] = []
+    # Имя и возраст — тоже слова родителя, а не догадка модели. Живой прогон
+    # 10.09.2026: на «На бокс» бот спросил «фамилию сына» — ребёнка ещё никто не
+    # называл. Имя, названное раньше и уже разобранное в заявку, тоже годится.
+    known = ctx.lead_draft
+    name_said = client_named_name(name, ctx.client_texts) or (
+        bool(known.child_name) and client_named_name(name, (known.child_name or "",))
+    )
+    age_said = client_named_age(child_age, ctx.client_texts) or known.child_age == child_age
+    if not name_said:
+        needs.append("need_name")
+    if not age_said:
+        needs.append("need_age")
+    if not (name_said and age_said):
+        hints.append(_ask_child_hint(kb, ctx.lang, name=not name_said, age=not age_said))
+    # Владелец 10.09.2026: «для записи спрашивать не только имя, а ФИ». Одно слово —
+    # это имя без фамилии. Родитель не хочет её называть — записываем как есть.
+    if name_said and len(name.split()) < 2 and not no_surname:
+        needs.append("need_surname")
+        hints.append(_SURNAME_HINT)
+    if choice is not None and session is None:
+        needs.append(choice.problem or "need_time")
+        hints.append(_choice_hint(kb, choice))
+    if needs:
+        if len(needs) > 1:
+            hints.append("Спроси обо всём этом одним коротким сообщением.")
+        return ToolResult.success(
+            data={
+                "booked": False,
+                "status": needs[0],
+                "needs": needs,
+                "gym_id": gym.id,
+                "child_name": name if name_said else None,
+                # Время, которое назвал сам клиент: «в 17:30 занятий нет» — не выдумка,
+                # и фильтр не должен снимать такой ответ.
+                "requested_time": said_time,
+                "options": [
+                    {
+                        "discipline": slot.discipline,
+                        "days": list(slot.days),
+                        "time_start": slot.time_start,
+                        "time_end": slot.time_end,
+                    }
+                    for slot in (choice.options if choice is not None and session is None else ())
+                ],
+            },
+            render_hint=RenderHint.SUMMARIZE,
+            caveats=hints,
         )
 
     # --- телефон ------------------------------------------------------------ #
@@ -322,6 +506,10 @@ async def create_trial_lead(
     if not previous.channel_user and ctx.chat_id:
         update["channel_user"] = ctx.chat_id
 
+    if session is not None:
+        update["trial_slot"] = session.starts_at
+        update["trial_slot_text"] = _slot_text(kb, session)
+
     draft = previous.model_copy(update=update)
     missing = _missing_required(draft)
     draft.status = LeadStatus.TRIAL_BOOKED if not missing else LeadStatus.NEEDS_CALL
@@ -355,13 +543,36 @@ async def create_trial_lead(
     else:
         caveats.append("Лид уже был создан в этом диалоге — карточка администратору повторно не отправлялась.")
 
-    if missing:
+    confirmation_sent = False
+    if session is not None and not missing:
+        bring = _what_to_bring(kb, ctx.lang)
+        await ctx.services.enqueue_outbound(
+            OutboundMessage(
+                conversation_id=ctx.conversation_id,
+                channel_id=ctx.channel_id,
+                channel=ctx.channel,
+                chat_id=ctx.chat_id,
+                lang=ctx.lang,
+                kind=OutboundKind.LEAD_CONFIRMATION,
+                text=render.render_trial_confirmation(
+                    kb, child=draft.child_name, gym=gym, session=session, lang=ctx.lang, bring=bring
+                ),
+                artifact_id=TRIAL_CONFIRMATION_ARTIFACT,
+            )
+        )
+        confirmation_sent = True
+        caveats.append(
+            "Клиент уже получил готовое подтверждение записи: секция, адрес, день, время, "
+            "когда прийти и что взять с собой. Ничего от себя не добавляй."
+        )
+    elif missing:
         caveats.append(
             "Данных для полноценной записи не хватает (" + ", ".join(missing) + "): "
             "не обещай подтверждённое время, скажи, что администратор свяжется."
         )
-    # G-1: расписания в базе нет, поэтому конкретное время не подтверждает никто, кроме человека.
-    caveats.append("Конкретный день и час не называй: время пробного подтверждает администратор.")
+    else:
+        # У зала нет расписания — конкретное время подбирает человек.
+        caveats.append("Конкретный день и час не называй: у этого зала нет расписания в базе.")
     if health_notes:
         caveats.append("Про здоровье ребёнка советов не давай — это вопрос к врачу и администратору.")
 
@@ -378,10 +589,14 @@ async def create_trial_lead(
             "gym_address": gym.address.get(ctx.lang),
             "phone_saved": draft.phone is not None,
             "phone_source": draft.phone_source.value,
-            "preferred_time_text": draft.trial_slot_text,
+            # Время — только из расписания школы. Эхо слов родителя сюда не кладётся:
+            # фильтр доверяет времени из этих данных.
+            "trial_time": draft.trial_slot_text if session is not None else None,
+            "booked": True,
             "missing_fields": list(missing),
+            "confirmation_sent": confirmation_sent,
         },
-        render_hint=RenderHint.SUMMARIZE,
+        render_hint=RenderHint.SILENT if confirmation_sent else RenderHint.SUMMARIZE,
         caveats=caveats,
         meta={"lead_id": str(lead_id), "gap_refs": [GapRef.G1.value, GapRef.G4.value]},
     )

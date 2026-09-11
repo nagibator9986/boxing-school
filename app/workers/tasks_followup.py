@@ -300,6 +300,8 @@ async def schedule_followups(
         run_at = _run_at(rule, now=now, trial_slot=trial_slot)
         if run_at is None or run_at <= now - timedelta(hours=1):
             continue
+        if rule.event in _TRIAL_ANCHORED and run_at < now + _TRIAL_REMINDER_MIN_GAP:
+            continue
         if await _times_used(session, conv.id, rule.event) >= rule.max_times:
             continue
 
@@ -590,6 +592,11 @@ async def _times_used(session: AsyncSession, conv_id: UUID, kind: FollowupKind) 
         )
     )
     return int((await session.execute(stmt)).scalar_one() or 0)
+
+
+#: Напоминание о пробном, которое пришлось бы на ближайший час после записи,
+#: дублирует только что отправленное подтверждение — такое не назначается.
+_TRIAL_REMINDER_MIN_GAP: Final[timedelta] = timedelta(hours=1)
 
 
 def _rule_applies(

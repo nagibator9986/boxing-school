@@ -59,6 +59,8 @@ escalation_triggers:
 
 # На сколько минут бот замолкает после передачи диалога администратору.
 escalation_pause_minutes: 60
+# Пробное назначается не раньше чем через столько часов после записи.
+trial_min_lead_hours: 2
 
 # -----------------------------------------------------------------------------
 # НАПОМИНАНИЯ (follow-up)
@@ -77,7 +79,8 @@ followup_policy:
   - { event: fu_value,           delay_hours: 48,  only_work_hours: true,  template_id: "followup.fu_value",           max_times: 1 }
   - { event: trial_reminder_20h, delay_hours: -20, only_work_hours: true,  template_id: "followup.trial_reminder_20h", max_times: 1 }
   - { event: trial_reminder_2h,  delay_hours: -2,  only_work_hours: false, template_id: "followup.trial_reminder_2h",  max_times: 1 }
-  - { event: no_show,            delay_hours: 24,  only_work_hours: true,  template_id: "followup.no_show",            max_times: 1 }
+  # no_show отключён владельцем 10.09.2026: бот не знает, пришёл ли ребёнок,
+  # и «вчера вас не было» получили бы и те, кто пришёл.
 
 # Разговор закончился по-хорошему: клиент поблагодарил или попрощался.
 # Напоминание через полчаса после такого читается как навязчивость, поэтому

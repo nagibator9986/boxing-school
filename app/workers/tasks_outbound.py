@@ -104,6 +104,21 @@ async def send_outbox_job(ctx: dict[str, Any], outbox_id: str) -> None:
                 log.info("outbox_deferred_channel_stopped", outbox_id=str(oid))
                 return
 
+            # Сообщения одного чата уходят строго по очереди — см. order_gate.
+            wait_s = await repo_outbox.order_gate(
+                session,
+                row,
+                now=now,
+                settle_s=float(settings.media_settle_seconds),
+                stale_sending_s=float(settings.worker_job_timeout_s),
+            )
+            if wait_s > 0:
+                await session.commit()
+                delay_ms = max(int(settings.outbox_order_retry_ms), int(wait_s * 1000))
+                await _requeue(deps, oid, delay_ms)
+                log.info("outbox_waits_its_turn", outbox_id=str(oid), delay_ms=delay_ms)
+                return
+
             claimed = await repo_outbox.claim(session, oid)
             if claimed is None:
                 await session.commit()
@@ -631,6 +646,14 @@ async def _client(ctx: dict[str, Any], deps: Any) -> Any:
         client = WazzupClient.from_settings(deps.settings)
         ctx["wazzup"] = client
     return client
+
+
+async def _requeue(deps: Any, outbox_id: UUID, delay_ms: int) -> None:
+    """Ставит отправку строки ещё раз. Не вышло — строку подберёт сметка через минуту."""
+    try:
+        await deps.queue.enqueue_outbox(outbox_id, delay_ms=delay_ms)
+    except Exception as exc:  # noqa: BLE001 - потерянная задача не теряет строку
+        log.warning("outbox_requeue_failed", outbox_id=str(outbox_id), error=type(exc).__name__)
 
 
 def _deps(ctx: dict[str, Any]) -> Any:

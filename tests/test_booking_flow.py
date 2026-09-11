@@ -137,18 +137,20 @@ async def test_full_booking_flow_creates_lead_and_notifies_manager(deps, llm) ->
         deps,
         llm,
         "wz-book-3",
-        "Да, давайте. Сына зовут Ержан, ему 8 лет",
+        "Да, давайте. Сын — Сериков Ержан, ему 8 лет, на кикбоксинг в 19:00",
         [
             FakeTurn.tool(
                 FakeCall(
                     "create_trial_lead",
                     {
-                        "child_name": "Ержан",
+                        "child_name": "Сериков Ержан",
                         "child_age": 8,
                         "child_gender": "m",
                         "gym_id": GYM_ID,
                         "parent_name": "Айгуль",
                         "preferred_time_text": "будни вечером",
+                        "session_time": "19:00",
+                        "discipline": "kickboxing",
                         "parent_agreed": True,
                     },
                 )
@@ -170,7 +172,7 @@ async def test_full_booking_flow_creates_lead_and_notifies_manager(deps, llm) ->
         lead = await repo_lead.get_by_conversation(session, conv_id)
 
     assert lead is not None, "лид не сохранён в базе"
-    assert lead.child_name == "Ержан"
+    assert lead.child_name == "Сериков Ержан"
     assert lead.child_age == 8
     assert lead.gym_id == GYM_ID
     assert lead.channel_user == CHAT_ID
@@ -187,6 +189,14 @@ async def test_full_booking_flow_creates_lead_and_notifies_manager(deps, llm) ->
 
     card = lead_cards[0].text
     assert "Ержан" in card, f"в карточке нет имени ребёнка:\n{card}"
+    assert "19:00" in card, f"в карточке нет времени пробного:\n{card}"
+
+    # --- клиенту: готовое подтверждение, без «администратор свяжется» ----- #
+    client = "\n".join(out.text or "" for d in third for out in d.outbound)
+    assert "Мы записали вас" in client and "👤 Сериков Ержан" in client, f"подтверждения записи нет:\n{client}"
+    assert "19:00" in client and "за 10 минут" in client
+    assert "свяжется" not in client, f"клиенту ушла отсылка к администратору:\n{client}"
+    assert lead.trial_slot is not None, "время пробного не сохранено — напоминания не сработают"
     assert "8" in card, f"в карточке нет возраста:\n{card}"
     assert "5550101" in card, f"в карточке нет телефона:\n{card}"
 
@@ -195,21 +205,24 @@ async def test_lead_is_not_duplicated_when_model_books_twice(deps, llm) -> None:
     """Повторный вызов записи в том же диалоге не плодит второй лид."""
     booking_call = FakeCall(
         "create_trial_lead",
-        {"child_name": "Аружан", "child_age": 7, "gym_id": GYM_ID, "parent_agreed": True},
+        {
+            "child_name": "Касымова Аружан", "child_age": 7, "gym_id": GYM_ID, "parent_agreed": True,
+            "session_time": "19:00", "discipline": "boxing",
+        },
     )
 
     await say(
         deps,
         llm,
         "wz-dup-book-1",
-        "Запишите нас",
+        "Запишите нас на бокс в 19:00",
         [FakeTurn.tool(booking_call), FakeTurn.answer("Записала, администратор перезвонит.")],
     )
     second = await say(
         deps,
         llm,
         "wz-dup-book-2",
-        "И ещё раз запишите на всякий случай",
+        "И ещё раз запишите на бокс в 19:00 на всякий случай",
         [FakeTurn.tool(booking_call), FakeTurn.answer("Заявка уже принята, дублировать не нужно.")],
     )
 
@@ -232,15 +245,17 @@ async def test_booking_with_invented_phone_is_rejected(deps, llm) -> None:
         deps,
         llm,
         "wz-badphone-1",
-        "Запишите, телефон у вас есть",
+        "Запишите на кикбоксинг в 19:00, телефон у вас есть",
         [
             FakeTurn.tool(
                 FakeCall(
                     "create_trial_lead",
                     {
-                        "child_name": "Дана",
+                        "child_name": "Нурланова Дана",
                         "child_age": 9,
                         "gym_id": GYM_ID,
+                        "session_time": "19:00",
+                        "discipline": "kickboxing",
                         "parent_agreed": True,
                         "phone": "+7 000 000-00-00",
                     },
@@ -508,6 +523,10 @@ async def test_facts_menu_item_arrives_as_two_messages(deps, llm) -> None:
     sent = [out.text or "" for d in decisions for out in d.outbound]
 
     assert len(sent) == 2, f"ожидались два сообщения, пришло {len(sent)}: {sent}"
+    # Порядок: прайс, затем список залов — вопрос о номере относится к списку
+    # и стоит последним.
+    assert "₸" in sent[0], sent[0]
+    assert "Каирбекова 24" in sent[1] and sent[1].rstrip().endswith("?"), sent[1]
 
 
 async def test_digit_later_in_dialogue_is_left_alone(deps, llm) -> None:

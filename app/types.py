@@ -265,6 +265,11 @@ class RenderHint(str, Enum):
     FIXED_REPLY = "fixed_reply"    # ответ клиенту уже сформирован кодом, модель не переписывает
 
 
+#: ``artifact_id`` сообщения-подтверждения записи. По нему пайплайн видит, что
+#: клиент уже получил готовое подтверждение, и текст модели следом не отправляет.
+TRIAL_CONFIRMATION_ARTIFACT: Final[str] = "trial_confirmation"
+
+
 class OutboundKind(str, Enum):
     BOT_REPLY = "bot_reply"
     ARTIFACT = "artifact"
@@ -880,6 +885,9 @@ class ToolContext:
     lead_draft: LeadDraft = field(default_factory=LeadDraft)
     intents: tuple[IntentHint, ...] = ()
     injection_suspected: bool = False
+    #: Последние реплики самого клиента, без служебных пометок. По ним инструменты
+    #: проверяют, что время, секцию и посёлок назвал клиент, а не придумала модель.
+    client_texts: tuple[str, ...] = ()
 
 
 class ToolExecutor(Protocol):

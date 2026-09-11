@@ -27,6 +27,7 @@ from typing import Any, Final
 
 from app.kb.gaps import say_no_data
 from app.kb.models import FamilyDiscount, KBSnapshot, PlanPrice
+from app.kb.places import scope_by_place, scope_by_texts
 from app.types import (
     EscalationReason,
     GapRef,
@@ -127,6 +128,9 @@ def _city_showcase(kb: KBSnapshot) -> dict[str, Any]:
     ]
     showcase: dict[str, Any] = {
         "settlement": pricing.city_settlement,
+        # По городскому прайсу занимаются и в посёлках из city_suburbs (Тобыл):
+        # без этого списка модель считала бы их районной ценой.
+        "settlements": [pricing.city_settlement, *kb.gyms.city_suburbs],
         "sessions_included": pricing.city_sessions,
         "validity_days": pricing.city_validity_days,
         "validity_note_ru": pricing.city_validity_note.ru,
@@ -257,6 +261,7 @@ async def calculate_price(
     plan: str,
     children_count: int,
     single_sessions: int | None = None,
+    settlement: str | None = None,
 ) -> ToolResult:
     """Чистая функция поверх pricing.yaml. render_hint=NUMBERS_ONLY.
 
@@ -272,6 +277,12 @@ async def calculate_price(
         return ToolResult.invalid_input("children_count обязан быть целым числом не меньше 1")
 
     parsed_scope = _scope_of(scope)
+    # Посёлок клиента решает цену надёжнее, чем scope от модели: живой прогон
+    # 10.09.2026 — модель посчитала Тобыл райцентром и назвала 10 000 ₸, хотя он
+    # идёт по городскому прайсу.
+    by_place = scope_by_place(kb, settlement) or scope_by_texts(kb, ctx.client_texts)
+    if by_place is not None:
+        parsed_scope = by_place
     parsed_plan = _plan_of(plan)
     if parsed_plan is None:
         return ToolResult.invalid_input(f"неизвестный тариф '{plan}'")

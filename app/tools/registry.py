@@ -134,7 +134,15 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
                 "scope": {
                     "type": "string",
                     "enum": ["city", "region"],
-                    "description": "city — Костанай; region — райцентр области",
+                    "description": (
+                        "city — город и посёлки с городскими ценами; region — райцентры "
+                        "области. Посёлок клиента передай в settlement — по нему цена "
+                        "определится точно"
+                    ),
+                },
+                "settlement": {
+                    "type": "string",
+                    "description": "Населённый пункт клиента, если он назван: «Тобыл», «Карабалык»",
                 },
                 "plan": {
                     "type": "string",
@@ -236,20 +244,46 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
     ToolSpec(
         name="create_trial_lead",
         description=(
-            "Записать ребёнка на бесплатное пробное занятие. Вызывать, когда известны имя "
-            "ребёнка, возраст и выбранный зал. Точное время пробного не подтверждать — его "
-            "назначает администратор."
+            "Записать ребёнка на бесплатное пробное занятие. Вызывать после согласия родителя, "
+            "когда известны имя ребёнка, возраст, зал и выбранное время из расписания. "
+            "Инструмент сам считает ближайшую дату и отправляет клиенту готовое подтверждение; "
+            "если времени не хватает или оно не из расписания — вернёт варианты для вопроса."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "child_name": {"type": "string", "maxLength": 60},
+                "child_name": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "description": "Фамилия и имя ребёнка, как назвал родитель: «Иванов Али»",
+                },
+                "no_surname": {
+                    "type": "boolean",
+                    "description": "true — только если родитель прямо не хочет называть фамилию",
+                },
                 "child_age": {"type": "integer", "minimum": 3, "maximum": 17},
                 "child_gender": {"type": "string", "enum": ["m", "f", "unknown"]},
                 "gym_id": {"type": "string", "enum": [ENUM_GYM_ID]},
                 "preferred_time_text": {
                     "type": "string",
                     "description": "Как сказал родитель: «среда вечером»",
+                },
+                "session_time": {
+                    "type": "string",
+                    "description": (
+                        "Время занятия из расписания зала, которое выбрал родитель: «19:00». "
+                        "Не выбрал — сначала спроси"
+                    ),
+                },
+                "session_day": {
+                    "type": "string",
+                    "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                    "description": "Только если родитель назвал день; иначе берётся ближайшее занятие",
+                },
+                "discipline": {
+                    "type": "string",
+                    "enum": ["boxing", "kickboxing"],
+                    "description": "Секция, если родитель её выбрал",
                 },
                 "parent_name": {"type": "string"},
                 "phone": {

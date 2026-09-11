@@ -194,36 +194,24 @@ async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     result = await get_gyms(ctx, scope="city")
 
     assert result.ok
-    assert result.data["total_in_scope"] == 7
+    # Семь залов Костаная и Тобыл: 10.09.2026 он перешёл на городской прайс.
+    assert result.data["total_in_scope"] == 8
     assert all(gym["scope"] == Scope.CITY.value for gym in result.data["gyms"])
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
 
 async def test_get_gyms_region_returns_all_settlements(ctx) -> None:
-    """Райцентров семь. Адрес известен только у Тобыла, у остальных пробел G-3."""
+    """Райцентров шесть, адрес внутри посёлка ни у одного не передан (пробел G-3).
+
+    Тобыл среди них больше не числится: 10.09.2026 владелец подтвердил, что цена у
+    школы одна, и Тобыл идёт по городскому прайсу и в городском списке.
+    """
     result = await get_gyms(ctx, scope="region")
 
     assert result.ok
-    assert {gym["settlement"] for gym in result.data["gyms"]} == {
-        "Карабалык",
-        "Фёдоровка",
-        "Сарыколь",
-        "Аулиеколь",
-        "Узынколь",
-        "Житикара",
-        # Тобыл добавлен 12.08.2026 вместе с расписанием; прежнее название —
-        # Затобольск, по нему зал тоже обязан находиться.
-        "Тобыл",
-    }
-    without_address = {g["settlement"] for g in result.data["gyms"] if g["address"] is None}
-    assert without_address == {
-        "Карабалык",
-        "Фёдоровка",
-        "Сарыколь",
-        "Аулиеколь",
-        "Узынколь",
-        "Житикара",
-    }, "адрес есть только у Тобыла — он пришёл вместе с расписанием"
+    region = {"Карабалык", "Фёдоровка", "Сарыколь", "Аулиеколь", "Узынколь", "Житикара"}
+    assert {gym["settlement"] for gym in result.data["gyms"]} == region
+    assert {g["settlement"] for g in result.data["gyms"] if g["address"] is None} == region
 
 
 async def test_get_gyms_warns_about_duplicate_districts(ctx) -> None:
@@ -284,15 +272,27 @@ async def test_region_gyms_have_map_link_only_with_address(ctx) -> None:
     """Ссылка на карту есть ровно там, где есть адрес.
 
     В большинстве райцентров адрес внутри посёлка не передан (G-3), и ссылка вела
-    бы в никуда. Исключение — Тобыл: его адрес пришёл вместе с расписанием.
+    бы в никуда. У Тобыла адрес есть — и ссылка тоже.
     """
-    result = await get_gyms(ctx, scope="region")
+    region = await get_gyms(ctx, scope="region")
+    for gym in region.data["gyms"]:
+        assert gym["map_url"] is None, f'{gym["id"]}: ссылка без адреса'
 
-    for gym in result.data["gyms"]:
-        if gym["id"] == "region_tobyl":
-            assert gym["map_url"], "у Тобыла есть адрес — должна быть и ссылка"
-        else:
-            assert gym["map_url"] is None, f'{gym["id"]}: ссылка без адреса'
+    city = await get_gyms(ctx, scope="city")
+    tobyl = next(gym for gym in city.data["gyms"] if gym["id"] == "region_tobyl")
+    assert tobyl["map_url"], "у Тобыла есть адрес — должна быть и ссылка"
+
+
+async def test_tobyl_is_found_even_when_asked_as_a_region(ctx) -> None:
+    """Тобыл перешёл на городской прайс, но модель по привычке ищет его как район.
+
+    Поиск по названию посёлка идёт по всем залам — иначе родитель из Тобыла
+    услышал бы, что зала там нет.
+    """
+    result = await get_gyms(ctx, scope="region", settlement="Тобыл")
+
+    assert result.ok
+    assert [gym["id"] for gym in result.data["gyms"]] == ["region_tobyl"]
 
 
 async def test_tobyl_is_found_by_its_old_name(ctx) -> None:

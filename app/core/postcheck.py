@@ -246,9 +246,11 @@ _WORD_TIME_PATTERNS: Final[tuple[tuple[re.Pattern[str], tuple[int, ...]], ...]] 
     (_DAYPART_BEFORE_RE, (1,)),
 )
 
-#: Инструменты, чьи ``data`` НЕ подтверждают время: они возвращают эхо пожеланий
-#: клиента (``preferred_time_text``), а не расписание школы.
-_TIME_UNTRUSTED_TOOLS: Final[frozenset[str]] = frozenset({"create_trial_lead"})
+#: Инструменты, чьи ``data`` НЕ подтверждают время. Раньше здесь был
+#: ``create_trial_lead``: он возвращал эхо пожеланий клиента. С 10.09.2026 он
+#: отдаёт только время из расписания зала — варианты для записи и назначенное
+#: занятие, — а эхо слов родителя в данные не попадает.
+_TIME_UNTRUSTED_TOOLS: Final[frozenset[str]] = frozenset()
 
 #: Дни недели: русский, казахский и коды расписания из KB.
 _WEEKDAYS: Final[dict[str, tuple[str, ...]]] = {
@@ -353,6 +355,7 @@ def check(
     known_phones: Sequence[str] = (),
     known_names: Sequence[str] = (),
     known_numbers: Sequence[str] = (),
+    known_times: Sequence[str] = (),
 ) -> PostcheckVerdict:
     """Анти-галлюцинационный фильтр. Работает ПОСЛЕ ``safe_text`` и ДО постановки в outbox.
 
@@ -413,7 +416,12 @@ def check(
     # Расписания в KB нет — ``facts.times`` пусто, и любое время блокируется;
     # расписание появилось — блокируется всё, кроме пришедшего из него.
     times = extract_times(cleaned)
-    bad_times = tuple(value for value in times if value not in facts.times)
+    # Время из того, что бот уже отправил в этом диалоге, — подтверждённое: карточку
+    # расписания собирает код, а ответы модели прошли этот же фильтр. Живой прогон
+    # 10.09.2026: расписание КСК пришло ходом раньше, на «На бокс» модель повторила
+    # «17:00–18:30», инструмент не вызывался — ответ снимался, диалог вставал на паузу.
+    trusted_times = facts.times | {value for value in known_times if value}
+    bad_times = tuple(value for value in times if value not in trusted_times)
     if bad_times:
         return _fail(PostcheckFailKind.TIME, bad_times)
 

@@ -15,12 +15,26 @@
 
 from __future__ import annotations
 
-from typing import Final
+import re
+from typing import Final, Sequence
 
 from app.kb.models import KBSnapshot
-from app.types import Language, LeadDraft
+from app.types import Language, LeadDraft, OutboundMessage
 
-__all__ = ["ends_with_question", "next_step_key", "pending_question", "with_funnel_question"]
+__all__ = [
+    "ask_full_name",
+    "drop_questions",
+    "ends_with_question",
+    "next_step_key",
+    "pending_question",
+    "turn_showed_a_gym",
+    "with_funnel_question",
+]
+
+#: Карточки, после которых пора предлагать запись: клиенту уже показали зал.
+_GYM_SHOWN_PREFIXES: Final[tuple[str, ...]] = ("route_", "schedule_")
+
+_SENTENCE_SPLIT: Final[re.Pattern[str]] = re.compile(r"(?<=[.!?])\s+")
 
 #: Хвост ответа, в котором ищем вопрос. Знак вопроса в середине текста —
 #: обычно цитата клиента или риторический оборот, а не приглашение ответить.
@@ -51,16 +65,108 @@ _HANDOVER_MARKERS: Final[tuple[str, ...]] = (
 )
 
 
+#: Просьба вместо вопроса: «Подскажите фамилию сына.» ждёт ответа так же, как «?».
+#: Живой прогон 10.09.2026: к такой просьбе воронка дописала «сколько лет ребёнку?».
+_REQUEST_RU_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\s\W]*(?:и\s+)?(?:пожалуйста,?\s+)?"
+    r"(?:подскажите|напишите|уточните|скажите|назовите|пришлите|отправьте|выберите)(?![а-яё])",
+    re.IGNORECASE,
+)
+_REQUEST_KK_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:жазыңыз|айтыңыз|таңдаңыз|жіберіңіз)[\s.!]*$", re.IGNORECASE
+)
+#: «Напишите, если появятся вопросы» — вежливое завершение, отвечать на него нечего.
+_REQUEST_EXCEPT_RE: Final[re.Pattern[str]] = re.compile(r"(?<![а-яё])если(?![а-яё])|егер", re.IGNORECASE)
+
+#: Вопрос об имени ребёнка без фамилии: «Как зовут ребёнка?», «Как его зовут?».
+_NAME_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"как\s+(?:(?:его|её|ее)\s+)?(?:зовут|звать)(?:\s+(?:вашего|вашу|вашей)?\s*"
+    r"(?:ребён|ребен|сын|доч|малыш|мальчик|девочк))?(?![а-яё])?"
+    r"|имя\s+(?:вашего\s+|вашей\s+)?(?:ребён|ребен|сын|доч|малыш|мальчик|девочк)"
+    r"|(?:баланың|ұлыңыздың|қызыңыздың)\s+(?:аты|есімі)",
+    re.IGNORECASE,
+)
+_CHILD_WORD_RE: Final[re.Pattern[str]] = re.compile(
+    r"ребён|ребен|сын|доч|малыш|мальчик|девочк|его\s+зовут|её\s+зовут|ее\s+зовут|бала|ұл|қыз",
+    re.IGNORECASE,
+)
+_SURNAME_RE: Final[re.Pattern[str]] = re.compile(r"фамили|тегі", re.IGNORECASE)
+_AGE_ASK_RE: Final[re.Pattern[str]] = re.compile(r"лет|возраст|жас", re.IGNORECASE)
+
+
+def _is_request(sentence: str) -> bool:
+    text = (sentence or "").strip()
+    if not text or _REQUEST_EXCEPT_RE.search(text):
+        return False
+    return bool(_REQUEST_RU_RE.search(text) or _REQUEST_KK_RE.search(text))
+
+
+def ask_full_name(reply: str, *, kb: KBSnapshot, lang: Language) -> str:
+    """Вопрос «Как зовут ребёнка?» заменяется вопросом базы о фамилии и имени.
+
+    Владелец 10.09.2026: «для записи спрашивать не только имя, а ФИ». Правило есть
+    в промпте и в подсказке инструмента, но живой прогон всё равно дал «Как зовут
+    ребёнка и сколько ему лет?». Ответ, где фамилию уже спрашивают, не трогается.
+    """
+    body = reply or ""
+    if not body.strip() or _SURNAME_RE.search(body):
+        return reply
+    lines: list[str] = []
+    replaced = False
+    for line in body.splitlines():
+        sentences = _SENTENCE_SPLIT.split(line)
+        for index, sentence in enumerate(sentences):
+            if replaced or not _NAME_QUESTION_RE.search(sentence) or not _CHILD_WORD_RE.search(sentence):
+                continue
+            key = "funnel.name_age" if _AGE_ASK_RE.search(sentence) else "funnel.name"
+            question = (kb.text(key, lang) or "").strip()
+            if question:
+                sentences[index] = question
+                replaced = True
+        lines.append(" ".join(sentences))
+    return "\n".join(lines) if replaced else reply
+
+
 def _is_handover(text: str) -> bool:
     """Похоже ли, что этим ответом бот передаёт разговор человеку."""
     lowered = (text or "").lower()
     return any(marker in lowered for marker in _HANDOVER_MARKERS)
 
 
+def turn_showed_a_gym(messages: Sequence[OutboundMessage]) -> bool:
+    """Ушли ли в этом ходу расписание или видео дороги до зала."""
+    return any(
+        str(getattr(message, "artifact_id", "") or "").startswith(_GYM_SHOWN_PREFIXES)
+        for message in messages
+    )
+
+
+def drop_questions(reply: str) -> str:
+    """Ответ модели без её вопросов: единственным вопросом хода станет предложение записи.
+
+    Предложение записи после расписания и видео отправляет код — отдельным
+    последним сообщением. Живой прогон 10.09.2026: клиент получил «Какое время из
+    расписания вам подходит?» и следом «Записать ребёнка на первую пробную
+    тренировку?» — два вопроса подряд. Остальные предложения строки сохраняются.
+    """
+    kept: list[str] = []
+    for line in (reply or "").splitlines():
+        sentences = [part for part in _SENTENCE_SPLIT.split(line) if part.strip()]
+        useful = [part for part in sentences if "?" not in part and not _is_request(part)]
+        if sentences and not useful:
+            continue
+        kept.append(" ".join(useful) if len(useful) != len(sentences) else line)
+    return "\n".join(kept).strip()
+
+
 def ends_with_question(text: str) -> bool:
     """Есть ли в конце ответа вопрос — то, на что клиенту хочется ответить."""
-    tail = (text or "").strip()[-_TAIL_CHARS:]
-    return "?" in tail
+    body = (text or "").strip()
+    if "?" in body[-_TAIL_CHARS:]:
+        return True
+    lines = [line for line in body.splitlines() if line.strip()]
+    sentences = [part for part in _SENTENCE_SPLIT.split(lines[-1]) if part.strip()] if lines else []
+    return bool(sentences) and _is_request(sentences[-1])
 
 
 def next_step_key(draft: LeadDraft) -> str:

@@ -3,6 +3,10 @@ updated_at: "2026-08-20"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
+# Посёлки, которые школа считает частью города: та же цена, тот же список залов.
+# Владелец 10.09.2026 про Тобыл: «наш восьмой зал», «у нас одна цена».
+city_suburbs:
+- Тобыл
 gyms:
 - id: ksk_kairbekova_334
   scope: city
@@ -72,9 +76,26 @@ gyms:
     - sat
     time_start: 09:00
     time_end: "10:30"
-    note:
-      ru: по боксу переданы не все часы, остальные уточнит администратор
-      kk: бокс бойынша барлық сағат берілмеген, қалғанын әкімші нақтылайды
+  # Владелец 10.09.2026: «по расписанию не дописано только КСК — вторник,
+  # четверг, суббота 17:00–18:30»; в это время занимаются обе секции.
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "17:00"
+    time_end: "18:30"
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "17:00"
+    time_end: "18:30"
   capacity_note: null
   media:
   - gym_location_ksk_kairbekova_334
@@ -573,12 +594,11 @@ gyms:
   internal_note: Седьмой зал города, данные от владельца 02.09.2026 (адрес, ориентир, расписание, 2ГИС). Видео дороги пока нет; район и охват соседних районов не заданы.
   serves_districts: []
 - id: region_tobyl
-  scope: region
+  scope: city
   settlement: Тобыл
   is_head: false
   active: true
   status: open
-  list_with_city: true
   title:
     ru: Тобыл
     kk: Тобыл

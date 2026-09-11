@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Final
 from uuid import UUID, uuid4
 
@@ -34,8 +34,15 @@ __all__ = [
     "mark_failed",
     "mark_sent",
     "mark_skipped",
+    "order_gate",
     "pending_count",
 ]
+
+#: Сколько более ранних строк диалога просматривает проверка очереди.
+_ORDER_LOOKBACK: Final[int] = 30
+
+#: Ожидание, когда предыдущее сообщение ещё не ушло и срок его отправки неизвестен.
+_ORDER_WAIT_UNKNOWN_S: Final[float] = 0.001
 
 #: Длина, до которой обрезается текст ошибки перед записью в ``last_error``.
 _MAX_ERROR_CHARS: Final[int] = 1000
@@ -224,6 +231,69 @@ async def mark_skipped(session: AsyncSession, outbox_id: UUID, *, error: str) ->
             updated_at=utcnow(),
         )
     )
+
+
+def _aware(value: datetime) -> datetime:
+    """Наивное время из SQLite считаем UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+async def order_gate(
+    session: AsyncSession,
+    row: OutboxMessage,
+    *,
+    now: datetime,
+    settle_s: float,
+    stale_sending_s: float,
+) -> float:
+    """Сколько секунд строке ждать, чтобы не обогнать сообщения своего чата. ``0`` — пора.
+
+    За один ход бот ставит в очередь несколько сообщений, а воркер отправлял их
+    параллельно. 10.09.2026 клиент видел «напишите номер зала» раньше самого списка
+    залов и «записать ребёнка?» раньше расписания и видео дороги.
+
+    Правила:
+
+    * более раннее сообщение того же чата ещё не ушло — ждём его;
+    * строка, застрявшая в ``sending`` дольше ``stale_sending_s`` (процесс упал
+      посреди отправки), очередь не держит — иначе чат замолчал бы навсегда;
+    * ``failed`` и ``skipped`` — терминальные, очередь не держат;
+    * последним ушёл файл — следующее сообщение ждёт ``settle_s``: Wazzup ещё
+      скачивает видео, и короткий текст, отправленный сразу, обгоняет его.
+
+    Очередь держится внутри диалога. Карточка администратору в неё не попадает:
+    у неё нет ``conversation_id``, и клиентские сообщения она не задерживает.
+    """
+    if row.conversation_id is None:
+        return 0.0
+    stmt = (
+        sa.select(OutboxMessage)
+        .where(
+            OutboxMessage.conversation_id == row.conversation_id,
+            OutboxMessage.id != row.id,
+            OutboxMessage.created_at <= row.created_at,
+        )
+        .order_by(OutboxMessage.created_at.desc())
+        .limit(_ORDER_LOOKBACK)
+    )
+    earlier = [
+        other
+        for other in (await session.execute(stmt)).scalars().all()
+        if (_aware(other.created_at), str(other.id)) < (_aware(row.created_at), str(row.id))
+    ]
+    fresh_sending = now - timedelta(seconds=max(0.0, stale_sending_s))
+    for other in earlier:
+        if other.state == OutboxState.PENDING.value:
+            return _ORDER_WAIT_UNKNOWN_S
+        if other.state == OutboxState.SENDING.value and _aware(other.updated_at) > fresh_sending:
+            return _ORDER_WAIT_UNKNOWN_S
+
+    previous = next((other for other in earlier if other.state == OutboxState.SENT.value), None)
+    if previous is not None and settle_s > 0 and (previous.payload or {}).get("content_uri"):
+        ready_at = _aware(previous.updated_at) + timedelta(seconds=settle_s)
+        if ready_at > now:
+            return (ready_at - now).total_seconds()
+    return 0.0
 
 
 async def exists_by_wazzup_message_id(session: AsyncSession, message_id: str) -> bool:

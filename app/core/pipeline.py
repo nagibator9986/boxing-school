@@ -63,6 +63,7 @@ from app.core import (
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
 from app.kb import render
+from app.kb.places import scope_by_texts
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
 from app.llm.prompt import build_system_instruction, prompt_ngrams
@@ -73,6 +74,8 @@ from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
 from app.types import (
+    Scope,
+    TRIAL_CONFIRMATION_ARTIFACT,
     Author,
     BotError,
     ConversationState,
@@ -1020,11 +1023,13 @@ async def _run_turn(
             lead_draft=draft,
             intents=intents,
             injection_suspected=injection,
+            client_texts=_recent_client_texts(text, history),
         )
         executor = await build_tool_executor(deps, ctx)
 
         # Заметка собирается заново каждый ход и уходит ПОСЛЕДНИМ элементом
         # contents: любая динамика в начале запроса убивает implicit-кэш.
+        child_talk = await _child_talk_continues(db, conv, text)
         dynamic_note = build_dynamic_note(
             lang=lang,
             now=now,
@@ -1036,7 +1041,7 @@ async def _run_turn(
             just_said=_just_said(
                 text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
             ),
-            child_at_keyboard=await _child_talk_continues(db, conv, text),
+            child_at_keyboard=child_talk,
             cards_sent=await _cards_already_sent(db, conv),
         )
         request = LLMRequest(
@@ -1149,6 +1154,7 @@ async def _run_turn(
         # --- 9. Postcheck --------------------------------------------------- #
         cleaned = sanitize(reply_raw)
         strict = injection or verdict.has(GuardFlag.OFF_TOPIC)
+        sent_before = await _texts_already_sent(db, conv)
         pc = postcheck.check(
             cleaned,
             invocations=invocations,
@@ -1158,14 +1164,20 @@ async def _run_turn(
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
             known_names=_known_names(text, inbound=inbound, draft=draft, history=history),
-            known_numbers=await _numbers_already_sent(db, conv),
+            known_numbers=_numbers_in(sent_before),
+            known_times=_times_in(sent_before),
         )
-        if not pc.ok:
+        # Клиент уже получил готовое подтверждение записи от кода, а текст модели в
+        # этом ходу не отправляется. Снимать его фильтром незачем: живой прогон
+        # 10.09.2026 — модель написала «в пятницу», фильтр снял ответ, и к
+        # подтверждению приклеилось «ответит администратор», а диалог встал на паузу.
+        if not pc.ok and not _trial_confirmed(services):
             _log.warning(
                 "postcheck_blocked",
                 kind=pc.kind.value if pc.kind else None,
                 offending=list(pc.offending)[:5],
             )
+            sent_before_degrade = len(services.messages)
             decision = await _degrade(
                 deps,
                 db,
@@ -1187,7 +1199,14 @@ async def _run_turn(
                 escalation=EscalationReason.POSTCHECK_FAIL,
                 key=TEXT_HANDOFF,
             )
-            await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
+            # Снятый ответ модель не должна помнить своим: в историю идёт то, что
+            # клиент получил на самом деле.
+            said_instead = "\n\n".join(
+                message.text for message in services.messages[sent_before_degrade:] if message.text
+            ) or _kb_text(kb, TEXT_HANDOFF, lang)
+            await _save_history(
+                db, conv, history, response, dynamic_note=dynamic_note, reply_override=said_instead or None
+            )
             await db.commit()
             await _flush_queue(deps, services)
             _drop_lead_task(lead_task)
@@ -1199,20 +1218,56 @@ async def _run_turn(
         # пересказала следом, клиент читает вторым экземпляром — а предложение
         # прислать то, что уже прислано, читается как невнимательность.
         reply = reply_dedup.strip_card_repeats(reply, [m.text or "" for m in services.messages])
+        if not child_talk:
+            # Владелец 10.09.2026: «для записи спрашивать не только имя, а ФИ». Модель
+            # всё равно пишет «Как зовут ребёнка?» — вопрос заменяется формулировкой базы.
+            reply = funnel.ask_full_name(reply, kb=kb, lang=lang)
+        if _trial_confirmed(services):
+            # Клиент уже получил готовое подтверждение записи от кода. Текст модели
+            # следом — это «администратор свяжется» или пересказ того же самого.
+            reply = ""
         if not reply.strip():
             # От ответа ничего не осталось: карточка и была ответом.
             _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
+        farewell = _client_said_goodbye(text, kb=kb)
+        # Клиенту показали зал — расписание или видео дороги, — а записи ещё нет:
+        # последним отдельным сообщением идёт предложение записи. Владелец
+        # 10.09.2026: «вот после видео отдельным сообщением: записать ребёнка на
+        # первую пробную тренировку». Своё предложение модели вырезается, иначе
+        # клиент получил бы его дважды. Ребёнку и записанному не предлагаем.
+        booking_offer: str | None = None
+        if (
+            not services.paused
+            and not farewell
+            and not child_talk
+            and services.lead_id is None
+            # Клиент сам написал «хочу записать» — спрашивать «записать?» нелепо.
+            and IntentHint.SIGNUP not in intents
+            and funnel.turn_showed_a_gym(services.messages)
+            and not await _already_booked(db, conv)
+        ):
+            booking_offer = (kb.text("funnel.book_trial", lang) or "").strip() or None
+        if booking_offer:
+            reply = funnel.drop_questions(reply)
         # Бот-продажник ведёт разговор: ответ, который ничего не спрашивает,
         # упирается в тишину. Правило есть и в промпте, но модель регулярно
         # заканчивает фактом — здесь тот же шаг доводится кодом.
+        # Карточка этого хода уже спрашивает («Какой из них вам ближе?») — второй
+        # вопрос воронки следом превращает ответ в допрос. Живой прогон 10.09.2026:
+        # к списку залов приклеилось ещё «В каком районе вам удобнее заниматься?».
+        card_asks = any(funnel.ends_with_question(message.text or "") for message in services.messages)
+        if card_asks:
+            # Свой вопрос модели следом — тоже второй вопрос подряд: «Какой из них вам
+            # ближе?» из карточки и тут же «Какой район вам ближе?» (прогон, ru и kk).
+            reply = funnel.drop_questions(reply)
         tail_question: str | None = None
-        if not services.paused:
+        if not services.paused and booking_offer is None and not card_asks:
             tail_question = funnel.pending_question(
                 reply,
                 draft=draft,
                 kb=kb,
                 lang=lang,
-                farewell=_client_said_goodbye(text, kb=kb),
+                farewell=farewell,
             )
         if lang_decision.needs_bridge:
             bridge = _kb_text(kb, TEXT_BRIDGE_KK, lang)
@@ -1223,6 +1278,11 @@ async def _run_turn(
             await _enqueue_reply(
                 deps, services, conv, inbound, lang=lang, text=reply, now=now,
                 tail_question=tail_question,
+            )
+        if booking_offer:
+            await _enqueue_reply(
+                deps, services, conv, inbound, lang=lang, text=booking_offer, now=now,
+                standalone=True,
             )
         await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
         if int(conv.bot_miss_count or 0):
@@ -1608,6 +1668,23 @@ async def _escalate_turn(
     )
 
 
+async def _degraded_context(
+    deps: PipelineDeps, db: AsyncSession, conv: Conversation, *, text: str, kb: KBSnapshot
+) -> tuple[Scope | None, tuple[str, ...]]:
+    """Посёлок, который клиент уже назвал, и тексты, которые бот уже отправил.
+
+    Нужны аварийной карточке: без них городской клиент на «дорого, есть
+    подешевле?» получал повторно городской прайс и районный «10 000 ₸» (живой
+    прогон 10.09.2026). Путь аварийный, лишнее чтение истории здесь допустимо.
+    """
+    try:
+        history = await conv_session.load_history(db, conv, max_turns=deps.settings.llm_history_turns)
+    except Exception as exc:  # noqa: BLE001 - авария не должна порождать вторую
+        _log.warning("degraded_history_lookup_failed", error=type(exc).__name__)
+        history = []
+    return scope_by_texts(kb, _recent_client_texts(text, history)), await _texts_already_sent(db, conv)
+
+
 async def _degrade(
     deps: PipelineDeps,
     db: AsyncSession,
@@ -1675,7 +1752,10 @@ async def _degrade(
     # даже больше.
     body: str | None = None
     if key in (TEXT_FALLBACK, TEXT_HANDOFF) and intents:
-        card = degraded.kb_answer(kb, intents=tuple(intents), lang=lang)
+        scope, already_sent = await _degraded_context(deps, db, conv, text=text, kb=kb)
+        card = degraded.kb_answer(
+            kb, intents=tuple(intents), lang=lang, scope=scope, already_sent=already_sent
+        )
         if card:
             tail = _kb_text(kb, degraded.TAIL_KEY, lang)
             body = f"{card}\n\n{tail}" if tail else card
@@ -1833,15 +1913,11 @@ async def _answer_menu_facts(
     if not gyms_card.strip() or not price_card.strip():
         return None
 
-    # Вопрос в ходе ровно один и стоит в ПОСЛЕДНЕМ сообщении. Пока «какой зал»
-    # висел на карточке залов, а к прайсу дописывался вопрос про возраст,
-    # цифра в ответе была двусмысленной: на «7» бот отвечал «в семь лет ребёнок
-    # уже отлично понимает тренера» вместо расписания седьмого зала.
-    question = (kb.text("card.pick_gym", lang) or "").strip()
-    gyms_card = degraded.without_line(gyms_card, question) or gyms_card
-    body = f"{price_card}\n\n{question}" if question else price_card
-
-    for part, kind in ((gyms_card, OutboundKind.ARTIFACT), (body, OutboundKind.BOT_REPLY)):
+    # Сначала прайс, потом список залов: он и заканчивается вопросом «напишите
+    # номер зала». Вопрос в ходе один, стоит последним и относится к списку прямо
+    # над ним. Раньше он висел на прайсе, а список шёл следом — и при
+    # параллельной отправке клиент видел вопрос о номере раньше самих залов.
+    for part, kind in ((price_card, OutboundKind.ARTIFACT), (gyms_card, OutboundKind.ARTIFACT)):
         await _enqueue_reply(
             deps, services, conv, inbound, lang=lang, text=part, now=now, kind=kind,
             standalone=True,
@@ -1851,7 +1927,7 @@ async def _answer_menu_facts(
     await conv_session.save_turn(
         db,
         conv,
-        [{"role": "model", "parts": [{"text": f"{gyms_card}\n\n{body}"}]}],
+        [{"role": "model", "parts": [{"text": f"{price_card}\n\n{gyms_card}"}]}],
     )
     decision = _decision(
         DecisionAction.REPLY,
@@ -1907,13 +1983,20 @@ async def _enqueue_reply(
     """
     settings = deps.settings
     soft, hard = text_limits(inbound.channel, soft_limit=settings.soft_message_chars)
-    parts = split_text(
-        text,
-        channel=inbound.channel,
-        soft_limit=soft,
-        hard_limit=hard,
-        max_parts=settings.max_messages_per_turn,
-    )
+    if kind is OutboundKind.ARTIFACT and len(text.strip()) <= hard:
+        # Карточку собирает код, и резать её по мягкому лимиту прозы незачем: список
+        # из восьми залов разваливался на два сообщения, и вопрос «напишите номер
+        # зала» приходил отдельно от самого списка. Карточка делится только там,
+        # где канал физически не пропустит её целиком.
+        parts = [text.strip()]
+    else:
+        parts = split_text(
+            text,
+            channel=inbound.channel,
+            soft_limit=soft,
+            hard_limit=hard,
+            max_parts=settings.max_messages_per_turn,
+        )
     if not parts:
         return
     if tail_question and "?" not in parts[-1][-_FUNNEL_TAIL_CHARS:]:
@@ -2197,19 +2280,24 @@ _CARD_MARKERS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
-async def _numbers_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
-    """Числа из карточек, которые бот уже отправил клиенту в этом диалоге.
+async def _texts_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
+    """Тексты, которые бот уже отправил клиенту в этом диалоге.
 
-    Карточки собирает код по базе знаний, поэтому их цифры — подтверждённые
-    данные, а не выдумка модели. Без этого списка бот, повторивший собственную
-    же цену на следующем ходу, попадал под анти-галлюцинационный фильтр: в том
-    ходу инструмент не вызывался, и подтвердить сумму было нечем.
+    Карточки собирает код по базе знаний, а ответы модели прошли фильтр, поэтому
+    их цифры и время — подтверждённые данные, а не выдумка. Без этого бот,
+    повторивший собственную цену или расписание на следующем ходу, попадал под
+    анти-галлюцинационный фильтр: в том ходу инструмент не вызывался, и
+    подтвердить значение было нечем.
     """
     try:
-        texts = await repo_message.sent_texts(db, conv.id, limit=_CARD_LOOKBACK)
+        return tuple(await repo_message.sent_texts(db, conv.id, limit=_CARD_LOOKBACK))
     except Exception as exc:  # noqa: BLE001 - подтверждение не важнее ответа
         _log.warning("sent_numbers_lookup_failed", error=type(exc).__name__)
         return ()
+
+
+def _numbers_in(texts: Sequence[str]) -> tuple[str, ...]:
+    """Числа из уже отправленных текстов — без пробелов-разделителей тысяч."""
     numbers: list[str] = []
     for said in texts:
         for raw in re.findall(r"\d[\d  \u00a0]*", said):
@@ -2217,6 +2305,11 @@ async def _numbers_already_sent(db: AsyncSession, conv: Conversation) -> tuple[s
             if digits and digits not in numbers:
                 numbers.append(digits)
     return tuple(numbers)
+
+
+def _times_in(texts: Sequence[str]) -> tuple[str, ...]:
+    """Время из уже отправленных текстов, в том же виде, в каком его сверяет фильтр."""
+    return tuple(dict.fromkeys(value for said in texts for value in postcheck.extract_times(said)))
 
 
 async def _cards_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
@@ -2253,7 +2346,9 @@ def _client_said_goodbye(text: str, *, kb: KBSnapshot) -> bool:
 #: Так звучит вопрос об имени ребёнка на обоих языках. Нужен, чтобы понять,
 #: ЧЬЁ имя назвал клиент: «Асель, 87015551122» в ответ на «как зовут сына?» —
 #: это имя сына, а бот принимал его за имя родителя и переспрашивал.
-_NAME_QUESTION_MARKERS: Final[tuple[str, ...]] = ("зовут", "имя реб", "аты кім", "есімі")
+_NAME_QUESTION_MARKERS: Final[tuple[str, ...]] = (
+    "зовут", "имя реб", "фамили", "аты кім", "есімі", "тегі мен", "тегі,"
+)
 
 
 async def _bot_asked_child_name(db: AsyncSession, conv: Conversation) -> bool:
@@ -2288,6 +2383,60 @@ def _just_said(
     if name:
         said.append(f"имя ребёнка — {name}" if name_is_childs else f"имя — {name}")
     return tuple(said)
+
+
+#: Заявка в этих статусах — клиенту уже незачем предлагать запись.
+_BOOKED_STATUSES: Final[frozenset[str]] = frozenset(
+    {LeadStatus.TRIAL_BOOKED.value, LeadStatus.CONVERTED.value}
+)
+
+
+#: Сколько последних реплик клиента видят инструменты записи и цен.
+_CLIENT_TEXTS_LOOKBACK: Final[int] = 6
+_USER_TAG_RE: Final[re.Pattern[str]] = re.compile(r"</?user_message>")
+
+
+def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+    """Последние реплики клиента: из истории модели и текущая.
+
+    Живой прогон 10.09.2026: на «Сериков Ержан, 8 лет» модель сама подставила
+    «бокс, суббота 17:00» и записала ребёнка. Проверить, что это выбор родителя,
+    можно только по его собственным словам.
+    """
+    said: list[str] = []
+    for item in history:
+        if item.get("role") != "user":
+            continue
+        pieces = []
+        for part in item.get("parts") or []:
+            piece = str(part.get("text") or "") if isinstance(part, dict) else ""
+            if piece.lstrip().startswith("[служебная заметка"):
+                continue
+            pieces.append(_USER_TAG_RE.sub("", piece).replace("&lt;", "<").replace("&gt;", ">").strip())
+        clean = " ".join(piece for piece in pieces if piece)
+        if clean:
+            said.append(clean)
+    if (text or "").strip():
+        said.append(text.strip())
+    return tuple(said[-_CLIENT_TEXTS_LOOKBACK:])
+
+
+def _trial_confirmed(services: _Services) -> bool:
+    """Ушло ли в этом ходу готовое подтверждение записи на пробное."""
+    return any(
+        getattr(message, "artifact_id", None) == TRIAL_CONFIRMATION_ARTIFACT
+        for message in services.messages
+    )
+
+
+async def _already_booked(db: AsyncSession, conv: Conversation) -> bool:
+    """Записан ли клиент на пробное или уже занимается."""
+    try:
+        lead = await repo_lead.get_by_conversation(db, conv.id)
+    except Exception as exc:  # noqa: BLE001 - предложение записи не важнее ответа
+        _log.warning("booked_lookup_failed", error=type(exc).__name__)
+        return False
+    return lead is not None and lead.status in _BOOKED_STATUSES
 
 
 async def _client_stage(db: AsyncSession, conv: Conversation) -> str | None:
@@ -2521,8 +2670,11 @@ async def _save_history(
     response: LLMResponse,
     *,
     dynamic_note: str = "",
+    reply_override: str | None = None,
 ) -> None:
     """Дописывает в историю только НОВЫЕ элементы хода.
+
+    ``reply_override`` — что клиент получил вместо ответа модели, если фильтр его снял.
 
     Две вещи, которые нельзя сохранять:
 
@@ -2536,9 +2688,26 @@ async def _save_history(
     note = (dynamic_note or "").strip()
     if note:
         tail = [item for item in tail if _content_text(item).strip() != note]
+    if reply_override is not None:
+        tail = _with_reply(tail, reply_override)
     if not tail:
         return
     await conv_session.save_turn(db, conv, tail)
+
+
+def _with_reply(tail: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    """История хода, где последний текст модели заменён тем, что ушло клиенту.
+
+    Живой прогон 10.09.2026: модель написала «17:30», которого в расписании нет,
+    фильтр снял ответ, но в истории он остался — и два следующих хода модель
+    повторяла «17:30» из собственной памяти, а клиент дважды получал «ответит
+    администратор».
+    """
+    for index in range(len(tail) - 1, -1, -1):
+        item = tail[index]
+        if item.get("role") == "model" and _content_text(item).strip():
+            return [*tail[:index], {"role": "model", "parts": [{"text": text}]}, *tail[index + 1 :]]
+    return tail
 
 
 def _content_text(content: dict[str, Any]) -> str:

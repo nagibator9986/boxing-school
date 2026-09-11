@@ -40,23 +40,19 @@ def test_gyms_list_is_numbered(kb: KBSnapshot) -> None:
 
 
 def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
-    """Тобыл стоит в списке города — но с пометкой, что цены там свои.
+    """Тобыл — восьмой зал в списке города, без оговорок про цену.
 
     Владелец 10.09.2026: «восьмого зала нашего нету — город Тобыл, Тәуелсіздік
-    51». В списке из семи он видел потерянную точку: туда ездят из города, и для
-    него это восьмой зал школы. Молча подмешать его нельзя — абонемент там втрое
-    дешевле, и клиент решил бы, что городская цена тоже такая.
+    51» и «цены ниже городских — не надо, у нас одна цена».
     """
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
 
     assert "8. Тобыл" in text, text
-    # Остальные райцентры в нумерованный список по-прежнему не попадают.
+    assert "цены" not in text.lower()
+    # Райцентры в нумерованный список не попадают — они одной строкой ниже.
     assert "Житикара" not in text
-    region_left = len({
-        gym.settlement for gym in kb.active_gyms(Scope.REGION)
-        if gym.settlement and not getattr(gym, "list_with_city", False)
-    })
-    assert str(region_left) in text
+    region_left = len({gym.settlement for gym in kb.active_gyms(Scope.REGION) if gym.settlement})
+    assert f"ещё в {region_left} " in text
 
 
 def test_gyms_list_does_not_repeat_itself(kb: KBSnapshot) -> None:

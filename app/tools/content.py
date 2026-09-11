@@ -25,6 +25,7 @@ from typing import Final
 from app.config import get_settings
 from app.kb.gaps import say_no_data
 from app.kb.models import Artifact, KBSnapshot
+from app.kb.places import scope_by_texts
 from app.kb.render import render_artifact_body, schedule_heading
 from app.types import (
     CHANNEL_LIMITS,
@@ -35,6 +36,7 @@ from app.types import (
     OutboundKind,
     OutboundMessage,
     RenderHint,
+    Scope,
     ToolContext,
     ToolResult,
 )
@@ -241,6 +243,23 @@ async def _prefer_route_video(ctx: ToolContext, artifact: Artifact) -> Artifact:
     return route
 
 
+def _price_card_for_place(ctx: ToolContext, artifact: Artifact) -> Artifact:
+    """Карточка цен того прайса, к которому относится посёлок клиента.
+
+    Живой прогон 10.09.2026: клиент написал «мы из Тобыла», калькулятор посчитал
+    городскую цену, а модель следом отправила карточку районных центров — клиент
+    увидел сразу 25 000 и 10 000 ₸.
+    """
+    if not artifact.id.startswith("price_") or artifact.scope not in (Scope.CITY, Scope.REGION):
+        return artifact
+    wanted = scope_by_texts(ctx.kb, ctx.client_texts)
+    suffix = f"_{artifact.scope.value}"
+    if wanted is None or wanted is artifact.scope or not artifact.id.endswith(suffix):
+        return artifact
+    counterpart = ctx.kb.artifact(artifact.id[: -len(suffix)] + f"_{wanted.value}")
+    return counterpart if counterpart is not None else artifact
+
+
 def _resolve(kb: KBSnapshot, artifact_id: str, gym_id: str | None) -> Artifact | None:
     """Артефакт по id; при заданном ``gym_id`` — его вариант для конкретного зала."""
     if gym_id:
@@ -271,6 +290,8 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
         )
     if gym_id and kb.gym(gym_id) is None:
         return ToolResult.invalid_input(f"в kb/gyms.yaml нет зала '{gym_id}'")
+
+    artifact = _price_card_for_place(ctx, artifact)
 
     # Выключенный артефакт = данных нет (фото прайса, расписание, реквизиты).
     if not artifact.enabled:
@@ -413,6 +434,11 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
 
     title = artifact.title.get(lang) or artifact.title.ru or artifact.id
     caveats = ["Материал уже отправлен отдельным сообщением — не пересказывай его содержимое."]
+    if artifact.id.startswith("route_"):
+        caveats.append(
+            "Не пиши «отправляю видео» — клиент его уже видит. Запись не предлагай: "
+            "предложение уйдёт отдельным сообщением после видео."
+        )
     if artifact.gap_ref is not None:
         caveats.append(
             "В этом материале часть данных отсутствует: не дополняй его сведениями от себя."

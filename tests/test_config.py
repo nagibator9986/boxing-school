@@ -212,11 +212,11 @@ def test_identifiers_survive_a_paste_from_the_address_book() -> None:
     from app.config import Settings
 
     settings = Settings(
-        manager_notify_target="‪77472073003‬",
-        wazzup_channel_id_whatsapp="c3b9f899-70f4-4f56-aaf7-43c90e2a071a​",
+        manager_notify_target="‪77010000003‬",
+        wazzup_channel_id_whatsapp="00000000-0000-4000-8000-000000000001​",
     )
-    assert settings.manager_notify_target == "77472073003"
-    assert settings.wazzup_channel_id_whatsapp == "c3b9f899-70f4-4f56-aaf7-43c90e2a071a"
+    assert settings.manager_notify_target == "77010000003"
+    assert settings.wazzup_channel_id_whatsapp == "00000000-0000-4000-8000-000000000001"
 
 
 def test_unfilled_placeholder_is_stripped() -> None:

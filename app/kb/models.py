@@ -339,12 +339,6 @@ class Gym(_Base):
     is_head: bool = False
     active: bool = True
     status: GymStatus = GymStatus.OPEN
-    #: Показывать этот зал в списке по городу, хотя он и за городской чертой.
-    #: Владелец 10.09.2026: «восьмого зала нашего нету — город Тобыл,
-    #: Тәуелсіздік 51». Тобыл в десяти километрах, туда ездят из города, и в
-    #: списке из семи залов владелец видел потерянную точку. Прайс там свой,
-    #: поэтому зал идёт с пометкой, а не молча в общий список.
-    list_with_city: bool = False
     title: Bilingual
     address: Bilingual = EMPTY_BILINGUAL
     landmark: Bilingual = EMPTY_BILINGUAL
@@ -433,6 +427,9 @@ class GymsFile(_Base):
     updated_by: Literal["owner", "admin", "dev"] = "owner"
     timezone: str = "Asia/Almaty"
     city_settlement: str
+    #: Посёлки, которые школа считает частью города: городской прайс и место в
+    #: городском списке залов. Владелец 10.09.2026 про Тобыл: «у нас одна цена».
+    city_suburbs: list[str] = Field(default_factory=list)
     gyms: list[Gym]
 
     @model_validator(mode="after")
@@ -444,9 +441,11 @@ class GymsFile(_Base):
             if gym.id in seen:
                 raise ValueError(f"дубликат gym_id '{gym.id}'")
             seen.add(gym.id)
-            if (gym.scope is Scope.CITY) != (gym.settlement == self.city_settlement):
+            in_city = gym.settlement == self.city_settlement or gym.settlement in self.city_suburbs
+            if (gym.scope is Scope.CITY) != in_city:
                 raise ValueError(
-                    f"зал '{gym.id}': scope=city обязан совпадать с settlement == '{self.city_settlement}'"
+                    f"зал '{gym.id}': scope=city ставится ровно залам города "
+                    f"'{self.city_settlement}' и посёлков из city_suburbs"
                 )
         heads = [gym.id for gym in self.gyms if gym.is_head]
         if len(heads) > 1:
@@ -871,6 +870,9 @@ class PoliciesFile(_Base):
     sla_reply_minutes: int | None = None
     escalation_triggers: list[EscalationReason] = Field(default_factory=list)
     escalation_pause_minutes: int = Field(default=60, ge=1)
+    #: Не раньше чем через столько часов от записи бот назначает пробное: родителю
+    #: нужно время собраться и доехать. Владелец меняет число без правки кода.
+    trial_min_lead_hours: float = Field(default=2.0, ge=0)
     followup_policy: list[FollowupRule] = Field(default_factory=list)
     followup_stop_words: list[str] = Field(default_factory=list)
     #: Слова, которыми клиент закрывает разговор по-хорошему. Мягкая дожимка

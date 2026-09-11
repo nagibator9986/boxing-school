@@ -50,49 +50,48 @@ _SUPPRESS: Final[tuple[IntentHint, ...]] = (
 )
 
 
-def _price(kb: KBSnapshot, lang: Language) -> str | None:
-    """Оба тарифа сразу: город и районные центры.
+def _price(kb: KBSnapshot, lang: Language, scope: Scope | None = None) -> list[str]:
+    """Прайс посёлка клиента, а если посёлок неизвестен — оба: город и районные центры.
 
     Какой из них нужен клиенту, обычно выясняет модель вопросом про район, а
     её здесь нет. Показать только городской нельзя: в райцентрах абонемент
     стоит 10 000 против 25 000, и «ошиблись в 2,5 раза» — это не деградация, а
     дезинформация. Два блока рядом честны при любом ответе на незаданный вопрос.
+
+    Но если клиент посёлок уже назвал, второй прайс вредит. Живой прогон
+    10.09.2026: клиент спросил про Костанай, а на «дорого, есть подешевле?»
+    получил районный «10 000 ₸» — владелец же говорит, что цена у школы одна.
     """
-    parts = [
-        _safe(render_price_card, kb, scope=Scope.CITY, lang=lang),
-        _safe(render_price_card, kb, scope=Scope.REGION, lang=lang),
-    ]
-    body = "\n\n".join(part for part in parts if part)
-    return body or None
+    scopes = (scope,) if scope in (Scope.CITY, Scope.REGION) else (Scope.CITY, Scope.REGION)
+    cards = (_safe(render_price_card, kb, scope=item, lang=lang) for item in scopes)
+    return [card for card in cards if card]
 
 
-def _schedule(kb: KBSnapshot, lang: Language) -> str | None:
-    """Расписание всех городских залов, у которых оно заполнено."""
+def _schedule(kb: KBSnapshot, lang: Language, scope: Scope | None = None) -> list[str]:
+    """Расписание всех залов посёлка клиента (по умолчанию города), где оно заполнено."""
     cards = []
-    for gym in kb.active_gyms(Scope.CITY):
+    for gym in kb.active_gyms(Scope.REGION if scope is Scope.REGION else Scope.CITY):
         if not gym.schedule:
             continue
         card = _safe(render_schedule_card, kb, gym_id=gym.id, slots=gym.schedule, lang=lang)
         if card:
             cards.append(card)
-    return "\n\n".join(cards) or None
+    return cards
 
 
-def _location(kb: KBSnapshot, lang: Language) -> str | None:
-    """Список залов города; карточка сама допишет строку про область.
+def _location(kb: KBSnapshot, lang: Language, scope: Scope | None = None) -> list[str]:
+    """Список залов; карточка сама допишет строку про область.
 
     Из карточки вычёркивается её последняя строка — «напишите номер зала,
     пришлю расписание и точку на карте». В рабочем ходе это приглашение к
     следующему шагу, а здесь бот сразу встаёт на паузу и зовёт человека:
     обещание, которого он не выполнит, хуже, чем его отсутствие.
     """
-    card = _safe(render_gyms_list_card, kb, scope=Scope.CITY, lang=lang)
-    return _without_line(card, kb.text("card.pick_gym", lang)) if card else None
-
-
-def without_line(card: str, line: str) -> str | None:
-    """Публичная обёртка: та же операция нужна и обычному ходу, не только аварийному."""
-    return _without_line(card, line)
+    card = _safe(
+        render_gyms_list_card, kb, scope=Scope.REGION if scope is Scope.REGION else Scope.CITY, lang=lang
+    )
+    cleaned = _without_line(card, kb.text("card.pick_gym", lang)) if card else None
+    return [cleaned] if cleaned else []
 
 
 def _without_line(card: str, line: str) -> str | None:
@@ -120,9 +119,18 @@ _RENDERERS: Final[dict[IntentHint, object]] = {
 
 
 def kb_answer(
-    kb: KBSnapshot, *, intents: Sequence[IntentHint], lang: Language
+    kb: KBSnapshot,
+    *,
+    intents: Sequence[IntentHint],
+    lang: Language,
+    scope: Scope | None = None,
+    already_sent: Sequence[str] = (),
 ) -> str | None:
     """Готовая карточка на вопрос клиента или ``None``, если ответа в KB нет.
+
+    ``scope`` — посёлок, который клиент уже назвал; ``already_sent`` — тексты,
+    которые бот уже отправил в этом диалоге. Карточку, которую клиент уже видел,
+    второй раз не шлём: в том же прогоне городской прайс уходил повторно.
 
     Хвостовую строку про администратора добавляет вызывающий: он же знает,
     ушла карточка администратору или нет.
@@ -132,7 +140,8 @@ def kb_answer(
     for intent in _ANSWERABLE:
         if intent not in intents:
             continue
-        body = _RENDERERS[intent](kb, lang)  # type: ignore[operator]
-        if body:
-            return body
+        cards = _RENDERERS[intent](kb, lang, scope)  # type: ignore[operator]
+        fresh = [card for card in cards if not any(card in said for said in already_sent)]
+        if fresh:
+            return "\n\n".join(fresh)
     return None

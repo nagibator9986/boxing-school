@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from app.kb.sessions import TrialSession
+
 
 from app.kb import gaps as gaps_module
 from app.kb.models import min_accepted_age
@@ -156,9 +160,17 @@ def render_pricing_showcase(snapshot: KBSnapshot) -> str:
     if pricing.city_single is not None:
         city_bits.append(f"{pricing.city_single.label.ru} — {_money(pricing.city_single.price)}")
     if city_bits:
+        places = [pricing.city_settlement, *snapshot.gyms.city_suburbs]
         lines.append(
-            f"{pricing.city_settlement}: абонемент {pricing.city_sessions} занятий на "
+            f"{' и '.join(places)}: абонемент {pricing.city_sessions} занятий на "
             f"{pricing.city_validity_days} дней; " + "; ".join(city_bits) + "."
+        )
+    if snapshot.gyms.city_suburbs:
+        # Живой прогон 10.09.2026: модель посчитала Тобыл районным центром и назвала
+        # 10 000 ₸, хотя владелец подтвердил, что цена у школы одна.
+        lines.append(
+            f"{', '.join(snapshot.gyms.city_suburbs)} — по городским ценам, как "
+            f"{pricing.city_settlement}, а не по ценам райцентров."
         )
     region_bits: list[str] = []
     for key in sorted(pricing.region_plans):
@@ -357,6 +369,8 @@ ICON_TIME: Final[str] = "🕒"
 ICON_SCHEDULE: Final[str] = "🗓"
 ICON_PRICE: Final[str] = "💳"
 ICON_FAMILY: Final[str] = "👨‍👩‍👦"
+ICON_OK: Final[str] = "✅"
+ICON_CHILD: Final[str] = "👤"
 
 #: Сокращения дней недели. Это календарные подписи, а не факты о школе, поэтому
 #: они живут в коде рендера, а не в базе знаний.
@@ -390,6 +404,60 @@ def _days_line(days: Sequence[str], lang: Language) -> str:
     return ", ".join(short.get(day, day) for day in ordered)
 
 
+#: «В среду», «Во вторник»: ключи перечислены явно, чтобы проверка базы знаний
+#: видела, что каждый из них действительно читается кодом.
+_ON_DAY_KEYS: Final[dict[str, str]] = {
+    "mon": "card.on_mon",
+    "tue": "card.on_tue",
+    "wed": "card.on_wed",
+    "thu": "card.on_thu",
+    "fri": "card.on_fri",
+    "sat": "card.on_sat",
+    "sun": "card.on_sun",
+}
+
+
+def days_label(days: Sequence[str], lang: Language) -> str:
+    """Публичное «Пн, Ср, Пт»: так варианты времени видит и модель, и клиент."""
+    return _days_line(days, lang)
+
+
+def render_trial_confirmation(
+    snapshot: KBSnapshot,
+    *,
+    child: str,
+    gym: Gym,
+    session: "TrialSession",
+    lang: Language,
+    bring: str | None = None,
+) -> str:
+    """Готовое подтверждение записи на пробное: секция, зал, день и время, что делать.
+
+    Собирается кодом, а не моделью: владелец 10.09.2026 хочет «полностью готовое
+    решение» без «администратор свяжется», а день недели и число модель путает.
+    ``bring`` — что взять с собой, из ответа базы знаний.
+    """
+    discipline = _lang_text(snapshot, f"card.{session.discipline}", lang)
+    day = _lang_text(snapshot, _ON_DAY_KEYS[session.weekday], lang)
+    when = snapshot.text(
+        "card.trial_when", lang, day=day, date=f"{session.starts_at:%d.%m}", time=session.time_start
+    )
+    title = gym.title.get(lang) or gym.title.ru or gym.id
+    address = _clean_address(gym, lang)
+    place = f"{title}, {address}" if address else title
+    parts = [
+        # Имя отдельной строкой: в «Записали Сериков Ержан» оно не склоняется.
+        f"{ICON_OK} {snapshot.text('system.trial_confirmed', lang)}",
+        "\n".join(
+            (f"{ICON_CHILD} {child}", f"{ICON_GYM} {discipline}", f"{ICON_PIN} {place}", f"{ICON_SCHEDULE} {when}")
+        ),
+        _lang_text(snapshot, "system.trial_arrive", lang),
+    ]
+    if bring and bring.strip():
+        parts.append(bring)
+    return _blocks(parts)
+
+
 def _clean_address(gym: Gym, lang: Language) -> str:
     """Адрес зала без хвоста, который уже сказан в названии.
 
@@ -413,11 +481,7 @@ def city_list_order(snapshot: KBSnapshot) -> list[Gym]:
     Единственный источник нумерации: клиент отвечает номером из этого списка,
     и порядок в карточке обязан совпадать с тем, как код этот номер разбирает.
     """
-    city = list(snapshot.active_gyms(Scope.CITY))
-    suburb = [
-        gym for gym in snapshot.active_gyms(Scope.REGION) if getattr(gym, "list_with_city", False)
-    ]
-    return [*city, *suburb]
+    return list(snapshot.active_gyms(Scope.CITY))
 
 
 def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
@@ -438,15 +502,7 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     else:
         title_key = "card.gyms_all_title"
 
-    # Пригород идёт в списке города следом за городскими залами. Владелец
-    # 10.09.2026: «восьмого зала нашего нету — город Тобыл, Тәуелсіздік 51»:
-    # в списке из семи он видел потерянную точку. Прайс там свой, поэтому зал
-    # помечен, а не подмешан молча.
-    suburb: list[Gym] = []
-    listed = gyms
-    if scope is Scope.CITY:
-        listed = city_list_order(snapshot)
-        suburb = [gym for gym in listed if gym not in gyms]
+    listed = city_list_order(snapshot) if scope is Scope.CITY else list(gyms)
 
     parts: list[str] = [f"{ICON_GYM} {_lang_text(snapshot, title_key, lang)}"]
     for number, gym in enumerate(listed, start=1):
@@ -462,11 +518,8 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     # точек потеряли. Прайс при этом разный, поэтому смешивать их в один
     # нумерованный список нельзя: строка отдельная и без номеров.
     if scope is Scope.CITY:
-        listed = {gym.settlement for gym in suburb}
         elsewhere = {
-            gym.settlement
-            for gym in snapshot.active_gyms(Scope.REGION)
-            if gym.settlement and gym.settlement not in listed
+            gym.settlement for gym in snapshot.active_gyms(Scope.REGION) if gym.settlement
         }
         if elsewhere:
             # Числом, а не перечислением: семь названий в строке не помещаются на

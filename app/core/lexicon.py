@@ -308,7 +308,11 @@ _NAME_STEM: Final[int] = 5
 
 
 def extract_name(text: str) -> str | None:
-    """Имя, названное в короткой реплике. ``None`` — имени не видно.
+    """Имя — или фамилия с именем, — названное в короткой реплике. ``None`` — не видно.
+
+    Два слова с заглавной буквы подряд читаются как фамилия и имя: владелец
+    10.09.2026 попросил записывать ребёнка с фамилией, и «Иванов Али, 8 лет» не
+    должно превращаться в одно «Иванов».
 
     Живой прогон 20 диалогов: на вопрос «как зовут ребёнка» клиент ответил
     «Асель, 87015551122», и бот спросил снова — «как зовут сына?». Телефон и
@@ -323,14 +327,18 @@ def extract_name(text: str) -> str | None:
     if not body or len(body.split()) > _NAME_MAX_WORDS:
         return None
     stops = {word[:_NAME_STEM] for word in _NOT_A_NAME}
-    for match in _NAME_TOKEN_RE.finditer(body):
-        word = match.group(1)
-        # Сравнение по основе: «Тобыле» и «Костанае» — это те же город и посёлок,
-        # только в падеже, и именами от этого не становятся.
-        if word.lower()[:_NAME_STEM] in stops:
-            continue
-        return word
-    return None
+    # Сравнение по основе: «Тобыле» и «Костанае» — это те же город и посёлок,
+    # только в падеже, и именами от этого не становятся.
+    tokens = [
+        match for match in _NAME_TOKEN_RE.finditer(body)
+        if match.group(1).lower()[:_NAME_STEM] not in stops
+    ]
+    if not tokens:
+        return None
+    first = tokens[0]
+    if len(tokens) > 1 and not body[first.end():tokens[1].start()].strip():
+        return f"{first.group(1)} {tokens[1].group(1)}"
+    return first.group(1)
 
 
 # --------------------------------------------------------------------------- #

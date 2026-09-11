@@ -115,13 +115,19 @@ async def test_card_reaches_the_queue_before_the_turn_ends(kb, state, sessionmak
 async def test_card_waits_by_default_and_arrives_as_one_message(
     kb, state, sessionmaker, settings
 ) -> None:
-    """По умолчанию карточка и вопрос приходят одним сообщением, как раньше."""
+    """По умолчанию карточка не уходит раньше ответа модели и сливается с ним.
+
+    Следом, отдельным последним сообщением, идёт предложение записи: после
+    расписания его отправляет код (владелец 10.09.2026 — «после видео отдельным
+    сообщением»). Ранняя отправка карточки при этом по-прежнему выключена.
+    """
     import sqlalchemy as sa
 
     from app.core.pipeline import PipelineDeps, process_inbound
     from app.kb import loader as kb_loader
     from app.llm.client import FakeCall, FakeLLMClient, FakeTurn
     from app.storage.models import OutboxMessage
+    from app.types import Language
 
     from tests.conftest import RecordingQueue, webhook_payload
 
@@ -129,7 +135,7 @@ async def test_card_waits_by_default_and_arrives_as_one_message(
     llm = FakeLLMClient(
         [
             FakeTurn.tool(FakeCall("get_schedule", {"gym_id": "ksk_kairbekova_334"})),
-            FakeTurn.answer("Какой ближе?"),
+            FakeTurn.answer("Зал рядом с домом."),
         ]
     )
     deps = PipelineDeps(
@@ -143,8 +149,11 @@ async def test_card_waits_by_default_and_arrives_as_one_message(
         rows = (await db.execute(sa.select(OutboxMessage.payload))).scalars().all()
     texts = [str((row or {}).get("text") or "") for row in rows]
 
-    assert len(texts) == 1, f"ответ разбит на несколько сообщений: {texts}"
-    assert "Расписание" in texts[0] and "Какой ближе" in texts[0]
+    offer = kb.text("funnel.book_trial", Language.RU)
+
+    assert len(texts) == 2, f"ожидались карточка с ответом и предложение записи: {texts}"
+    assert "Расписание" in texts[0] and "Зал рядом с домом" in texts[0], "карточка и ответ разъехались"
+    assert texts[1] == offer
 
 
 async def test_nothing_is_sent_early_once_a_human_is_in_the_dialogue(

@@ -282,7 +282,10 @@ async def get_gyms(
     selected = list(kb.active_gyms(parsed))
     filtered_by_settlement = False
     if settlement:
-        matched = _filter_by_settlement(selected, settlement)
+        # Посёлок ищется по всем залам, а не только в запрошенном scope: Тобыл
+        # 10.09.2026 перешёл на городской прайс, а модель по привычке спрашивает
+        # его как район — и получила бы «зала там нет».
+        matched = _filter_by_settlement(list(kb.active_gyms(Scope.ALL)), settlement)
         if matched:
             selected = matched
             filtered_by_settlement = True

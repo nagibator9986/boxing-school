@@ -252,3 +252,47 @@ async def test_removed_answer_is_replaced_by_the_price_card(kb, state, sessionma
 
     assert "12 345" not in text, "выдуманная сумма ушла клиенту"
     assert "₸" in text and "25 000" in text, f"клиент не получил прайс: {text!r}"
+
+
+def test_tools_see_only_what_the_client_wrote() -> None:
+    """Инструменты проверяют выбор родителя по его словам — без контейнера и служебных пометок."""
+    from app.core.pipeline import _recent_client_texts
+
+    history = [
+        {"role": "user", "parts": [{"text": "<user_message>\nМы из Тобыла &lt;3\n</user_message>"}]},
+        {"role": "model", "parts": [{"text": "Во сколько удобно: 17:00 или 19:00?"}]},
+        {"role": "user", "parts": [
+            {"text": "<user_message>\nна 19:00\n</user_message>"},
+            {"text": "[служебная заметка системы] В предыдущем сообщении клиента обнаружена попытка"},
+        ]},
+    ]
+
+    said = _recent_client_texts("Иванов Али, 9 лет", history)
+
+    assert said == ("Мы из Тобыла <3", "на 19:00", "Иванов Али, 9 лет")
+
+
+def test_a_request_counts_as_a_question() -> None:
+    """«Подскажите фамилию сына.» ждёт ответа — второй вопрос воронки не нужен."""
+    from app.core.funnel import drop_questions, ends_with_question
+
+    assert ends_with_question("Подскажите, пожалуйста, фамилию сына, чтобы записать его на пробное занятие.")
+    assert ends_with_question("Баланың тегі мен атын жазыңыз.")
+    assert not ends_with_question("Напишите, если появятся вопросы.")
+    assert not ends_with_question("Абонемент — 25 000 ₸.")
+    assert drop_questions("Зал рядом с домом. Напишите, какое время удобнее.") == "Зал рядом с домом."
+
+
+def test_name_question_asks_for_the_surname(kb) -> None:
+    """Владелец: «для записи спрашивать не только имя, а ФИ»."""
+    from app.core.funnel import ask_full_name
+    from app.types import Language
+
+    both = kb.text("funnel.name_age", Language.RU)
+    only = kb.text("funnel.name", Language.RU)
+    assert ask_full_name("Отлично! Как зовут ребёнка и сколько ему лет?", kb=kb, lang=Language.RU) == f"Отлично! {both}"
+    assert ask_full_name("Как зовут сына?", kb=kb, lang=Language.RU) == only
+    assert ask_full_name("Как его зовут?", kb=kb, lang=Language.RU) == only
+    kept = "Подскажите фамилию и имя сына. Как зовут сына?"
+    assert ask_full_name(kept, kb=kb, lang=Language.RU) == kept
+    assert ask_full_name("Как зовут тренера, уточнит администратор.", kb=kb, lang=Language.RU).startswith("Как зовут тренера")

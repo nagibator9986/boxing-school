@@ -242,3 +242,27 @@ async def test_no_name_question_means_no_assumption(kb, state, sessionmaker, set
     async with sessionmaker() as db:
         conv = (await db.execute(sa.select(Conversation))).scalars().one()
         assert not await _bot_asked_child_name(db, conv)
+
+
+def test_surname_and_name_are_read_together() -> None:
+    """«Иванов Али, 8 лет» — это фамилия и имя, а не одно «Иванов»."""
+    assert extract_name("Иванов Али, 8 лет") == "Иванов Али"
+    assert extract_name("Сериков Ержан") == "Сериков Ержан"
+
+
+def test_name_after_a_comma_is_not_glued_to_the_previous_word() -> None:
+    """Через запятую — уже не фамилия с именем."""
+    assert extract_name("Али, 87015551122") == "Али"
+
+
+def test_bot_recognises_its_own_name_questions(kb) -> None:
+    """После «подскажите фамилию, имя и возраст» названное имя — имя ребёнка, а не родителя."""
+    from app.core.pipeline import _NAME_QUESTION_MARKERS
+    from app.types import Language
+
+    for key in ("funnel.name", "funnel.name_age"):
+        for lang in (Language.RU, Language.KK):
+            text = kb.text(key, lang).lower()
+            assert any(marker in text for marker in _NAME_QUESTION_MARKERS), (key, lang, text)
+    free_trial = "тегін сынақ сабағына жазайық па?"
+    assert not any(marker in free_trial for marker in _NAME_QUESTION_MARKERS), "«тегін» — не фамилия"
