@@ -166,11 +166,16 @@ async def test_parent_who_declines_the_surname_is_still_booked(kb, state, sessio
     assert "Мы записали вас" in client and "👤 Али" in client
 
 
-async def test_missing_surname_and_time_are_asked_together(kb, state, sessionmaker, settings) -> None:
-    """Не хватает и фамилии, и времени — это один вопрос родителю, а не два хода подряд."""
+async def test_missing_surname_is_asked_before_time(kb, state, sessionmaker, settings) -> None:
+    """Не хватает и фамилии, и времени — сначала фамилия, время следующим сообщением.
+
+    Один вопрос за сообщение: на скриншоте владельца 11.09.2026 модель получила
+    «спроси всё одним сообщением», выбрала одно, и возраст так и не спросили.
+    """
     result, _ = await _book(kb, state, sessionmaker, settings, "77015559103", {
         "child_name": "Али", "child_age": 8, "gym_id": GYM, "parent_agreed": True,
     })
 
     assert result.data["needs"] == ["need_surname", "need_time"]
-    assert any("одним коротким сообщением" in caveat for caveat in result.caveats)
+    assert any("Спроси только это" in caveat for caveat in result.caveats)
+    assert not any("session_time" in caveat for caveat in result.caveats), "подсказка о времени — следующим шагом"

@@ -224,6 +224,7 @@ def _build_pipeline_deps(
     queue: Any,
 ) -> "PipelineDeps":
     """Ленивый импорт ядра (волна 3a)."""
+    from app.admin.runtime_settings import cached_runtime_settings
     from app.core.pipeline import PipelineDeps
 
     return PipelineDeps(
@@ -233,6 +234,10 @@ def _build_pipeline_deps(
         kb=kb_loader.get_snapshot,
         queue=queue,
         settings=settings,
+        # Настройки владельца из CRM читаются на каждом ходу. Раньше их получал только
+        # Telegram-бот: в WhatsApp и Instagram не работали ни «Номер для заявок», ни
+        # тексты автоответов, ни список номеров без ответа (разбор 11.09.2026).
+        runtime=cached_runtime_settings(settings.admin_db_path),
     )
 
 

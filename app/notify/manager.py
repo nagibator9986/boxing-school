@@ -81,7 +81,8 @@ async def notify_alert(deps: "PipelineDeps", text: str, *, code: str) -> None:
     в outbox напрямую и сразу ставится в очередь отправки. Повторы с одним и тем же
     ``code`` подавляются на :data:`ALERT_DEDUP_TTL_S` секунд.
     """
-    settings = getattr(deps, "settings", None) or get_settings()
+    # Номер для заявок владелец мог задать в CRM — тревога идёт туда же.
+    settings = effective_settings(deps)
     if not await _alert_allowed(deps, code):
         log.debug("alert_suppressed", code=code)
         return
@@ -106,6 +107,19 @@ async def notify_alert(deps: "PipelineDeps", text: str, *, code: str) -> None:
         await deps.queue.enqueue_outbox(outbox_id)
     except Exception as exc:  # noqa: BLE001 - строка уже в outbox, её подберёт cron
         log.warning("alert_enqueue_failed", code=code, error=type(exc).__name__)
+
+
+def effective_settings(deps: Any) -> Settings:
+    """Конфигурация процесса с наложенными настройками владельца из CRM."""
+    settings = getattr(deps, "settings", None) or get_settings()
+    runtime = getattr(deps, "runtime", None)
+    if runtime is None:
+        return settings
+    try:
+        return runtime().apply_to(settings)
+    except Exception as exc:  # noqa: BLE001 - уведомление важнее настроек владельца
+        log.warning("runtime_settings_failed", error=type(exc).__name__)
+        return settings
 
 
 def build_manager_message(
@@ -159,10 +173,13 @@ def manager_target(settings: Settings | None = None) -> tuple[ChannelKind, str, 
 
     chat_id = raw_target
     if channel is ChannelKind.WHATSAPP:
+        from app.admin.runtime_settings import whatsapp_number
+
         digits = "".join(ch for ch in raw_target if ch.isdigit())
         if not digits:
             return None
-        chat_id = digits
+        # «8 777 …» и «777 …» — тот же номер: chatId WhatsApp начинается с 7.
+        chat_id = whatsapp_number(raw_target) or digits
     return channel, channel_id, chat_id
 
 
@@ -271,6 +288,7 @@ __all__ = [
     "build_escalation_card",
     "build_lead_card",
     "build_manager_message",
+    "effective_settings",
     "manager_target",
     "notify",
     "notify_alert",

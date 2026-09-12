@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
+from app.kb.agreement import question_sentence, split_agreement
 from app.kb.models import Gym, ScheduleSlot, age_value
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "client_named_day",
     "client_named_name",
     "client_named_time",
+    "fold_name",
     "normalize_time",
     "resolve_trial_session",
     "weekday_code",
@@ -108,20 +110,26 @@ _HOUR_WORD_RE: Final[re.Pattern[str]] = re.compile(
 _WEEKDAY_WORDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
     (code, re.compile(pattern, re.IGNORECASE))
     for code, pattern in (
-        ("mon", r"понедельник\w*|дүйсенбі"),
-        ("tue", r"вторник\w*|сейсенбі"),
-        ("wed", r"\bсред[аеуы]\b|сәрсенбі"),
-        ("thu", r"четверг\w*|бейсенбі"),
-        ("fri", r"пятниц\w*|жұма"),
-        ("sat", r"суббот\w*|(?<![а-яәөүұқғңһі])сенбі"),
-        ("sun", r"воскресень\w*|жексенбі"),
+        ("mon", r"понедельник\w*|дүйсенбі|(?<![а-яё])пн(?![а-яё])"),
+        ("tue", r"вторник\w*|сейсенбі|(?<![а-яё])вт(?![а-яё])"),
+        ("wed", r"\bсред[аеуы]\b|сәрсенбі|(?<![а-яё])ср(?![а-яё])"),
+        ("thu", r"четверг\w*|бейсенбі|(?<![а-яё])чт(?![а-яё])"),
+        ("fri", r"пятниц\w*|жұма|(?<![а-яё])пт(?![а-яё])"),
+        ("sat", r"суббот\w*|(?<![а-яәөүұқғңһі])сенбі|(?<![а-яё])сб(?![а-яё])"),
+        ("sun", r"воскресень\w*|жексенбі|(?<![а-яё])вс(?![а-яё])"),
     )
 )
 
 
 def _client_times(texts: tuple[str, ...] | list[str]) -> set[str]:
     found: set[str] = set()
-    for text in texts:
+    for raw in texts:
+        text, proposal = split_agreement(raw)
+        # Согласие на предложение бота засчитывается, только если время в нём одно:
+        # «Да» на «в 09:00 или в 19:00?» ничего не выбирает.
+        offered = _offered_times(proposal)
+        if len(offered) == 1:
+            found |= offered
         for match in _HHMM_RE.finditer(text):
             found.add(f"{int(match.group(1)):02d}:{match.group(2)}")
         for match in (*_PREP_HOUR_RE.finditer(text), *_HOUR_WORD_RE.finditer(text)):
@@ -134,6 +142,18 @@ def _client_times(texts: tuple[str, ...] | list[str]) -> set[str]:
     return found
 
 
+#: «19:00–20:30», «с 19:00 до 20:30»: конец занятия — не второе предложенное время.
+_RANGE_END_RE: Final[re.Pattern[str]] = re.compile(
+    r"((?<!\d)(?:[01]?\d|2[0-3])[:.][0-5]\d)\s*(?:–|—|-|до)\s*(?:[01]?\d|2[0-3])[:.][0-5]\d(?!\d)"
+)
+
+
+def _offered_times(proposal: str | None) -> set[str]:
+    """Время начала в предложении бота, без концов диапазонов."""
+    starts = _RANGE_END_RE.sub(r"\1", proposal or "")
+    return {f"{int(match.group(1)):02d}:{match.group(2)}" for match in _HHMM_RE.finditer(starts)}
+
+
 def client_named_time(time_text: str | None, texts) -> bool:
     """Назвал ли клиент это время сам."""
     wanted = normalize_time(time_text)
@@ -142,12 +162,25 @@ def client_named_time(time_text: str | None, texts) -> bool:
 
 def client_named_discipline(discipline: str | None, texts) -> bool:
     """Назвал ли клиент эту секцию сам. «Кикбоксинг» боксом не считается."""
-    joined = " ".join(texts).lower()
-    if discipline == "kickboxing":
-        return "кикбокс" in joined
-    if discipline == "boxing":
-        return "бокс" in joined.replace("кикбокс", "")
-    return False
+    named: set[str] = set()
+    for raw in texts:
+        text, proposal = split_agreement(raw)
+        named |= _disciplines_in(text)
+        # Из предложения бота секция засчитывается, только если она там одна.
+        offered = _disciplines_in(proposal or "")
+        if len(offered) == 1:
+            named |= offered
+    return discipline in named
+
+
+def _disciplines_in(text: str) -> set[str]:
+    lowered = (text or "").lower()
+    found: set[str] = set()
+    if "кикбокс" in lowered:
+        found.add("kickboxing")
+    if "бокс" in lowered.replace("кикбокс", ""):
+        found.add("boxing")
+    return found
 
 
 #: Кириллица и латиница к одному написанию: «Ali» и «Али» — одно имя.
@@ -170,18 +203,64 @@ _NAME_STEM: Final[int] = 3
 _AGE_NOMINATIVE: Final[dict[str, int]] = {
     "три": 3, "четыре": 4, "пять": 5, "шесть": 6, "семь": 7, "восемь": 8, "девять": 9,
     "десять": 10, "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14,
+    "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17,
+    "тринадцати": 13, "четырнадцати": 14, "пятнадцати": 15, "шестнадцати": 16, "семнадцати": 17,
     "үш": 3, "төрт": 4, "бес": 5, "алты": 6, "жеті": 7, "сегіз": 8, "тоғыз": 9,
 }
+
+#: «он екі жаста» — двенадцать. Только перед «жас»: иначе «он» — русское местоимение.
+_KK_TENS_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яәөүұқғңһі])он(?:\s+(бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз))?\s+жас"
+)
+_KK_UNITS: Final[dict[str, int]] = {
+    "бір": 1, "екі": 2, "үш": 3, "төрт": 4, "бес": 5, "алты": 6, "жеті": 7, "сегіз": 8, "тоғыз": 9,
+}
+#: «жетіде», «сегізде» — казахский падеж после числа.
+_KK_CASE_SUFFIXES: Final[tuple[str, ...]] = ("де", "те", "да", "та", "ге", "ке", "ға", "қа")
+#: «семилетний», «пятнадцатилетняя».
+_AGE_COMPOUND_STEMS: Final[dict[str, int]] = {
+    "пяти": 5, "шести": 6, "семи": 7, "восьми": 8, "девяти": 9, "десяти": 10, "одиннадцати": 11,
+    "двенадцати": 12, "тринадцати": 13, "четырнадцати": 14, "пятнадцати": 15, "шестнадцати": 16,
+    "семнадцати": 17,
+}
+
+
+def _age_of_token(token: str) -> int | None:
+    """Возраст из одного слова: «8», «восемь», «жетіде», «семилетний»."""
+    value = age_value(token) or _AGE_NOMINATIVE.get(token)
+    if value:
+        return value
+    for suffix in _KK_CASE_SUFFIXES:
+        if token.endswith(suffix) and token[: -len(suffix)] in _AGE_NOMINATIVE:
+            return _AGE_NOMINATIVE[token[: -len(suffix)]]
+    if "летн" in token:
+        for stem, years in sorted(_AGE_COMPOUND_STEMS.items(), key=lambda item: -len(item[0])):
+            if token.startswith(stem):
+                return years
+    return None
+
+
 _AGE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\d:.])\d{1,2}(?![\d:.])|[^\W\d_]+")
 
 
+def fold_name(word: str) -> str:
+    """Имя без регистра и алфавита: «Ali», «али» и «Али» пишутся одинаково."""
+    return word.casefold().translate(_TRANSLIT)
+
+
 def _name_key(word: str) -> str:
-    return word.casefold().translate(_TRANSLIT)[:_NAME_STEM]
+    return fold_name(word)[:_NAME_STEM]
 
 
 def client_named_name(name: str | None, texts) -> bool:
     """Назвал ли клиент каждое слово этого имени — фамилию и имя."""
-    said = {_name_key(word) for text in texts for word in _NAME_WORD_RE.findall(text or "")}
+    # Имя — только собственные слова клиента: «Да» на «Записать Ивана?» не делает
+    # придуманное моделью имя названным.
+    said = {
+        _name_key(word)
+        for text in texts
+        for word in _NAME_WORD_RE.findall(split_agreement(text)[0])
+    }
     tokens = _NAME_WORD_RE.findall(name or "")
     return bool(tokens) and all(_name_key(token) in said for token in tokens)
 
@@ -191,8 +270,11 @@ def client_named_age(age: int | None, texts) -> bool:
     if age is None:
         return False
     for text in texts:
-        for token in _AGE_TOKEN_RE.findall((text or "").lower()):
-            if (age_value(token) or _AGE_NOMINATIVE.get(token)) == age:
+        own = split_agreement(text)[0].lower()
+        if any(_age_of_token(token) == age for token in _AGE_TOKEN_RE.findall(own)):
+            return True
+        for match in _KK_TENS_RE.finditer(own):
+            if 10 + _KK_UNITS.get(match.group(1) or "", 0) == age:
                 return True
     return False
 
@@ -205,7 +287,18 @@ def client_named_day(day: str | None, texts) -> bool:
     """
     code = weekday_code(day)
     pattern = dict(_WEEKDAY_WORDS).get(code) if code else None
-    return pattern is not None and any(pattern.search(text) for text in texts)
+    if pattern is None:
+        return False
+    for raw in texts:
+        text, proposal = split_agreement(raw)
+        if pattern.search(text):
+            return True
+        # В предложении бота день берётся только из самого вопроса и только если он
+        # там один: «по понедельникам, средам и пятницам» — это расписание, а не выбор.
+        asked = question_sentence(proposal)
+        if asked and {other for other, found in _WEEKDAY_WORDS if found.search(asked)} == {code}:
+            return True
+    return False
 
 
 def resolve_trial_session(
@@ -232,7 +325,13 @@ def resolve_trial_session(
 
     time = normalize_time(time_text)
     if time is None:
-        return SessionChoice(problem="need_time", options=tuple(slots))
+        # Время у выбранной секции одно (в «Кеме» бокс только в 19:00) — выбирать
+        # родителю нечего, и вопрос «во сколько удобно?» только тянет запись.
+        wanted = _weekday(day)
+        starts = {slot.time_start for slot in slots if wanted is None or wanted in slot.days}
+        if len(starts) != 1:
+            return SessionChoice(problem="need_time", options=tuple(slots))
+        time = next(iter(starts))
     timed = [slot for slot in slots if slot.time_start == time]
     if not timed:
         return SessionChoice(problem="unknown_time", options=tuple(slots))

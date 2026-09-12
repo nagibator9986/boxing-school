@@ -450,6 +450,19 @@ async def _react_terminal(
     conversation_id: UUID | None,
 ) -> None:
     """Что делать с каналом, лидом и администратором после терминальной ошибки."""
+    if message.kind is OutboundKind.MANAGER_CARD and isinstance(
+        exc, (WazzupSpamError, WazzupBadContactError)
+    ):
+        # Карточку не принял номер администратора: номер неверный, ни разу не писал на
+        # номер бота или WhatsApp счёл первое сообщение спамом. Останавливать из-за
+        # этого канал школы нельзя — родители ждут ответов, а заявка лежит в CRM.
+        await _alert(
+            deps,
+            f"Карточка заявки не доставлена администратору ({code}). Проверьте «Номер для "
+            "заявок» в CRM и напишите с этого номера на номер бота. Заявки видны в CRM.",
+            code="manager_card_undelivered",
+        )
+        return
     if isinstance(exc, WazzupSpamError):
         await _stop_channel(deps, message.channel_id)
         await _alert(

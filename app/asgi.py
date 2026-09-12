@@ -41,8 +41,23 @@ def wazzup_ready(settings: Settings) -> tuple[bool, list[str]]:
     """
     if not settings.wazzup_api_key.strip():
         return False, ["WAZZUP_API_KEY не задан — канал Wazzup не подключён"]
-    blockers = settings.startup_blockers()
+    blockers = [
+        blocker
+        for blocker in settings.startup_blockers()
+        # Номер для заявок задан в CRM — пустая переменная окружения тогда не помеха.
+        if not (blocker.startswith("MANAGER_NOTIFY_TARGET") and _lead_number_in_crm(settings))
+    ]
     return (not blockers), blockers
+
+
+def _lead_number_in_crm(settings: Settings) -> bool:
+    """Есть ли номер для заявок в настройках владельца."""
+    try:
+        from app.admin.runtime_settings import load_runtime_settings, whatsapp_number
+
+        return bool(whatsapp_number(load_runtime_settings(settings.admin_db_path).lead_notify_target))
+    except Exception:  # noqa: BLE001 - нет базы настроек — действует прежнее правило
+        return False
 
 
 def _crm_app() -> Any:

@@ -200,3 +200,30 @@ def test_question_after_the_ad_mention_is_answered_not_menued(text: str) -> None
     from app.core.pipeline import _is_bare_greeting
 
     assert not _is_bare_greeting(text)
+
+
+async def test_changed_ad_greeting_with_the_school_name_does_not_silence_the_bot(deps, llm) -> None:
+    """11.09.2026: приветствие рекламы сменилось, список в CRM остался старым.
+
+    Бот принял «Рады приветствовать вас в Ainazarov Top Team!» за человека и молчал
+    на «Хочу записать ребёнка на бесплатную пробную тренировку».
+    """
+    greeting = (
+        "Здравствуйте! 🥊 Рады приветствовать вас в Ainazarov Top Team!\n"
+        "Набираем детей от 5 лет на бокс и кикбоксинг.\nПервая тренировка — бесплатно 🙌"
+    )
+    first = await echo(deps, "ad-new-echo", greeting)
+    assert [d.reason for d in first] == ["auto_reply"]
+
+    answer = await client_says(
+        deps, llm, "ad-new-1", "Здравствуйте! Хочу записать ребёнка на бесплатную пробную тренировку.",
+        answer="Здравствуйте! Подскажите, сколько лет ребёнку?",
+    )
+    assert actions(answer) == ["reply"]
+
+
+async def test_school_name_outside_a_greeting_is_still_a_human(deps, llm) -> None:
+    """Название школы в рабочем сообщении — не приветствие: человек в диалоге."""
+    entered = await echo(deps, "brand-echo", "Отправляю расписание Ainazarov Top Team на неделю")
+
+    assert [d.reason for d in entered] == ["operator_entered"]

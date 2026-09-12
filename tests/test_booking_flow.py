@@ -198,7 +198,7 @@ async def test_full_booking_flow_creates_lead_and_notifies_manager(deps, llm) ->
     assert "свяжется" not in client, f"клиенту ушла отсылка к администратору:\n{client}"
     assert lead.trial_slot is not None, "время пробного не сохранено — напоминания не сработают"
     assert "8" in card, f"в карточке нет возраста:\n{card}"
-    assert "5550101" in card, f"в карточке нет телефона:\n{card}"
+    assert "5550101" in "".join(ch for ch in card if ch.isdigit()), f"в карточке нет телефона:\n{card}"
 
 
 async def test_lead_is_not_duplicated_when_model_books_twice(deps, llm) -> None:

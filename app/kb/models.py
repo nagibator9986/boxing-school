@@ -948,6 +948,8 @@ class LexiconFile(_Base):
     age_patterns: list[str] = Field(default_factory=list)
     gender_markers: dict[Gender, list[str]] = Field(default_factory=dict)
     districts_extra: list[str] = Field(default_factory=list)
+    #: Слова короткого согласия: «да», «давайте», «иә» (см. ``app.kb.agreement``).
+    agreement: list[str] = Field(default_factory=list)
 
     @field_validator("age_patterns")
     @classmethod
@@ -967,6 +969,7 @@ class LexiconFile(_Base):
             ("kk_translit", self.kk_translit),
             ("ru_translit", self.ru_translit),
             ("districts_extra", self.districts_extra),
+            ("agreement", self.agreement),
         ):
             for word in words:
                 if word != word.lower():

@@ -85,6 +85,7 @@ from typing import Any, Final, Iterable, Mapping, Sequence
 from pydantic import BaseModel, ConfigDict
 
 from app.kb.models import AGE_LIMIT_RE, KBSnapshot, age_value, min_accepted_age
+from app.kb.sessions import fold_name
 from app.types import (
     MAX_MESSAGE_CHARS,
     Language,
@@ -101,6 +102,7 @@ __all__ = [
     "extract_numbers",
     "extract_phones",
     "extract_times",
+    "extract_weekdays",
     "has_prompt_leak",
     "find_prompt_leak",
     "normalize_number",
@@ -356,6 +358,7 @@ def check(
     known_names: Sequence[str] = (),
     known_numbers: Sequence[str] = (),
     known_times: Sequence[str] = (),
+    known_weekdays: Sequence[str] = (),
 ) -> PostcheckVerdict:
     """Анти-галлюцинационный фильтр. Работает ПОСЛЕ ``safe_text`` и ДО постановки в outbox.
 
@@ -436,6 +439,11 @@ def check(
     if money:
         return _fail(PostcheckFailKind.MONEY, money)
 
+    if known_weekdays:
+        # Дни из уже отправленных ботом текстов подтверждены так же, как время.
+        # Скриншот владельца 11.09.2026: бот написал «по понедельникам, средам и
+        # пятницам», на «Да» повторил «в понедельник» без инструмента — и ответ сняли.
+        facts = replace(facts, weekdays=set(facts.weekdays) | set(known_weekdays))
     bad_days = _unconfirmed_weekdays(cleaned, facts, lang=lang)
     if bad_days:
         return _fail(PostcheckFailKind.WEEKDAY, bad_days)
@@ -468,6 +476,29 @@ def extract_numbers(text: str) -> tuple[str, ...]:
     if not text:
         return ()
     return tuple(match.group(0) for match in _NUMBER_RE.finditer(text))
+
+
+#: Сокращения дней в карточках расписания: «Пн, Ср, Пт · 19:00–20:30».
+_WEEKDAY_ABBREVIATIONS: Final[dict[str, str]] = {
+    "пн": "mon", "вт": "tue", "ср": "wed", "чт": "thu", "пт": "fri", "сб": "sat", "вс": "sun",
+}
+_WEEKDAY_ABBR_RE: Final[re.Pattern[str]] = re.compile(r"(?<![^\W\d_])(пн|вт|ср|чт|пт|сб|вс)(?![^\W\d_])", re.IGNORECASE)
+
+
+def extract_weekdays(text: str, *, abbreviations: bool = False) -> tuple[str, ...]:
+    """Коды дней недели, названных в тексте: «по понедельникам» → ``mon``.
+
+    ``abbreviations`` — учитывать «Пн», «Ср»: так дни пишет карточка расписания.
+    В ответе модели сокращения не проверяются, поэтому и засчитываются они только
+    в уже отправленных текстах.
+    """
+    lowered = (text or "").lower()
+    found = [
+        code for code, patterns in _WEEKDAY_RES.items() if any(p.search(lowered) for _, p in patterns)
+    ]
+    if abbreviations:
+        found.extend(_WEEKDAY_ABBREVIATIONS[match.lower()] for match in _WEEKDAY_ABBR_RE.findall(lowered))
+    return tuple(dict.fromkeys(found))
 
 
 def extract_times(text: str) -> tuple[str, ...]:
@@ -970,7 +1001,7 @@ _NAME_AFTER_HELLO_RE: Final = re.compile(
 
 def _name_stem(word: str) -> str:
     """Основа имени без падежного окончания: «Бекзата» и «Бекзат» — одно и то же."""
-    return word.lower()[:4]
+    return fold_name(word)[:4]
 
 
 def _invented_name(text: str, known_names: Sequence[str], invocations) -> tuple[str, ...]:

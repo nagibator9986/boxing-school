@@ -24,6 +24,7 @@ from typing import Final
 from app.types import (
     TOOL_ESCALATION_REASONS,
     EscalationReason,
+    IntentHint,
     Language,
     ManagerCard,
     ManagerCardKind,
@@ -33,6 +34,7 @@ from app.types import (
     ToolResult,
     Urgency,
 )
+from app.kb.agreement import question_sentence, split_agreement
 from app.tools.booking import format_local_dt, render_card_text
 
 #: Причины, для которых в базе знаний есть отдельная, более точная фраза клиенту.
@@ -50,6 +52,38 @@ _ALWAYS_HIGH: Final[frozenset[str]] = frozenset(
 
 #: Запасная длительность паузы, если в policies.yaml значение не задано.
 _DEFAULT_PAUSE_MINUTES: Final[int] = 60
+
+
+def _client_asked_for_human(ctx: ToolContext) -> bool:
+    """Просил ли клиент живого человека своими словами — сейчас или раньше в разговоре.
+
+    Пометка согласия несёт текст бота: «Время подберёт администратор. Записать?» и
+    ответ «Да» — не просьба позвать человека. Поэтому считаются только слова самого
+    клиента, а интенты текущей реплики — только если это не согласие.
+    """
+    current_is_consent = bool(ctx.client_texts) and split_agreement(ctx.client_texts[-1])[1] is not None
+    if IntentHint.MANAGER in ctx.intents and not current_is_consent:
+        return True
+    words = [word for word in ctx.kb.lexicon.intents.get(IntentHint.MANAGER, []) if word]
+    own = [split_agreement(text)[0].lower() for text in ctx.client_texts]
+    return any(word in text for text in own for word in words)
+
+
+#: Вопрос бота о передаче разговора человеку.
+_HANDOVER_QUESTION_MARKERS: Final[tuple[str, ...]] = (
+    "переда", "администратор", "менеджер", "әкімші", "жеткіз",
+)
+
+
+def _agreed_to_a_handover(ctx: ToolContext) -> bool:
+    """Согласился ли клиент именно на передачу вопроса администратору."""
+    if not ctx.client_texts:
+        return False
+    _own, proposal = split_agreement(ctx.client_texts[-1])
+    # Только сам вопрос: «…решает администратор. Передать ему?» — передача, а «Время
+    # подберёт администратор. Записать?» — предложение записи.
+    asked = question_sentence(proposal).lower() if proposal is not None else ""
+    return any(marker in asked for marker in _HANDOVER_QUESTION_MARKERS)
 
 
 def _reply_key(reason: str) -> str:
@@ -73,6 +107,31 @@ async def escalate_to_manager(
     if reason_key not in TOOL_ESCALATION_REASONS:
         return ToolResult.invalid_input(f"недопустимая причина эскалации '{reason}'")
     reason_enum = EscalationReason(reason_key)
+
+    # «Клиент просит человека» — это слова клиента, а не вывод модели. Живое
+    # воспроизведение 11.09.2026: на «Да» после предложения записи модель звала
+    # администратора «по просьбе клиента», и запись обрывалась на полпути.
+    if reason_enum is EscalationReason.USER_REQUEST and not (
+        _client_asked_for_human(ctx) or _agreed_to_a_handover(ctx)
+    ):
+        return ToolResult.invalid_input(
+            "клиент не просил живого человека: не передавай разговор администратору. "
+            "Продолжай сам — если ответ клиента непонятен, коротко переспроси; если в базе "
+            "нет нужных данных, используй reason=no_data"
+        )
+    # «Да» на предложение записи — не вопрос без данных. Модель, не найдя, как
+    # продолжить, передавала такой разговор администратору с reason=no_data.
+    if (
+        reason_enum is EscalationReason.NO_DATA
+        and ctx.client_texts
+        and split_agreement(ctx.client_texts[-1])[1] is not None
+        and not _agreed_to_a_handover(ctx)
+        and not _client_asked_for_human(ctx)
+    ):
+        return ToolResult.invalid_input(
+            "клиент согласился на твоё предложение — это не вопрос без данных. Продолжай "
+            "с того, на что он согласился: вызови нужный инструмент или задай один вопрос"
+        )
 
     summary = " ".join(str(question_summary or "").split())[:200].strip()
     if not summary:

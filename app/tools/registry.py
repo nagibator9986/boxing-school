@@ -261,7 +261,12 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
                     "type": "boolean",
                     "description": "true — только если родитель прямо не хочет называть фамилию",
                 },
-                "child_age": {"type": "integer", "minimum": 3, "maximum": 17},
+                "child_age": {
+                    "type": "integer",
+                    "minimum": 3,
+                    "maximum": 17,
+                    "description": "Только если родитель назвал возраст. Не знаешь — не передавай",
+                },
                 "child_gender": {"type": "string", "enum": ["m", "f", "unknown"]},
                 "gym_id": {"type": "string", "enum": [ENUM_GYM_ID]},
                 "preferred_time_text": {
@@ -305,7 +310,7 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
                     ),
                 },
             },
-            "required": ["child_name", "child_age", "gym_id", "parent_agreed"],
+            "required": ["child_name", "gym_id", "parent_agreed"],
         },
         deterministic=False,
         side_effect=True,
@@ -315,7 +320,9 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Передать вопрос живому администратору. Вызывать, когда данных в базе нет, клиент "
             "просит человека, речь о здоровье, жалобе, цене вне прайса, рассрочке, возрасте вне "
-            "диапазона или о разговоре на третьем языке."
+            "диапазона или о разговоре на третьем языке. reason=user_request — только когда клиент "
+            "сам попросил живого человека: короткое «да», имя ребёнка или ответ на твой вопрос — "
+            "не просьба."
         ),
         parameters={
             "type": "object",

@@ -88,6 +88,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "error.too_many_messages",
     "bridge.kk_offer",
     "lead_card.trial_booked",
+    "lead_card.trial_changed",
     "lead_card.escalation",
     "system.lead_saved",
     "system.goodbye",

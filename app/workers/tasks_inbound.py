@@ -176,7 +176,7 @@ async def _escalate(
 ) -> None:
     """Ставит администратору карточку «нужен живой ответ» по конкретному сообщению."""
     try:
-        from app.notify.manager import build_escalation_card, build_manager_message
+        from app.notify.manager import build_escalation_card, build_manager_message, effective_settings
 
         card = build_escalation_card(
             reason=reason,
@@ -186,7 +186,7 @@ async def _escalate(
             channel=inbound.channel,
             now=now,
         )
-        message = build_manager_message(card)
+        message = build_manager_message(card, settings=effective_settings(deps))
         if message is not None:
             await _enqueue(deps, message)
             metrics.observe_manager_notification(card.kind)

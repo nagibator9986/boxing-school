@@ -168,3 +168,16 @@ def test_name_and_age_count_only_when_the_client_named_them() -> None:
     assert client_named_age(7, ["ей семь лет"])
     assert not client_named_age(17, ["в 17:00"])
     assert not client_named_age(8, ["На бокс"])
+
+
+def test_weekday_abbreviations_and_more_age_words() -> None:
+    from app.kb.sessions import client_named_age, client_named_day
+
+    assert client_named_day("mon", ["пн 19:00"])
+    assert not client_named_day("sun", ["всё понятно"]), "«вс» внутри слова — не воскресенье"
+    assert client_named_age(15, ["ему пятнадцать"])
+    assert client_named_age(12, ["ұлым он екі жаста"])
+    assert client_named_age(10, ["қызым он жаста"])
+    assert not client_named_age(10, ["он хочет на бокс"]), "«он» без «жас» — местоимение"
+    assert client_named_age(7, ["семилетний сын"])
+    assert client_named_age(8, ["балам сегізде"])

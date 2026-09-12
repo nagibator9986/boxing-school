@@ -113,8 +113,12 @@ async def test_absence_message_is_handed_over_without_the_model(deps, llm, kb) -
     assert replies(decisions) == kb.text("escalation.client_matter", Language.RU)
 
 
-async def test_reschedule_request_reaches_the_manager_card(deps, llm) -> None:
-    """Администратор обязан узнать о просьбе: иначе клиент останется без ответа."""
+async def test_reschedule_request_reaches_the_manager_card(deps, llm, kb) -> None:
+    """Администратор обязан узнать о просьбе: иначе клиент останется без ответа.
+
+    Без предложения записи от бота фраза о времени — перенос у действующего
+    клиента: ответ даёт сам словарь, без модели (пустой скрипт модели упал бы).
+    """
     decisions = await process_inbound(
         deps,
         webhook_payload(
@@ -125,6 +129,7 @@ async def test_reschedule_request_reaches_the_manager_card(deps, llm) -> None:
     )
 
     assert any(d.manager_cards for d in decisions), "карточка администратору не собрана"
+    assert replies(decisions) == kb.text("escalation.client_matter", Language.RU)
 
 
 async def test_sales_question_still_answered_by_the_bot(deps, llm) -> None:

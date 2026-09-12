@@ -44,6 +44,7 @@ def verdict(
     known_names=(),
     known_numbers=(),
     known_times=(),
+    known_weekdays=(),
 ):
     """Короткий вызов пост-фильтра с общими для тестов умолчаниями."""
     return check(
@@ -57,6 +58,7 @@ def verdict(
         known_names=known_names,
         known_numbers=known_numbers,
         known_times=known_times,
+        known_weekdays=known_weekdays,
     )
 
 
@@ -1070,3 +1072,43 @@ def test_rules_carry_no_concrete_times() -> None:
     from app.llm.prompt import build_system_instruction
 
     assert not re.findall(r"(?<!\d)\d{1,2}:\d{2}(?!\d)", build_system_instruction(""))
+
+
+def test_weekday_already_sent_by_the_bot_is_trusted(kb) -> None:
+    """Расписание «по понедельникам» уже ушло — повтор дня без инструмента не выдумка."""
+    assert not verdict("Бокс проходит по понедельникам.", kb).ok
+    assert verdict("Бокс проходит по понедельникам.", kb, known_weekdays=("mon",)).ok
+    assert not verdict("Бокс проходит по вторникам.", kb, known_weekdays=("mon",)).ok
+
+
+def test_weekdays_are_read_from_schedule_cards_too() -> None:
+    from app.core.pipeline import _weekdays_in
+
+    assert _weekdays_in(["🥊 Бокс\n🕒 Пн, Ср, Пт · 19:00–20:30"]) == ("mon", "wed", "fri")
+    assert _weekdays_in(["Всё понятно, спасибо"]) == (), "«вс» внутри слова — не воскресенье"
+
+
+def test_name_written_in_lowercase_is_not_an_invention(kb) -> None:
+    """Клиент написал «айназаров али» — «Записать Айназарова Али?» не выдумка."""
+    from types import SimpleNamespace
+
+    from app.core.pipeline import _known_names
+    from app.types import LeadDraft
+
+    names = _known_names("айназаров али", inbound=SimpleNamespace(contact_name=None), draft=LeadDraft(), history=[])
+
+    assert verdict("Записать Айназарова Али на пробное занятие?", kb, known_names=names).ok
+
+
+def test_name_from_the_bots_own_question_is_not_the_clients(kb) -> None:
+    """«Да» на «Записать Иванова Петра?» не делает придуманное моделью имя названным."""
+    from types import SimpleNamespace
+
+    from app.core.pipeline import _known_names
+    from app.kb.agreement import with_agreement
+    from app.types import LeadDraft
+
+    agreed = with_agreement("Да", "Записать Иванова Петра на пробное?", ("да",))
+    names = _known_names(agreed, inbound=SimpleNamespace(contact_name=None), draft=LeadDraft(), history=[])
+
+    assert not verdict("Записал Иванова Петра на пробное занятие.", kb, known_names=names).ok

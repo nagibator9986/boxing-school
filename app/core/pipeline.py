@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from contextvars import ContextVar
@@ -63,6 +64,7 @@ from app.core import (
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
 from app.kb import render
+from app.kb.agreement import question_sentence, split_agreement, with_agreement
 from app.kb.places import scope_by_texts
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
@@ -74,6 +76,8 @@ from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
 from app.types import (
+    ManagerCardKind,
+    SavedLead,
     Scope,
     TRIAL_CONFIRMATION_ARTIFACT,
     Author,
@@ -328,6 +332,8 @@ class _Services:
     outbox: list[tuple[UUID, int]] = field(default_factory=list)
     messages: list[OutboundMessage] = field(default_factory=list)
     cards: list[ManagerCard] = field(default_factory=list)
+    #: Строки outbox с карточками администратору: вход человека в диалог их не отменяет.
+    card_outbox: set[UUID] = field(default_factory=set)
     lead_id: UUID | None = None
     paused: bool = False
     #: Начало хода. Нужно, чтобы отличить реплику человека, пришедшую ПОКА бот
@@ -364,6 +370,8 @@ class _Services:
 
         outbox_id = await repo_outbox.enqueue(self.session, message)
         self.outbox.append((outbox_id, int(message.delay_ms or 0)))
+        if not to_client:
+            self.card_outbox.add(outbox_id)
         if to_client:
             self.messages.append(message)
             await self._send_early(outbox_id, message)
@@ -445,7 +453,13 @@ class _Services:
         from app.notify.manager import build_manager_message
 
         self.cards.append(card)
-        message = build_manager_message(card, settings=self.deps.settings)
+        runtime = _owner_runtime(self.deps)
+        if card.kind is ManagerCardKind.LEAD and runtime is not None and not runtime.lead_notify:
+            # Владелец выключил уведомления о заявках в CRM. Карточки эскалации
+            # продолжают уходить: там клиент ждёт живого ответа.
+            _log.info("lead_card_switched_off", conversation_id=str(card.conversation_id))
+            return
+        message = build_manager_message(card, settings=_owner_settings(self.deps))
         if message is None:
             _log.warning("manager_card_undelivered", card_kind=card.kind.value)
             return
@@ -478,6 +492,13 @@ async def build_tool_services(
     return _Services(deps=deps, session=session, conv=conv)
 
 
+#: Подсказка к повторному одинаковому вызову инструмента в одном ходе.
+_REPEATED_CALL: Final[str] = (
+    "Этот вызов уже был в этом ходе с теми же аргументами — повтор ничего не изменит. "
+    "Ответь родителю: задай один вопрос из needs или сообщи результат."
+)
+
+
 async def build_tool_executor(deps: PipelineDeps, ctx: ToolContext) -> ToolExecutor:
     """Замыкание вокруг ``tools.registry.dispatch``: собирает ToolInvocation.
 
@@ -487,19 +508,26 @@ async def build_tool_executor(deps: PipelineDeps, ctx: ToolContext) -> ToolExecu
     превращается в ``ToolResult.failure``, и модель получает шанс ответить словами.
     """
     sink: list[ToolInvocation] = []
+    done: dict[str, ToolResult] = {}
     allowed: tuple[str, ...] | None = guards.SAFE_TOOLS if ctx.injection_suspected else None
 
     async def executor(name: str, args: dict[str, Any]) -> ToolResult:
         started = time.perf_counter()
+        key = f"{name}:{json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)}"
         if allowed is not None and name not in allowed:
             _log.warning("tool_not_allowed", tool=name, correlation_id=ctx.correlation_id)
             result = ToolResult.invalid_input(f"инструмент '{name}' недоступен в этом ходе")
+        elif key in done:
+            # Тот же вызов с теми же аргументами ничего нового не даст, а каждый повтор
+            # съедает виток из пяти: на последнем ход обрывался «сбоем модели» и паузой.
+            result = done[key].model_copy(update={"caveats": (*done[key].caveats, _REPEATED_CALL)})
         else:
             try:
                 result = await registry.dispatch(name, dict(args or {}), ctx)
             except Exception as exc:  # pragma: no cover - dispatch не пробрасывает
                 _log.warning("tool_dispatch_failed", tool=name, error=type(exc).__name__)
                 result = ToolResult.failure(f"{name}: {type(exc).__name__}")
+            done[key] = result
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         sink.append(
@@ -647,6 +675,28 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
                 DecisionAction.DROP, "duplicate", inbound=inbound, correlation_id=correlation_id
             )
 
+        # Тренеры и сотрудники пишут в тот же WhatsApp, что и родители. Их
+        # сообщения бот не обрабатывает вовсе: ни ответа, ни заявки, ни диалога
+        # в CRM — иначе рабочая переписка школы выглядит как поток клиентов.
+        # Список ведёт владелец в настройках, без передеплоя. Номер, куда бот шлёт
+        # заявки, — рабочий чат администратора: его «принял, позвоню» не должно
+        # получать в ответ меню и вопрос о возрасте ребёнка. Проверка стоит до эха:
+        # эхо карточки в чате заявок иначе заводило бы в CRM «клиента» с этим номером.
+        owner = _owner_settings(deps)
+        if ignore_list.is_ignored(
+            ignore_list.parse(owner.ignored_numbers) | ignore_list.parse(owner.manager_notify_target),
+            chat_id=inbound.chat_id,
+            phone=inbound.phone_e164 or inbound.contact_phone,
+        ):
+            await db.commit()
+            _log.info("ignored_number", chat_id=inbound.chat_id)
+            return _decision(
+                DecisionAction.DROP,
+                "ignored_number",
+                inbound=inbound,
+                correlation_id=correlation_id,
+            )
+
         if inbound.is_echo:
             decision = await _handle_echo(
                 deps, db, inbound, kb=kb, now=now, correlation_id=correlation_id
@@ -658,24 +708,6 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
             await db.commit()
             return _decision(
                 DecisionAction.DROP, "not_client", inbound=inbound, correlation_id=correlation_id
-            )
-
-        # Тренеры и сотрудники пишут в тот же WhatsApp, что и родители. Их
-        # сообщения бот не обрабатывает вовсе: ни ответа, ни заявки, ни диалога
-        # в CRM — иначе рабочая переписка школы выглядит как поток клиентов.
-        # Список ведёт владелец в настройках, без передеплоя.
-        if ignore_list.is_ignored(
-            ignore_list.parse(_owner_settings(deps).ignored_numbers),
-            chat_id=inbound.chat_id,
-            phone=inbound.phone_e164 or inbound.contact_phone,
-        ):
-            await db.commit()
-            _log.info("ignored_number", chat_id=inbound.chat_id)
-            return _decision(
-                DecisionAction.DROP,
-                "ignored_number",
-                inbound=inbound,
-                correlation_id=correlation_id,
             )
 
         conv = await conv_session.ensure_conversation(
@@ -877,6 +909,7 @@ async def _run_turn(
         # «Написать менеджеру» не срабатывал: guard видел голое «4», просьба к
         # человеку не опознавалась, и цифру разбирала модель — медленнее и
         # с ответом «чтобы не сказать вам неточность» вместо «передаю менеджеру».
+        original_text = text
         after_greeting = await conv_session.bot_turns(db, conv) == 1
         chosen = _menu_digit(text) if after_greeting else None
         text = expand_menu_choice(text, after_greeting=after_greeting)
@@ -905,7 +938,10 @@ async def _run_turn(
                 return decision
 
         # --- 7. Guards ----------------------------------------------------- #
-        verdict = guards.scan(text, lang=lang, lexicon=kb.lexicon, policies=kb.policies)
+        verdict = guards.scan(
+            text, lang=lang, lexicon=kb.lexicon, policies=kb.policies,
+            booking_in_progress=await _booking_in_progress(db, conv),
+        )
         if verdict.has(GuardFlag.STOP_WORD):
             await _block_followups(db, conv.id)
 
@@ -978,8 +1014,10 @@ async def _run_turn(
                 # следующем ходу она увидит голое «2» и не будет знать, из чего
                 # клиент выбирал. Проверено: без этой записи бот на «2» отвечал
                 # про пропуск тренировки вместо рассказа о школе.
+                # Парой с репликой клиента: обрезка истории режет по репликам клиента и
+                # одинокий ответ бота без неё выбрасывала при первом же разрезе.
                 await conv_session.save_turn(
-                    db, conv, [{"role": "model", "parts": [{"text": said}]}]
+                    db, conv, [_client_content(text), {"role": "model", "parts": [{"text": said}]}]
                 )
             decision = _decision(
                 DecisionAction.REPLY,
@@ -999,10 +1037,27 @@ async def _run_turn(
 
         # --- 8. LLM + tool-loop -------------------------------------------- #
         history = await conv_session.load_history(db, conv, max_turns=settings.llm_history_turns)
+        # «Да» на вопрос бота разворачивается в согласие на сам вопрос — как цифра
+        # меню. Живая переписка 11.09.2026: код отправил «Записать ребёнка на первую
+        # пробную тренировку?», клиент ответил «Да», а модель, не видя, на что
+        # согласились, звала администратора. Имя, возраст и телефон при этом
+        # разбираются из слов самого клиента, а не из пересказанного вопроса бота.
+        raw_text = original_text
+        # Выбор из списка («2», «7») код уже развернул в фразу. Словами клиента она не
+        # считается: в «Полевая 7/3, напротив 5-й поликлиники» есть и «7», и «5», и
+        # выдуманный моделью возраст прошёл бы проверку «назвал сам клиент».
+        chose_from_list = text != original_text
+        if not chose_from_list:
+            text = with_agreement(text, _last_model_text(history), kb.lexicon.agreement)
+        client_turn_text = "" if chose_from_list else text
+        choice_note = _choice_note(original_text, text) if chose_from_list else None
         system_instruction, ngrams = _prompt_for(kb, _runtime_block(deps))
         intents = lexicon.intent_hints(text, lexicon=kb.lexicon)
         injection = verdict.has(GuardFlag.INJECTION)
-        draft = _draft_from_text(text, inbound=inbound, conv=conv, kb=kb, lang=lang, now=now)
+        draft = _draft_from_text(raw_text, inbound=inbound, conv=conv, kb=kb, lang=lang, now=now)
+        # Хранимая история без обрезки: по ней проверяется, что назвал сам клиент.
+        # Карточки расписания большие, и история для модели теряет старые ходы быстро.
+        stored = await _stored_contents(db, conv)
         # Разбор переписки на карточку лида не влияет на ответ, поэтому идёт
         # параллельно с ним, а не после: последовательный вызов добавлял к
         # каждому ходу около секунды ожидания на стороне клиента.
@@ -1023,7 +1078,8 @@ async def _run_turn(
             lead_draft=draft,
             intents=intents,
             injection_suspected=injection,
-            client_texts=_recent_client_texts(text, history),
+            client_texts=_recent_client_texts(client_turn_text, stored),
+            saved_lead=await _saved_lead(db, conv),
         )
         executor = await build_tool_executor(deps, ctx)
 
@@ -1120,7 +1176,11 @@ async def _run_turn(
         )
         reply_raw = (response.text or "").strip()
 
-        if response.blocked or not reply_raw:
+        # Пустой ответ после того, как инструменты уже отправили клиенту подтверждение
+        # или карточку, — не сбой: после записи инструмент сам велел модели молчать.
+        # Живой прогон: клиенту ушло подтверждение, а следом администратору — «сбой
+        # модели», и диалог встал на паузу на 15 минут.
+        if response.blocked or (not reply_raw and not services.messages):
             _log.warning(
                 "llm_empty_reply",
                 blocked=response.blocked,
@@ -1145,7 +1205,9 @@ async def _run_turn(
                 invocations=invocations,
                 usage=usage,
             )
-            await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
+            await _save_history(
+                db, conv, history, response, dynamic_note=dynamic_note, user_note=choice_note
+            )
             await db.commit()
             await _flush_queue(deps, services)
             _drop_lead_task(lead_task)
@@ -1163,10 +1225,16 @@ async def _run_turn(
             prompt_ngrams=ngrams,
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
-            known_names=_known_names(text, inbound=inbound, draft=draft, history=history),
+            known_names=_known_names(text, inbound=inbound, draft=draft, history=stored),
             known_numbers=_numbers_in(sent_before),
             known_times=_times_in(sent_before),
+            known_weekdays=_weekdays_in(sent_before),
         )
+        if not cleaned and services.messages:
+            # Модель промолчала, а инструменты уже ответили клиенту — карточкой или
+            # подтверждением. Проверять нечего: пустой текст фильтр честно считает
+            # отказом, и ход уходил бы в «сбой модели» с паузой.
+            pc = postcheck.PostcheckVerdict(ok=True, text="")
         # Клиент уже получил готовое подтверждение записи от кода, а текст модели в
         # этом ходу не отправляется. Снимать его фильтром незачем: живой прогон
         # 10.09.2026 — модель написала «в пятницу», фильтр снял ответ, и к
@@ -1205,7 +1273,8 @@ async def _run_turn(
                 message.text for message in services.messages[sent_before_degrade:] if message.text
             ) or _kb_text(kb, TEXT_HANDOFF, lang)
             await _save_history(
-                db, conv, history, response, dynamic_note=dynamic_note, reply_override=said_instead or None
+                db, conv, history, response, dynamic_note=dynamic_note,
+                reply_override=said_instead or None, user_note=choice_note,
             )
             await db.commit()
             await _flush_queue(deps, services)
@@ -1274,17 +1343,33 @@ async def _run_turn(
             if bridge and bridge not in reply:
                 reply = f"{reply}\n\n{bridge}"
 
+        sent_parts: list[str] = []
         if reply.strip():
-            await _enqueue_reply(
+            sent_parts += await _enqueue_reply(
                 deps, services, conv, inbound, lang=lang, text=reply, now=now,
                 tail_question=tail_question,
             )
         if booking_offer:
-            await _enqueue_reply(
+            sent_parts += await _enqueue_reply(
                 deps, services, conv, inbound, lang=lang, text=booking_offer, now=now,
                 standalone=True,
             )
-        await _save_history(db, conv, history, response, dynamic_note=dynamic_note)
+        if _trial_confirmed(services):
+            sent_parts = [
+                message.text or "" for message in services.messages
+                if message.kind is OutboundKind.LEAD_CONFIRMATION
+            ]
+        elif not sent_parts:
+            # Модель промолчала, а карточки ушли — в истории остаются карточки.
+            sent_parts = [message.text or "" for message in services.messages]
+        # Модель обязана помнить то, что клиент получил на самом деле: вопрос воронки,
+        # предложение записи и подтверждение отправляет код, и без этой записи на
+        # следующее «Да» модель не знала, на что клиент соглашается.
+        said = "\n\n".join(part for part in sent_parts if part.strip())
+        await _save_history(
+            db, conv, history, response, dynamic_note=dynamic_note, reply_override=said or None,
+            user_note=choice_note,
+        )
         if int(conv.bot_miss_count or 0):
             await repo_conversation.set_bot_miss(db, conv.id, 0)
 
@@ -1326,7 +1411,7 @@ async def _run_turn(
             correlation_id=correlation_id,
             escalation=EscalationReason.USER_REQUEST if services.paused else None,
         )
-        await _schedule_followups(db, conv, decision, kb=kb, client_text=text)
+        await _schedule_followups(db, conv, decision, kb=kb, client_text=raw_text)
         await db.commit()
         await _flush_queue(deps, services)
         return decision
@@ -1452,7 +1537,9 @@ async def _handle_echo(
             db, conv, [{"role": "model", "parts": [{"text": inbound.text}]}]
         )
 
-    if _is_auto_greeting(inbound.text, _owner_settings(deps)):
+    if _is_auto_greeting(
+        inbound.text, _owner_settings(deps), brand=kb.policies.org_brand if kb is not None else ""
+    ):
         # Автоматика WhatsApp Business, а не человек. Такое исходящее приходит к
         # нам эхом, которого нет в нашем outbox, и бот принимал его за живого
         # оператора: замолкал и больше в разговор не возвращался.
@@ -1678,7 +1765,7 @@ async def _degraded_context(
     прогон 10.09.2026). Путь аварийный, лишнее чтение истории здесь допустимо.
     """
     try:
-        history = await conv_session.load_history(db, conv, max_turns=deps.settings.llm_history_turns)
+        history = await _stored_contents(db, conv)
     except Exception as exc:  # noqa: BLE001 - авария не должна порождать вторую
         _log.warning("degraded_history_lookup_failed", error=type(exc).__name__)
         history = []
@@ -1927,7 +2014,12 @@ async def _answer_menu_facts(
     await conv_session.save_turn(
         db,
         conv,
-        [{"role": "model", "parts": [{"text": f"{price_card}\n\n{gyms_card}"}]}],
+        [
+            {"role": "user", "parts": [{"text": _choice_note(
+                inbound.text or "", expand_menu_choice(inbound.text or "", after_greeting=True)
+            )}]},
+            {"role": "model", "parts": [{"text": f"{price_card}\n\n{gyms_card}"}]},
+        ],
     )
     decision = _decision(
         DecisionAction.REPLY,
@@ -1973,8 +2065,8 @@ async def _enqueue_reply(
     kind: OutboundKind = OutboundKind.BOT_REPLY,
     standalone: bool = False,
     tail_question: str | None = None,
-) -> None:
-    """Режет ответ по лимитам канала и кладёт части в outbox.
+) -> list[str]:
+    """Режет ответ по лимитам канала и кладёт части в outbox. Возвращает отправленные части.
 
     ``tail_question`` — шаг воронки, который обязан уцелеть. Длинный ответ
     режется по лимиту канала, и хвост с вопросом отбрасывается: в живом прогоне
@@ -1998,7 +2090,7 @@ async def _enqueue_reply(
             max_parts=settings.max_messages_per_turn,
         )
     if not parts:
-        return
+        return []
     if tail_question and "?" not in parts[-1][-_FUNNEL_TAIL_CHARS:]:
         parts[-1] = _with_room_for(parts[-1], tail_question, limit=hard)
 
@@ -2019,6 +2111,7 @@ async def _enqueue_reply(
 
     await repo_conversation.bump_counters(services.session, conv.id, msg_out=len(parts))
     await repo_conversation.touch_outbound(services.session, conv.id, now)
+    return parts
 
 
 async def _withhold_if_operator_took_over(
@@ -2061,13 +2154,17 @@ async def _withhold_if_operator_took_over(
         return False
 
     for outbox_id, _delay in services.outbox:
+        if outbox_id in services.card_outbox:
+            continue
         try:
             await repo_outbox.mark_skipped(
                 db, outbox_id, error="operator_took_over: в диалог вошёл человек"
             )
         except Exception as exc:  # noqa: BLE001 - отмена не имеет права ронять ход
             _log.warning("outbox_skip_failed", error=type(exc).__name__)
-    services.outbox.clear()
+    # Карточки остаются в очереди хода и уходят сразу, как и обещает описание выше:
+    # раньше их помечали пропущенными вместе с ответом клиенту.
+    services.outbox[:] = [entry for entry in services.outbox if entry[0] in services.card_outbox]
     services.messages.clear()
     _log.info("reply_withheld_operator", conv_key=conv.conv_key)
     return True
@@ -2168,14 +2265,23 @@ def _known_names(
         draft.child_name or "",
         inbound.contact_name or "",
     ]
-    names.extend(re.findall(r"[А-ЯЁ][а-яё]{2,14}", text))
+    # Любые слова клиента, а не только с заглавной: в мессенджере имя пишут и строчными
+    # («айназаров али»). Только собственные слова: пометка согласия несёт текст бота, и
+    # выдуманное моделью имя из её же вопроса иначе стало бы «названным клиентом».
+    names.extend(_CLIENT_WORD_RE.findall(split_agreement(text)[0]))
     for item in history:
         if item.get("role") != "user":
             continue
-        parts = item.get("parts") or []
-        said = " ".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-        names.extend(re.findall(r"[А-ЯЁ][а-яё]{2,14}", said))
+        for part in item.get("parts") or []:
+            said = str(part.get("text") or "") if isinstance(part, dict) else ""
+            if said.lstrip().startswith("[служебная заметка"):
+                continue
+            names.extend(_CLIENT_WORD_RE.findall(split_agreement(said)[0]))
     return tuple(name for name in names if name)
+
+
+#: Слово, которое может оказаться именем: буквы любого алфавита и регистра.
+_CLIENT_WORD_RE: Final[re.Pattern[str]] = re.compile(r"[^\W\d_]{3,15}")
 
 
 def _draft_from_text(
@@ -2307,6 +2413,13 @@ def _numbers_in(texts: Sequence[str]) -> tuple[str, ...]:
     return tuple(numbers)
 
 
+def _weekdays_in(texts: Sequence[str]) -> tuple[str, ...]:
+    """Дни недели из уже отправленных текстов, включая «Пн, Ср» карточек."""
+    return tuple(
+        dict.fromkeys(code for said in texts for code in postcheck.extract_weekdays(said, abbreviations=True))
+    )
+
+
 def _times_in(texts: Sequence[str]) -> tuple[str, ...]:
     """Время из уже отправленных текстов, в том же виде, в каком его сверяет фильтр."""
     return tuple(dict.fromkeys(value for said in texts for value in postcheck.extract_times(said)))
@@ -2393,6 +2506,9 @@ _BOOKED_STATUSES: Final[frozenset[str]] = frozenset(
 
 #: Сколько последних реплик клиента видят инструменты записи и цен.
 _CLIENT_TEXTS_LOOKBACK: Final[int] = 6
+
+#: Сколько сохранённых элементов истории читается ради слов клиента.
+_CLIENT_CONTENT_LOOKBACK: Final[int] = 120
 _USER_TAG_RE: Final[re.Pattern[str]] = re.compile(r"</?user_message>")
 
 
@@ -2421,12 +2537,72 @@ def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[
     return tuple(said[-_CLIENT_TEXTS_LOOKBACK:])
 
 
+async def _stored_contents(db: AsyncSession, conv: Conversation) -> list[dict[str, Any]]:
+    """Сохранённая история диалога без обрезки и без сводки.
+
+    История для модели режется по бюджету символов и дополняется сводкой: ни то, ни
+    другое не годится как доказательство того, что сказал клиент.
+    """
+    try:
+        return list(await repo_message.load_history(db, conv.id, max_turns=_CLIENT_CONTENT_LOOKBACK))
+    except Exception as exc:  # noqa: BLE001 - проверка слов клиента не важнее ответа
+        _log.warning("stored_history_failed", error=type(exc).__name__)
+        return []
+
+
+def _choice_note(raw: str, expanded: str) -> str:
+    """Выбор из списка для истории: модель помнит смысл, проверки не считают его словами."""
+    return f"[служебная заметка системы] Клиент ответил «{raw.strip()}» — это выбор из списка: {expanded}"
+
+
+def _client_content(text: str) -> dict[str, Any]:
+    """Реплика клиента для истории модели — в том же контейнере, что и на обычном ходу."""
+    from app.llm.dynamic import wrap_user_message
+
+    return {"role": "user", "parts": [{"text": wrap_user_message(text or "")}]}
+
+
+async def _saved_lead(db: AsyncSession, conv: Conversation) -> SavedLead | None:
+    """Заявка, сохранённая до хода: по ней инструмент понимает, новая запись или перенос."""
+    try:
+        lead = await repo_lead.get_by_conversation(db, conv.id)
+    except Exception as exc:  # noqa: BLE001 - карточка не важнее ответа
+        _log.warning("saved_lead_lookup_failed", error=type(exc).__name__)
+        return None
+    if lead is None:
+        return None
+    return SavedLead(
+        lead_id=lead.id, status=lead.status, gym_id=lead.gym_id, trial_slot=lead.trial_slot,
+        child_name=lead.child_name, child_age=lead.child_age,
+    )
+
+
 def _trial_confirmed(services: _Services) -> bool:
     """Ушло ли в этом ходу готовое подтверждение записи на пробное."""
     return any(
         getattr(message, "artifact_id", None) == TRIAL_CONFIRMATION_ARTIFACT
         for message in services.messages
     )
+
+
+#: Время в вопросе бота: «в 19:00?».
+_OFFER_TIME_RE: Final[re.Pattern[str]] = re.compile(r"\d{1,2}[:.]\d{2}")
+
+
+async def _booking_in_progress(db: AsyncSession, conv: Conversation) -> bool:
+    """Клиент ещё не записан, а бот только что спросил о записи или времени."""
+    if await _already_booked(db, conv):
+        return False
+    try:
+        recent = await repo_message.sent_texts(db, conv.id, limit=2)
+    except Exception as exc:  # noqa: BLE001 - проверка не важнее ответа
+        _log.warning("booking_offer_lookup_failed", error=type(exc).__name__)
+        return False
+    for said in recent:
+        asked = question_sentence(said).lower()
+        if asked and (_OFFER_TIME_RE.search(asked) or any(word in asked for word in ("запис", "врем", "удобн"))):
+            return True
+    return False
 
 
 async def _already_booked(db: AsyncSession, conv: Conversation) -> bool:
@@ -2453,7 +2629,15 @@ async def _client_stage(db: AsyncSession, conv: Conversation) -> str | None:
     return _STAGE_NOTES.get(lead.status) if lead is not None else None
 
 
-def _is_auto_greeting(text: str | None, settings: Settings) -> bool:
+#: Начало приветствия: «Здравствуйте!», «Добрый день», «Сәлеметсіз бе», «Hello».
+_GREETING_START_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\W*(?:привет\w*|здравствуй\w*|здрасьте|добр(?:ый|ое)\s+\w+|салем\w*|сәлем\w*"
+    r"|ассалам\w*|hi\b|hello\b|рады\s+приветствовать)",
+    re.IGNORECASE,
+)
+
+
+def _is_auto_greeting(text: str | None, settings: Settings, *, brand: str = "") -> bool:
     """Похоже ли исходящее на автоприветствие, настроенное в WhatsApp Business.
 
     Сравнение по подстроке без учёта регистра: владелец вписывает узнаваемый
@@ -2468,7 +2652,12 @@ def _is_auto_greeting(text: str | None, settings: Settings) -> bool:
         needle = line.strip().casefold()
         if needle and needle in body:
             return True
-    return False
+    # Текст рекламного приветствия владелец меняет в WhatsApp Business сам и список
+    # в CRM обновлять не обязан помнить: 11.09.2026 «Рады приветствовать вас в
+    # Ainazarov Top Team!» не совпало ни с одной строкой, и бот молчал в чатах с
+    # таргета. Приветствие, где названа школа, — шаблон: человек так не начинает.
+    name = (brand or "").strip().casefold()
+    return bool(name) and name in body and _GREETING_START_RE.match(body) is not None
 
 
 async def _record_llm(
@@ -2563,6 +2752,18 @@ async def _remember_lead(
         metrics.observe_lead(update["status"])
     except Exception as exc:  # noqa: BLE001
         _log.warning("lead_remember_failed", error=type(exc).__name__)
+
+
+def _owner_runtime(deps: PipelineDeps) -> "RuntimeSettings | None":
+    """Настройки владельца как есть. ``None`` — их нет или они не читаются."""
+    factory = getattr(deps, "runtime", None)
+    if factory is None:
+        return None
+    try:
+        return factory()
+    except Exception as exc:  # noqa: BLE001 - битая база настроек, права на файл
+        _log.warning("runtime_settings_failed", error=str(exc))
+        return None
 
 
 def _owner_settings(deps: PipelineDeps) -> Settings:
@@ -2671,6 +2872,7 @@ async def _save_history(
     *,
     dynamic_note: str = "",
     reply_override: str | None = None,
+    user_note: str | None = None,
 ) -> None:
     """Дописывает в историю только НОВЫЕ элементы хода.
 
@@ -2688,8 +2890,13 @@ async def _save_history(
     note = (dynamic_note or "").strip()
     if note:
         tail = [item for item in tail if _content_text(item).strip() != note]
+    # Пустой ответ модели в истории ломает следующий запрос: пустых частей API не
+    # принимает. Текст, который клиент получил на самом деле, подставляется ниже.
+    tail = [item for item in tail if not _is_blank_model_item(item)]
     if reply_override is not None:
         tail = _with_reply(tail, reply_override)
+    if user_note:
+        tail = _with_client_note(tail, user_note)
     if not tail:
         return
     await conv_session.save_turn(db, conv, tail)
@@ -2707,7 +2914,35 @@ def _with_reply(tail: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
         item = tail[index]
         if item.get("role") == "model" and _content_text(item).strip():
             return [*tail[:index], {"role": "model", "parts": [{"text": text}]}, *tail[index + 1 :]]
+    # Модель ответила одними вызовами инструментов, а клиенту ушёл текст кода.
+    return [*tail, {"role": "model", "parts": [{"text": text}]}]
+
+
+def _with_client_note(tail: list[dict[str, Any]], note: str) -> list[dict[str, Any]]:
+    """Реплика клиента, развёрнутая кодом из номера в списке, хранится служебной пометкой."""
+    for index, item in enumerate(tail):
+        if item.get("role") == "user" and "<user_message>" in _content_text(item):
+            return [*tail[:index], {"role": "user", "parts": [{"text": note}]}, *tail[index + 1 :]]
     return tail
+
+
+def _is_blank_model_item(item: dict[str, Any]) -> bool:
+    """Ответ модели без текста и без вызовов инструментов."""
+    if item.get("role") != "model":
+        return False
+    parts = [part for part in item.get("parts") or [] if isinstance(part, dict)]
+    return all(set(part) <= {"text"} and not str(part.get("text") or "").strip() for part in parts)
+
+
+def _last_model_text(history: Sequence[dict[str, Any]]) -> str:
+    """Последний текст бота, который видит модель: ответ, меню, реплика оператора."""
+    for item in reversed(list(history)):
+        if item.get("role") != "model":
+            continue
+        said = _content_text(item).strip()
+        if said:
+            return said
+    return ""
 
 
 def _content_text(content: dict[str, Any]) -> str:

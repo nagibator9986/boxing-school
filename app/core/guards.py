@@ -189,8 +189,17 @@ class GuardVerdict(BaseModel):
         return flag in self.flags
 
 
+#: Фразы о времени: в ответ на предложение записи это выбор времени пробного.
+_TIME_CHOICE_WORDS: Final[tuple[str, ...]] = ("врем", "удобно", "уақыт")
+
+
 def scan(
-    text: str, *, lang: Language, lexicon: LexiconFile, policies: PoliciesFile
+    text: str,
+    *,
+    lang: Language,
+    lexicon: LexiconFile,
+    policies: PoliciesFile,
+    booking_in_progress: bool = False,
 ) -> GuardVerdict:
     """Один проход по всем правилам.
 
@@ -256,7 +265,13 @@ def scan(
             reason=EscalationReason.USER_REQUEST,
         )
 
-    if _matches_word(normalized, _intent_phrases(lexicon, IntentHint.CLIENT_MATTER)):
+    matter = _intent_phrases(lexicon, IntentHint.CLIENT_MATTER)
+    if booking_in_progress:
+        # Бот только что предложил запись или время, а клиент ещё не записан:
+        # «неудобно в 19, можно в среду?» — выбор времени пробного. Без предложения
+        # та же фраза — перенос тренировки действующего клиента, её ведёт человек.
+        matter = tuple(phrase for phrase in matter if not any(word in phrase for word in _TIME_CHOICE_WORDS))
+    if _matches_word(normalized, matter):
         # Родители пишут в тот же чат по любому поводу: «Артём завтра не сможет
         # прийти», «нам неудобно в 19:00, давайте другое время». Бот — консультант
         # и продавец; посещаемость, переносы и действующие абонементы ведёт

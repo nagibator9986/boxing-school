@@ -226,8 +226,11 @@ strings:
   # а строка «Язык» подсказывает, на каком языке звонить родителю.
   # ---------------------------------------------------------------------------
   lead_card.trial_booked:
-    ru: "НОВАЯ ЗАПИСЬ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда: {when}\nМотив: {motivation}\nТревога родителя: {objection}\nКанал: {channel}, диалог от {dt}"
-    kk: "НОВАЯ ЗАПИСЬ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда: {when}\nМотив: {motivation}\nТревога родителя: {objection}\nКанал: {channel}, диалог от {dt}"
+    ru: "НОВАЯ ЗАПИСЬ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда: {when}\nМотив: {motivation}\nТревога родителя: {objection}\nКанал: {channel}, диалог от {dt}\nПереписка: {dialog}"
+    kk: "НОВАЯ ЗАПИСЬ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда: {when}\nМотив: {motivation}\nТревога родителя: {objection}\nКанал: {channel}, диалог от {dt}\nПереписка: {dialog}"
+  lead_card.trial_changed:
+    ru: "ИЗМЕНЕНИЕ ЗАПИСИ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда теперь: {when}\nКанал: {channel}, {dt}\nПереписка: {dialog}"
+    kk: "ИЗМЕНЕНИЕ ЗАПИСИ НА ПРОБНОЕ\n\nРебёнок: {child}\nРодитель: {parent}\nТелефон: {phone}\nЯзык: {lang}\nЗал: {gym}\nКогда теперь: {when}\nКанал: {channel}, {dt}\nПереписка: {dialog}"
   lead_card.escalation:
     ru: "НУЖЕН ЖИВОЙ ОТВЕТ\n\nТелефон: {phone}\nВопрос: {question}\nЯзык: {lang}\nПричина: {reason}\nКанал: {channel}, {dt}"
     kk: "НУЖЕН ЖИВОЙ ОТВЕТ\n\nТелефон: {phone}\nВопрос: {question}\nЯзык: {lang}\nПричина: {reason}\nКанал: {channel}, {dt}"

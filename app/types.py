@@ -888,6 +888,20 @@ class ToolContext:
     #: Последние реплики самого клиента, без служебных пометок. По ним инструменты
     #: проверяют, что время, секцию и посёлок назвал клиент, а не придумала модель.
     client_texts: tuple[str, ...] = ()
+    #: Заявка, уже сохранённая в этом диалоге до хода.
+    saved_lead: SavedLead | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SavedLead:
+    """Уже сохранённая заявка диалога: по ней видно, новая это запись или перенос."""
+
+    lead_id: UUID
+    status: str
+    gym_id: str | None
+    trial_slot: datetime | None
+    child_name: str | None
+    child_age: int | None
 
 
 class ToolExecutor(Protocol):

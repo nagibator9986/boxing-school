@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import Callable, TYPE_CHECKING, Final
 
 from app.admin.admin_store import SETTING_SPECS, AdminStore
 from app.logging_conf import get_logger
@@ -33,7 +34,7 @@ from app.logging_conf import get_logger
 if TYPE_CHECKING:  # pragma: no cover - только для аннотаций
     from app.config import Settings
 
-__all__ = ["RuntimeSettings", "load_runtime_settings"]
+__all__ = ["RuntimeSettings", "cached_runtime_settings", "load_runtime_settings", "whatsapp_number"]
 
 _log = get_logger(__name__)
 
@@ -41,6 +42,21 @@ _log = get_logger(__name__)
 _RANGE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$")
 
 _DEFAULTS: Final[dict[str, str]] = {spec.key: spec.default for spec in SETTING_SPECS}
+
+
+def whatsapp_number(raw: str | None) -> str:
+    """Первый номер из записи владельца в виде chatId WhatsApp: ``7XXXXXXXXXX``.
+
+    «+7 777 000 00 00», «8 777 000 0000» и «777 000 00 00» — один и тот же номер.
+    Пустая строка — номера в записи нет.
+    """
+    for chunk in re.split(r"[,;\n\r]+", raw or ""):
+        digits = re.sub(r"\D", "", chunk)
+        if len(digits) == 10:
+            return "7" + digits
+        if len(digits) == 11 and digits[0] in "78":
+            return "7" + digits[1:]
+    return ""
 
 
 def _parse_range(value: str, fallback: tuple[int, int]) -> tuple[int, int]:
@@ -93,6 +109,9 @@ class RuntimeSettings:
     work_start: str = "10:00"
     work_end: str = "20:00"
     lead_notify: bool = True
+    #: WhatsApp администратора для карточек заявок, как его вписал владелец.
+    #: Пусто — работает ``MANAGER_NOTIFY_TARGET`` из переменных сервера.
+    lead_notify_target: str = ""
     trial_free: bool = True
     operator_pause_minutes: int = 0
     #: Номера, которым бот не отвечает, как их ввёл владелец. Разбор — в
@@ -124,6 +143,7 @@ class RuntimeSettings:
             work_start=work_start,
             work_end=work_end,
             lead_notify=_as_bool(values.get("lead_notify", ""), True),
+            lead_notify_target=(values.get("lead_notify_target", "") or "").strip(),
             trial_free=_as_bool(values.get("trial_free", ""), True),
             ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
             auto_greeting_texts=(values.get("auto_greeting_texts", "") or "").strip(),
@@ -137,16 +157,18 @@ class RuntimeSettings:
         процессом и общий на всё приложение — править его на месте значило бы
         менять конфигурацию под ногами у соседних вызовов.
         """
-        return settings.model_copy(
-            update={
-                "followup_enabled": self.followup_enabled,
-                "followup_quiet_hours_start": self.quiet_start,
-                "followup_quiet_hours_end": self.quiet_end,
-                "pause_operator_minutes": self.operator_pause_minutes,
-                "ignored_numbers": self.ignored_numbers,
-                "auto_greeting_texts": self.auto_greeting_texts,
-            }
-        )
+        update: dict[str, object] = {
+            "followup_enabled": self.followup_enabled,
+            "followup_quiet_hours_start": self.quiet_start,
+            "followup_quiet_hours_end": self.quiet_end,
+            "pause_operator_minutes": self.operator_pause_minutes,
+            "ignored_numbers": self.ignored_numbers,
+            "auto_greeting_texts": self.auto_greeting_texts,
+        }
+        target = whatsapp_number(self.lead_notify_target)
+        if target:
+            update["manager_notify_target"] = target
+        return settings.model_copy(update=update)
 
     def prompt_block(self) -> str:
         """Блок для системной инструкции. Пустая строка — если всё по умолчанию.
@@ -206,3 +228,34 @@ def load_runtime_settings(path: str | Path) -> RuntimeSettings:
         return RuntimeSettings.from_values({spec.key: store.get(spec.key) for spec in SETTING_SPECS})
     finally:
         store.close()
+
+
+def cached_runtime_settings(
+    path: str | Path, *, ttl_seconds: float = 3.0, clock: Callable[[], float] = time.monotonic
+) -> Callable[[], RuntimeSettings]:
+    """Фабрика настроек владельца с коротким кешем.
+
+    Пайплайн WhatsApp спрашивает настройки до шести раз за ход, а каждое открытие
+    ``admin.db`` — это ещё и пишущая транзакция (``CREATE TABLE IF NOT EXISTS``)
+    параллельно с CRM и соседними ходами. Правка в CRM доезжает через несколько
+    секунд. Если база в этот момент недоступна, остаётся последнее прочитанное
+    значение, а не молчаливый откат к настройкам сервера посреди хода.
+    """
+    state: dict[str, object] = {"value": None, "at": 0.0}
+
+    def load() -> RuntimeSettings:
+        now = clock()
+        cached = state["value"]
+        if isinstance(cached, RuntimeSettings) and now - float(state["at"]) < ttl_seconds:
+            return cached
+        try:
+            value = load_runtime_settings(path)
+        except Exception as exc:  # noqa: BLE001 - кеш переживает сбой чтения
+            if isinstance(cached, RuntimeSettings):
+                _log.warning("runtime_settings_stale", error=type(exc).__name__)
+                return cached
+            raise
+        state["value"], state["at"] = value, now
+        return value
+
+    return load

@@ -292,26 +292,83 @@ def render_card_text(kb: Any, key: str, params: Mapping[str, Any]) -> str:
         return template
 
 
-def _card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym) -> str:
-    """Карточка администратору. Текст один на оба языка — его читает сотрудник школы."""
-    return render_card_text(
+#: Подписи для карточки администратору: она всегда по-русски.
+_LANG_TITLES: Final[dict[str, str]] = {"ru": "русский", "kk": "казахский"}
+_CHANNEL_TITLES: Final[dict[str, str]] = {"whatsapp": "WhatsApp", "instagram": "Instagram", "telegram": "Telegram"}
+
+
+def _readable_phone(value: str | None) -> str | None:
+    """«77019990013» → «+7 701 999 00 13»: так номер читается и набирается с экрана."""
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 11 and digits.startswith("7"):
+        return f"+7 {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:11]}"
+    return value or None
+
+
+def _dialog_link(ctx: ToolContext) -> str | None:
+    """Ссылка на переписку в CRM — чтобы не искать клиента вручную."""
+    try:
+        base = (get_settings().public_base_url or "").rstrip("/")
+    except Exception:  # pragma: no cover - настройки чинятся на старте
+        return None
+    return f"{base}/crm/clients/{ctx.conversation_id}" if base.startswith("https://") else None
+
+
+def _card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: bool = False) -> str:
+    """Карточка администратору. Текст один на оба языка — его читает сотрудник школы.
+
+    Пустые поля не печатаются: «Мотив: —» на телефоне администратора — шум, из-за
+    которого главное (кто, когда, куда) читается хуже.
+    """
+    lang = (draft.lang or ctx.lang).value
+    text = render_card_text(
         ctx.kb,
-        "lead_card.trial_booked",
+        "lead_card.trial_changed" if changed else "lead_card.trial_booked",
         {
             "child": f"{draft.child_name}, {draft.child_age} лет"
             if draft.child_age
             else draft.child_name,
             "parent": draft.parent_name or _PLACEHOLDER,
-            "phone": draft.phone or draft.channel_user or _PLACEHOLDER,
-            "lang": (draft.lang or ctx.lang).value,
+            "phone": _readable_phone(draft.phone or draft.channel_user) or _PLACEHOLDER,
+            "lang": _LANG_TITLES.get(lang, lang),
             "gym": f"{gym.title.ru} ({gym.address.ru})" if gym.address.ru else (gym.title.ru or gym.id),
             "when": draft.trial_slot_text or _PLACEHOLDER,
             "motivation": draft.motivation or _PLACEHOLDER,
             "objection": draft.main_objection or _PLACEHOLDER,
-            "channel": ctx.channel.value,
+            "channel": _CHANNEL_TITLES.get(ctx.channel.value, ctx.channel.value),
             "dt": format_local_dt(ctx.now),
+            "dialog": _dialog_link(ctx) or _PLACEHOLDER,
         },
     )
+    return "\n".join(line for line in text.splitlines() if not line.rstrip().endswith(f": {_PLACEHOLDER}"))
+
+
+def _lead_card_this_turn(ctx: ToolContext) -> ManagerCard | None:
+    """Карточка записи, уже отправленная в этом ходу по этому диалогу."""
+    cards = getattr(ctx.services, "cards", None) or []
+    return next(
+        (
+            card for card in reversed(list(cards))
+            if card.kind is ManagerCardKind.LEAD and card.conversation_id == ctx.conversation_id
+        ),
+        None,
+    )
+
+
+def _booking_key(gym_id: str | None, slot: datetime | None, child_name: str | None, child_age: int | None) -> tuple:
+    """Что делает запись той же самой: зал, минута начала по времени школы, ребёнок.
+
+    SQLite пояс не хранит: слот, записанный во времени школы, возвращается «19:00» без
+    пояса. Поэтому сравнивается местное время школы, а не UTC — иначе та же запись
+    выглядела бы переносом на пять часов и уходила бы второй карточкой.
+    """
+    from zoneinfo import ZoneInfo
+
+    moment = slot
+    if moment is not None and moment.tzinfo is not None:
+        moment = moment.astimezone(ZoneInfo(_school_tz())).replace(tzinfo=None)
+    minute = moment.replace(second=0, microsecond=0) if moment else None
+    return gym_id, minute, (child_name or "").casefold(), child_age
 
 
 # --------------------------------------------------------------------------- #
@@ -321,8 +378,8 @@ async def create_trial_lead(
     ctx: ToolContext,
     *,
     child_name: str,
-    child_age: int,
     gym_id: str,
+    child_age: int | None = None,
     parent_agreed: bool = False,
     child_gender: str = "unknown",
     preferred_time_text: str | None = None,
@@ -364,9 +421,15 @@ async def create_trial_lead(
             "child_name не похоже на имя ребёнка: спроси у родителя фамилию и имя ребёнка"
         )
 
-    if isinstance(child_age, bool) or not isinstance(child_age, int):
+    if child_age is not None and (isinstance(child_age, bool) or not isinstance(child_age, int)):
         return ToolResult.invalid_input("child_age обязан быть целым числом")
-    if not (MIN_CHILD_AGE <= child_age <= MAX_CHILD_AGE):
+    # Возраст вне приёма решает человек — если его назвал сам родитель. Выдуманный
+    # моделью возраст считается не названным: родителя просто спросят.
+    if (
+        child_age is not None
+        and not (MIN_CHILD_AGE <= child_age <= MAX_CHILD_AGE)
+        and client_named_age(child_age, ctx.client_texts)
+    ):
         # Ни отказать, ни записать бот не вправе: решает человек.
         return ToolResult.needs_operator(
             say=kb.bilingual_text("gap.age_limits"),
@@ -417,10 +480,16 @@ async def create_trial_lead(
     # 10.09.2026: на «На бокс» бот спросил «фамилию сына» — ребёнка ещё никто не
     # называл. Имя, названное раньше и уже разобранное в заявку, тоже годится.
     known = ctx.lead_draft
+    if child_age is None and known.child_age is not None:
+        # «Айназаров Али, 8 лет» — возраст уже разобран из слов клиента, а модель его не
+        # передала. Переспрашивать то, что родитель только что написал, нельзя.
+        child_age = known.child_age
     name_said = client_named_name(name, ctx.client_texts) or (
         bool(known.child_name) and client_named_name(name, (known.child_name or "",))
     )
-    age_said = client_named_age(child_age, ctx.client_texts) or known.child_age == child_age
+    age_said = child_age is not None and (
+        client_named_age(child_age, ctx.client_texts) or known.child_age == child_age
+    )
     if not name_said:
         needs.append("need_name")
     if not age_said:
@@ -431,13 +500,19 @@ async def create_trial_lead(
     # это имя без фамилии. Родитель не хочет её называть — записываем как есть.
     if name_said and len(name.split()) < 2 and not no_surname:
         needs.append("need_surname")
-        hints.append(_SURNAME_HINT)
+        if not hints:
+            hints.append(_SURNAME_HINT)
     if choice is not None and session is None:
         needs.append(choice.problem or "need_time")
-        hints.append(_choice_hint(kb, choice))
+        if not hints:
+            hints.append(_choice_hint(kb, choice))
     if needs:
-        if len(needs) > 1:
-            hints.append("Спроси обо всём этом одним коротким сообщением.")
+        # Один вопрос за сообщение — правило промпта. Скриншот владельца 11.09.2026:
+        # модель получила «спроси всё одним сообщением», спросила секцию, а возраст так
+        # и не спросили. Подсказка — только к первому шагу, остальное следующим ходом.
+        asked_now = {"need_name", "need_age"} if not (name_said and age_said) else {needs[0]}
+        if any(need not in asked_now for need in needs):
+            hints.append("Спроси только это. Остальное уточнишь следующим сообщением, по одному вопросу.")
         return ToolResult.success(
             data={
                 "booked": False,
@@ -514,7 +589,6 @@ async def create_trial_lead(
     missing = _missing_required(draft)
     draft.status = LeadStatus.TRIAL_BOOKED if not missing else LeadStatus.NEEDS_CALL
 
-    existed = previous.lead_id is not None
     try:
         lead_id = await ctx.services.upsert_lead(draft)
     except Exception as exc:
@@ -522,11 +596,28 @@ async def create_trial_lead(
     draft.lead_id = lead_id
 
     # --- карточка администратору ------------------------------------------- #
+    # Карточка уходит на новую запись и на перенос. Повторный вызов с той же записью
+    # второй карточки не шлёт: карточки теперь приходят администратору в WhatsApp, и
+    # каждое уточнение модели превращалось бы в ещё одну «новую заявку». Черновик
+    # хода о сохранённой заявке не знает — поэтому сверка идёт с ней.
+    saved = ctx.saved_lead
+    earlier_card = _lead_card_this_turn(ctx)
+    if earlier_card is not None:
+        # В этом же ходу запись уже ушла карточкой: сохранённой заявки ход ещё не видит.
+        booked_before = True
+        same_booking = earlier_card.text in (
+            _card_text(ctx, draft, gym), _card_text(ctx, draft, gym, changed=True)
+        )
+    else:
+        booked_before = saved is not None and saved.status == LeadStatus.TRIAL_BOOKED.value
+        same_booking = booked_before and _booking_key(
+            saved.gym_id, saved.trial_slot, saved.child_name, saved.child_age
+        ) == _booking_key(draft.gym_id, draft.trial_slot, draft.child_name, draft.child_age)
     admin_notified = False
-    if not existed or previous.status is not draft.status:
+    if not same_booking:
         card = ManagerCard(
             kind=ManagerCardKind.LEAD,
-            text=_card_text(ctx, draft, gym),
+            text=_card_text(ctx, draft, gym, changed=booked_before),
             conversation_id=ctx.conversation_id,
             lead_id=lead_id,
             lang=ctx.lang,
@@ -541,7 +632,7 @@ async def create_trial_lead(
             admin_notified = False
             _ = exc
     else:
-        caveats.append("Лид уже был создан в этом диалоге — карточка администратору повторно не отправлялась.")
+        caveats.append("Запись не изменилась — карточка администратору повторно не отправлялась.")
 
     confirmation_sent = False
     if session is not None and not missing:
@@ -581,7 +672,7 @@ async def create_trial_lead(
             "lead_id": str(lead_id),
             "status": draft.status.value,
             "admin_notified": admin_notified,
-            "created": not existed,
+            "created": saved is None,
             "child_name": draft.child_name,
             "child_age": draft.child_age,
             "gym_id": gym.id,
