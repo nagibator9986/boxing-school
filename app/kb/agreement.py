@@ -17,16 +17,35 @@ import re
 from typing import Final, Iterable
 
 __all__ = [
+    "CHOICE_OPEN",
     "MARKER_CLOSE",
     "MARKER_OPEN",
+    "chosen_option",
     "is_bare_agreement",
+    "is_option_line",
+    "offers_choice",
+    "offered_options",
     "question_sentence",
     "split_agreement",
     "with_agreement",
+    "with_choice",
 ]
 
 MARKER_OPEN: Final[str] = "[согласие на предложение бота: «"
 MARKER_CLOSE: Final[str] = "»]"
+#: Выбор из списка вариантов, который предложил бот: «2» → вариант номер два.
+CHOICE_OPEN: Final[str] = "[выбор из вариантов бота: «"
+
+#: «1. Бокс — Вт, Чт, Сб 19:00», «2) Кикбоксинг».
+_NUMBERED_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d{1,2})\s*[.)]\s+(\S.*?)\s*$")
+#: «— Кикбоксинг — Вт, Чт, Сб 19:00», «• Бокс».
+_BULLET_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"^\s*[—–•·-]\s+(\S.*?)\s*$")
+#: Просьба выбрать вместо вопроса: «Выберите время:», «Напишите номер или своими словами.»
+_CHOICE_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"выбер\w*|напишите\s+(?:цифру|номер)|санын\s+жазыңыз|нөмірін\s+жазыңыз|таңдаңыз", re.IGNORECASE
+)
+#: Голый номер варианта: «2», «2.», «2)».
+_BARE_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d{1,2})\s*[.)]?\s*$")
 
 #: Длиннее — это уже не «да», а ответ со своим содержанием: его разбирает модель.
 _MAX_AGREEMENT_WORDS: Final[int] = 6
@@ -89,8 +108,16 @@ def with_agreement(text: str, bot_text: str | None, words: Iterable[str]) -> str
 
 
 def split_agreement(text: str | None) -> tuple[str, str | None]:
-    """Собственные слова клиента и текст предложения, на которое он согласился."""
+    """Собственные слова клиента и текст предложения, на которое он согласился.
+
+    Выбранный из списка вариант (:data:`CHOICE_OPEN`) словами клиента не считается —
+    его отдаёт :func:`chosen_option`: в «Бокс — для детей 7–9 лет» нет ни имени, ни
+    возраста ребёнка.
+    """
     value = text or ""
+    choice = value.find(CHOICE_OPEN)
+    if choice >= 0:
+        return value[:choice].strip(), None
     start = value.find(MARKER_OPEN)
     if start < 0:
         return value, None
@@ -103,3 +130,68 @@ def question_sentence(proposal: str | None) -> str:
     """Последнее вопросительное предложение: на него клиент и ответил «да»."""
     found = _SENTENCE_RE.findall(proposal or "")
     return found[-1].strip() if found else ""
+
+
+def offered_options(bot_text: str | None) -> list[str]:
+    """Варианты, которые бот предложил списком, по порядку номеров.
+
+    Нумерованный список берётся по номерам — только если они идут подряд с единицы.
+    Маркированный («— Бокс», «• Кикбоксинг») — по порядку строк: модель пишет варианты
+    и так, а клиент всё равно отвечает цифрой.
+    """
+    numbered: dict[int, str] = {}
+    bullets: list[str] = []
+    for line in (bot_text or "").splitlines():
+        numbered_match = _NUMBERED_OPTION_RE.match(line)
+        if numbered_match:
+            numbered.setdefault(int(numbered_match.group(1)), numbered_match.group(2))
+            continue
+        bullet_match = _BULLET_OPTION_RE.match(line)
+        if bullet_match:
+            bullets.append(bullet_match.group(1))
+    if len(numbered) >= 2 and sorted(numbered) == list(range(1, len(numbered) + 1)):
+        return [numbered[number] for number in sorted(numbered)]
+    return bullets if len(bullets) >= 2 else []
+
+
+def offers_choice(bot_text: str | None) -> bool:
+    """Предлагает ли бот выбрать из списка: два варианта и больше, вопрос или просьба выбрать.
+
+    Живой прогон 12.09.2026: «Выберите подходящее время для пробного занятия: — …
+    Напишите номер или своими словами.» — без единого вопросительного знака.
+    """
+    text = bot_text or ""
+    return len(offered_options(text)) >= 2 and ("?" in text or _CHOICE_REQUEST_RE.search(text) is not None)
+
+
+def is_option_line(line: str) -> bool:
+    """Строка варианта в списке выбора: «1. Бокс», «— Кикбоксинг — Вт, Чт, Сб 19:00»."""
+    return bool(_NUMBERED_OPTION_RE.match(line) or _BULLET_OPTION_RE.match(line))
+
+
+def with_choice(text: str, bot_text: str | None) -> str:
+    """«2» → «2 [выбор из вариантов бота: «Бокс — Вт, Чт, Сб 19:00»]». Иначе текст как есть.
+
+    Кнопок в мессенджере нет: на список бота клиент отвечает цифрой. Скриншот
+    владельца 12.09.2026: бот предложил «— Кикбоксинг … — Бокс …», клиент ответил «2»,
+    а модель цифру не поняла, переспросила и передала запись администратору.
+    Разворачивается только ответ на вопрос со списком.
+    """
+    number = _BARE_NUMBER_RE.match(text or "")
+    if number is None or not offers_choice(bot_text):
+        return text
+    options = offered_options(bot_text)
+    index = int(number.group(1))
+    if not 1 <= index <= len(options):
+        return text
+    return f"{(text or '').strip()} {CHOICE_OPEN}{options[index - 1]}{MARKER_CLOSE}"
+
+
+def chosen_option(text: str | None) -> str | None:
+    """Вариант, который клиент выбрал цифрой. ``None`` — это не выбор из списка."""
+    value = text or ""
+    start = value.find(CHOICE_OPEN)
+    if start < 0:
+        return None
+    end = value.rfind(MARKER_CLOSE)
+    return value[start + len(CHOICE_OPEN) : end if end > start else len(value)]

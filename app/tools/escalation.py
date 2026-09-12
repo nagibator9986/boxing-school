@@ -19,6 +19,7 @@ Wazzup. ``clearUnanswered`` в проекте всегда ``false``
 
 from __future__ import annotations
 
+import re
 from typing import Final
 
 from app.types import (
@@ -34,7 +35,7 @@ from app.types import (
     ToolResult,
     Urgency,
 )
-from app.kb.agreement import question_sentence, split_agreement
+from app.kb.agreement import chosen_option, question_sentence, split_agreement
 from app.tools.booking import format_local_dt, render_card_text
 
 #: Причины, для которых в базе знаний есть отдельная, более точная фраза клиенту.
@@ -86,6 +87,23 @@ def _agreed_to_a_handover(ctx: ToolContext) -> bool:
     return any(marker in asked for marker in _HANDOVER_QUESTION_MARKERS)
 
 
+#: Причины «не справился сам». На ответ клиента на вопрос бота они не годятся.
+_STUCK_REASONS: Final[frozenset[EscalationReason]] = frozenset(
+    {EscalationReason.NO_DATA, EscalationReason.REPEATED_MISS}
+)
+#: Голая цифра — ответ на список бота, даже если код этот список не узнал.
+_BARE_REPLY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\d{1,2}\s*[.)]?\s*$")
+
+
+def _answered_the_bot(ctx: ToolContext) -> bool:
+    """Последняя реплика клиента — ответ на вопрос бота: «да», цифра варианта."""
+    if not ctx.client_texts:
+        return False
+    latest = ctx.client_texts[-1]
+    own, proposal = split_agreement(latest)
+    return proposal is not None or chosen_option(latest) is not None or bool(_BARE_REPLY_RE.match(own))
+
+
 def _reply_key(reason: str) -> str:
     """Ключ i18n с текстом, который увидит клиент."""
     return _REPLY_KEYS.get(reason, "escalation.handoff")
@@ -121,16 +139,18 @@ async def escalate_to_manager(
         )
     # «Да» на предложение записи — не вопрос без данных. Модель, не найдя, как
     # продолжить, передавала такой разговор администратору с reason=no_data.
+    # Скриншот владельца 12.09.2026: клиент дважды ответил «2» на список секций, и модель
+    # сдалась с reason=repeated_miss. «Не справился» — не причина отдавать запись.
     if (
-        reason_enum is EscalationReason.NO_DATA
-        and ctx.client_texts
-        and split_agreement(ctx.client_texts[-1])[1] is not None
+        reason_enum in _STUCK_REASONS
+        and _answered_the_bot(ctx)
         and not _agreed_to_a_handover(ctx)
         and not _client_asked_for_human(ctx)
     ):
         return ToolResult.invalid_input(
-            "клиент согласился на твоё предложение — это не вопрос без данных. Продолжай "
-            "с того, на что он согласился: вызови нужный инструмент или задай один вопрос"
+            "клиент ответил на твой же вопрос — согласием или номером варианта. Это не вопрос "
+            "без данных: продолжай запись с того, что он выбрал, или коротко переспроси, "
+            "перечислив варианты нумерованным списком"
         )
 
     summary = " ".join(str(question_summary or "").split())[:200].strip()

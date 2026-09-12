@@ -124,6 +124,8 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "funnel.district",
     "funnel.name",
     "funnel.name_age",
+    "funnel.discipline",
+    "funnel.pick_time",
     "funnel.contact",
     "funnel.confirm",
     "funnel.book_trial",

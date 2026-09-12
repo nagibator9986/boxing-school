@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.kb.agreement import question_sentence, split_agreement
+from app.kb.agreement import chosen_option, question_sentence, split_agreement
 from app.kb.models import Gym, ScheduleSlot, age_value
 
 __all__ = [
@@ -130,6 +130,10 @@ def _client_times(texts: tuple[str, ...] | list[str]) -> set[str]:
         offered = _offered_times(proposal)
         if len(offered) == 1:
             found |= offered
+        # Выбранный цифрой вариант — выбор родителя; время засчитывается, если оно там одно.
+        picked = _offered_times(chosen_option(raw))
+        if len(picked) == 1:
+            found |= picked
         for match in _HHMM_RE.finditer(text):
             found.add(f"{int(match.group(1)):02d}:{match.group(2)}")
         for match in (*_PREP_HOUR_RE.finditer(text), *_HOUR_WORD_RE.finditer(text)):
@@ -170,6 +174,9 @@ def client_named_discipline(discipline: str | None, texts) -> bool:
         offered = _disciplines_in(proposal or "")
         if len(offered) == 1:
             named |= offered
+        picked = _disciplines_in(chosen_option(raw) or "")
+        if len(picked) == 1:
+            named |= picked
     return discipline in named
 
 
@@ -297,6 +304,9 @@ def client_named_day(day: str | None, texts) -> bool:
         # там один: «по понедельникам, средам и пятницам» — это расписание, а не выбор.
         asked = question_sentence(proposal)
         if asked and {other for other, found in _WEEKDAY_WORDS if found.search(asked)} == {code}:
+            return True
+        picked = chosen_option(raw)
+        if picked and {other for other, found in _WEEKDAY_WORDS if found.search(picked)} == {code}:
             return True
     return False
 

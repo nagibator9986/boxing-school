@@ -64,7 +64,13 @@ from app.core import (
 from app.core import session as conv_session
 from app.kb.models import KBSnapshot
 from app.kb import render
-from app.kb.agreement import question_sentence, split_agreement, with_agreement
+from app.kb.agreement import (
+    offers_choice,
+    question_sentence,
+    split_agreement,
+    with_agreement,
+    with_choice,
+)
 from app.kb.places import scope_by_texts
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
@@ -199,7 +205,10 @@ async def _gym_choice(db: AsyncSession, conv: Conversation, text: str, *, kb: KB
         _log.warning("gym_choice_lookup_failed", error=type(exc).__name__)
         return None
     heading = (kb.text("card.gyms_city_title", Language.RU) or "").strip()
-    if not heading or not any(heading in said for said in recent):
+    # Номер относится к последнему списку, который бот предложил: после списка залов
+    # бот мог уже спросить «На какую секцию: 1. Бокс, 2. Кикбоксинг?», и «2» — секция.
+    latest_list = next((said for said in recent if offers_choice(said)), None)
+    if not heading or latest_list is None or heading not in latest_list:
         return None
     gym = order[number - 1]
     address = gym.address.ru or ""
@@ -1048,7 +1057,11 @@ async def _run_turn(
         # выдуманный моделью возраст прошёл бы проверку «назвал сам клиент».
         chose_from_list = text != original_text
         if not chose_from_list:
-            text = with_agreement(text, _last_model_text(history), kb.lexicon.agreement)
+            last_bot_text = _last_model_text(history)
+            text = with_agreement(text, last_bot_text, kb.lexicon.agreement)
+            # Цифра в ответ на список бота — выбор варианта, как цифра меню. Скриншот
+            # владельца 12.09.2026: «2» на список секций ушло администратору.
+            text = with_choice(text, last_bot_text)
         client_turn_text = "" if chose_from_list else text
         choice_note = _choice_note(original_text, text) if chose_from_list else None
         system_instruction, ngrams = _prompt_for(kb, _runtime_block(deps))
@@ -1245,6 +1258,39 @@ async def _run_turn(
                 kind=pc.kind.value if pc.kind else None,
                 offending=list(pc.offending)[:5],
             )
+            question = _booking_question(kb, lang, invocations)
+            if question is not None:
+                # Посреди записи снятый фильтром ответ — не повод звать администратора.
+                # Владелец 12.09.2026: «при запросе записи не должен передавать менеджеру».
+                # Следующий шаг записи известен из данных инструмента — его код и спрашивает.
+                parts = await _enqueue_reply(
+                    deps, services, conv, inbound, lang=lang, text=question, now=now
+                )
+                await _save_history(
+                    db, conv, history, response, dynamic_note=dynamic_note,
+                    reply_override="\n\n".join(parts) or question, user_note=choice_note,
+                )
+                decision = _decision(
+                    DecisionAction.REPLY,
+                    f"postcheck:{pc.kind.value if pc.kind else 'unknown'}+booking_question",
+                    inbound=inbound,
+                    conv_id=conv.id,
+                    lang=lang,
+                    outbound=services.messages,
+                    cards=services.cards,
+                    lead_id=services.lead_id,
+                    guard_flags=verdict.flags,
+                    invocations=invocations,
+                    usage=usage,
+                    kb_hash=kb.kb_hash,
+                    correlation_id=correlation_id,
+                )
+                decision = decision.model_copy(update={"postcheck_fail": pc.kind})
+                await _schedule_followups(db, conv, decision, kb=kb, client_text=raw_text)
+                await db.commit()
+                await _flush_queue(deps, services)
+                _drop_lead_task(lead_task)
+                return decision
             sent_before_degrade = len(services.messages)
             decision = await _degrade(
                 deps,
@@ -2575,6 +2621,50 @@ async def _saved_lead(db: AsyncSession, conv: Conversation) -> SavedLead | None:
         lead_id=lead.id, status=lead.status, gym_id=lead.gym_id, trial_slot=lead.trial_slot,
         child_name=lead.child_name, child_age=lead.child_age,
     )
+
+
+#: Что спросить, если модель посреди записи сорвалась: код строит вопрос по данным инструмента.
+_NAME_NEEDS: Final[frozenset[str]] = frozenset({"need_name", "need_age"})
+_SECTION_NEEDS: Final[frozenset[str]] = frozenset({"need_discipline", "unknown_discipline"})
+_TIME_NEEDS: Final[frozenset[str]] = frozenset({"need_time", "unknown_time", "unknown_day"})
+
+
+def _booking_question(kb: KBSnapshot, lang: Language, invocations: Sequence[ToolInvocation]) -> str | None:
+    """Следующий вопрос записи по последнему результату ``create_trial_lead``. ``None`` — записи нет."""
+    for invocation in reversed(list(invocations)):
+        if invocation.name != "create_trial_lead" or invocation.result is None:
+            continue
+        data = invocation.result.data or {}
+        needs = [str(need) for need in data.get("needs") or []]
+        if data.get("booked") is not False or not needs:
+            return None
+        first = needs[0]
+        if first in _NAME_NEEDS:
+            both = _NAME_NEEDS <= set(needs)
+            key = "funnel.name_age" if both else ("funnel.name" if first == "need_name" else "funnel.age")
+            return _kb_text(kb, key, lang) or None
+        if first == "need_surname":
+            return _kb_text(kb, "funnel.name", lang) or None
+        if first not in _SECTION_NEEDS | _TIME_NEEDS:
+            return None
+        options = _numbered_options(kb, lang, data.get("options") or [])
+        head = _kb_text(kb, "funnel.discipline" if first in _SECTION_NEEDS else "funnel.pick_time", lang)
+        return f"{head}\n\n{options}" if options and head else None
+    return None
+
+
+def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) -> str:
+    """«1. Бокс — Вт, Чт, Сб 19:00» — варианты из расписания зала, по одному в строке."""
+    lines: list[str] = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        label = _kb_text(kb, f"card.{option.get('discipline')}", lang)
+        days = render.days_label(list(option.get("days") or []), lang)
+        line = f"{label} — {days} {option.get('time_start') or ''}".strip()
+        if label and line not in lines:
+            lines.append(line)
+    return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, 1)) if len(lines) >= 2 else ""
 
 
 def _trial_confirmed(services: _Services) -> bool:

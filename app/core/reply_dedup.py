@@ -30,6 +30,8 @@ from __future__ import annotations
 import re
 from typing import Final, Iterable, Sequence
 
+from app.kb.agreement import is_option_line, offers_choice
+
 __all__ = ["strip_card_repeats"]
 
 #: Доля значимых слов строки, при которой она считается пересказом карточки.
@@ -137,9 +139,17 @@ def strip_card_repeats(reply: str, cards: Sequence[str] | Iterable[str]) -> str:
     card_words = frozenset(_words(joined))
     cards_lower = joined.lower()
 
+    # Список вариантов в вопросе — это выбор, а не пересказ карточки. Живой случай
+    # 12.09.2026: в одном ходу ушло расписание, и строки «— Кикбоксинг — Вт, Чт, Сб 19:00»
+    # и «— Бокс — …» вырезались как повтор — клиент получил «Напишите цифру» без вариантов.
+    keeps_choice = offers_choice(reply)
+
     kept: list[str] = []
     for line in reply.splitlines():
         if not line.strip():
+            kept.append(line)
+            continue
+        if keeps_choice and is_option_line(line):
             kept.append(line)
             continue
         if _is_repeat(line, card_words):

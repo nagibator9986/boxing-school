@@ -29,7 +29,7 @@ from app.types import ChannelKind
 from app.workers.tasks_outbound import send_outbox_batch
 from tests.conftest import RecordingQueue, webhook_payload, MemoryStateStore
 
-OUT = pathlib.Path("docs/live-tests/dialogs.md")
+OUT = pathlib.Path(__import__("os").environ.get("LIVE_DIALOGS_OUT", "docs/live-tests/dialogs.md"))
 
 # (эхо?, текст) — эхо означает исходящее из аккаунта школы (автоответ или человек)
 SCENARIOS = [
@@ -135,6 +135,10 @@ SCENARIOS = [
  ("26. Скриншот владельца 11.09: «Да» → фамилия и имя → секция → «Да» → возраст", ChannelKind.WHATSAPP, [
    (False, "Здравствуйте"), (False, "2"), (False, "7"), (False, "Да"),
    (False, "Айназаров Али"), (False, "Бокс"), (False, "Да"), (False, "8 лет"),
+ ]),
+ ("28. Скриншот владельца 12.09: список секций → «2»", ChannelKind.WHATSAPP, [
+   (False, "Здравствуйте"), (False, "2"), (False, "5"), (False, "Да"),
+   (False, "Айназаров Али, 8 лет"), (False, "2"), (False, "2"),
  ]),
  ("27. Чат с рекламы: новое приветствие «Рады приветствовать вас в Ainazarov Top Team!»", ChannelKind.WHATSAPP, [
    (True, "Здравствуйте! 🥊 Рады приветствовать вас в Ainazarov Top Team!\n"
