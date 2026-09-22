@@ -123,11 +123,15 @@ def effective_settings(deps: Any) -> Settings:
 
 
 def build_manager_message(
-    card: ManagerCard, *, settings: Settings | None = None
+    card: ManagerCard, *, settings: Settings | None = None, to: str | None = None, text: str | None = None
 ) -> OutboundMessage | None:
-    """Карточка → исходящее сообщение администратору. ``None`` — адрес не настроен."""
+    """Карточка → исходящее сообщение администратору. ``None`` — адрес не настроен.
+
+    ``to`` — конкретный адресат (номер или групповой чат), если их несколько.
+    ``text`` — что отправить вместо текста карточки: короткая строка в рабочий чат.
+    """
     cfg = settings or get_settings()
-    target = manager_target(cfg)
+    target = manager_target(cfg, to=to)
     if target is None:
         # ОШИБКА, а не предупреждение. Здесь теряется лид: бот довёл родителя до
         # записи, сказал «администратор свяжется» — и карточку никто не получил.
@@ -141,8 +145,8 @@ def build_manager_message(
         )
         return None
     channel, channel_id, chat_id = target
-    text = (card.text or "").strip()
-    if not text:
+    body = (text if text is not None else card.text or "").strip()
+    if not body:
         return None
     return OutboundMessage(
         conversation_id=None,
@@ -151,18 +155,20 @@ def build_manager_message(
         chat_id=chat_id,
         lang=Language.RU,  # карточку читает сотрудник, она всегда по-русски
         kind=OutboundKind.MANAGER_CARD,
-        text=text,
+        text=body,
     )
 
 
-def manager_target(settings: Settings | None = None) -> tuple[ChannelKind, str, str] | None:
+def manager_target(
+    settings: Settings | None = None, *, to: str | None = None
+) -> tuple[ChannelKind, str, str] | None:
     """``(канал, channelId, chatId)`` администратора. ``None`` — не настроено.
 
     Для WhatsApp ``chatId`` — только цифры (``77012345678``), для Instagram —
     igsid из вебхука; сконструировать его нельзя, поэтому значение берётся из настроек как есть.
     """
     cfg = settings or get_settings()
-    raw_target = (cfg.manager_notify_target or "").strip()
+    raw_target = (to or cfg.manager_notify_target or "").strip()
     if not raw_target:
         return None
 
@@ -173,8 +179,11 @@ def manager_target(settings: Settings | None = None) -> tuple[ChannelKind, str, 
 
     chat_id = raw_target
     if channel is ChannelKind.WHATSAPP:
-        from app.admin.runtime_settings import whatsapp_number
+        from app.admin.runtime_settings import is_group_chat, whatsapp_number
 
+        if is_group_chat(raw_target):
+            # Идентификатор группового чата Wazzup — не номер, менять его нельзя.
+            return channel, channel_id, raw_target
         digits = "".join(ch for ch in raw_target if ch.isdigit())
         if not digits:
             return None

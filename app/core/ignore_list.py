@@ -19,6 +19,12 @@ from typing import Final, Iterable
 
 __all__ = ["is_ignored", "parse", "tail"]
 
+#: Идентификатор чата, а не номер: в групповых чатах Wazzup есть буквы и ``@``
+#: («77010000000-1600000000@g.us»). Такую запись нельзя сравнивать по десяти
+#: последним цифрам: это отметка времени создания группы, и она может совпасть
+#: с номером живого клиента. Поэтому чат сравнивается целиком.
+_CHAT_ID: Final[re.Pattern[str]] = re.compile(r"[A-Za-z@]")
+
 #: Сколько последних цифр сравнивается.
 _TAIL: Final[int] = 10
 
@@ -49,6 +55,9 @@ def parse(raw: str | None) -> frozenset[str]:
     """
     numbers: set[str] = set()
     for chunk in re.split(r"[,;\n\r]+", (raw or "").strip()):
+        if _CHAT_ID.search(chunk):
+            numbers.add(chunk.strip().casefold())
+            continue
         pieces = [chunk]
         if len(_NON_DIGIT.sub("", chunk)) > _MAX_DIGITS_IN_ONE:
             pieces = chunk.split()
@@ -65,4 +74,5 @@ def is_ignored(ignored: Iterable[str] | None, *, chat_id: str | None, phone: str
     if not ignored:
         return False
     known = set(ignored)
-    return any(candidate in known for candidate in (tail(chat_id), tail(phone)) if candidate)
+    candidates = (tail(chat_id), tail(phone), (chat_id or "").strip().casefold())
+    return any(candidate in known for candidate in candidates if candidate)

@@ -107,7 +107,7 @@ def test_confirmation_is_complete_and_readable(kb: KBSnapshot) -> None:
 
     for piece in (
         "Мы записали вас", "👤 Иванов Али", "Кикбоксинг", "В среду, 09.09 в 19:00", "Каирбекова 334",
-        "за 10 минут", "подойдите к тренеру", "чешки",
+        "за 10 минут", "подойдите к тренеру", "чешки", "предупредил", "отметит",
     ):
         assert piece in text, f"нет «{piece}»:\n{text}"
     assert "администратор" not in text.lower()

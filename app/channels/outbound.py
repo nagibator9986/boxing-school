@@ -651,9 +651,13 @@ def build_send_request(msg: OutboundMessage) -> SendMessageRequest:
         if len(text) > caps.max_text_chars:
             # Последний рубеж: пайплайн обязан был порезать раньше через split_text.
             text = _hard_cut(text, caps.max_text_chars)
+    # Групповой чат WhatsApp: идентификатор группы не номер, и Wazzup ждёт свой chatType.
+    chat_type = msg.channel.value
+    if msg.channel is ChannelKind.WHATSAPP and not msg.chat_id.isdigit():
+        chat_type = "whatsgroup"
     return SendMessageRequest(
         channelId=msg.channel_id,
-        chatType=msg.channel.value,
+        chatType=chat_type,
         chatId=msg.chat_id,
         text=text or None,
         contentUri=msg.content_uri,

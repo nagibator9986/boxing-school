@@ -44,6 +44,7 @@ from uuid import UUID, uuid4
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.admin.runtime_settings import notify_targets
 from app.channels import normalize
 from app.channels.outbound import sanitize, split_text, text_limits, window_expires_at
 from app.channels.wazzup_schemas import WebhookPayload, parse_webhook
@@ -468,11 +469,25 @@ class _Services:
             # продолжают уходить: там клиент ждёт живого ответа.
             _log.info("lead_card_switched_off", conversation_id=str(card.conversation_id))
             return
-        message = build_manager_message(card, settings=_owner_settings(self.deps))
-        if message is None:
+        owner = _owner_settings(self.deps)
+        lead_card = card.kind is ManagerCardKind.LEAD
+        # Владелец 22.09.2026: заявки идут администратору и в рабочую группу. Карточку
+        # получает каждый адресат из настройки, а в чат уведомлений уходит одна строка.
+        targets = notify_targets(runtime.lead_notify_target) if (lead_card and runtime) else ()
+        sent = False
+        for target in targets or (None,):
+            message = build_manager_message(card, settings=owner, to=target)
+            if message is not None:
+                await self._enqueue(message, to_client=False)
+                sent = True
+        if lead_card and card.short_text and runtime is not None:
+            for chat in notify_targets(runtime.lead_notify_chat):
+                short = build_manager_message(card, settings=owner, to=chat, text=card.short_text)
+                if short is not None:
+                    await self._enqueue(short, to_client=False)
+                    sent = True
+        if not sent:
             _log.warning("manager_card_undelivered", card_kind=card.kind.value)
-            return
-        await self._enqueue(message, to_client=False)
 
     async def set_pause(self, conv_key: str, *, minutes: int, reason: PauseReason) -> None:
         """Пауза бота из инструмента (``escalate_to_manager``)."""
@@ -691,9 +706,8 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
         # заявки, — рабочий чат администратора: его «принял, позвоню» не должно
         # получать в ответ меню и вопрос о возрасте ребёнка. Проверка стоит до эха:
         # эхо карточки в чате заявок иначе заводило бы в CRM «клиента» с этим номером.
-        owner = _owner_settings(deps)
         if ignore_list.is_ignored(
-            ignore_list.parse(owner.ignored_numbers) | ignore_list.parse(owner.manager_notify_target),
+            _silent_numbers(deps),
             chat_id=inbound.chat_id,
             phone=inbound.phone_e164 or inbound.contact_phone,
         ):
@@ -2842,6 +2856,23 @@ async def _remember_lead(
         metrics.observe_lead(update["status"])
     except Exception as exc:  # noqa: BLE001
         _log.warning("lead_remember_failed", error=type(exc).__name__)
+
+
+def _silent_numbers(deps: PipelineDeps) -> frozenset[str]:
+    """Кому бот не отвечает: список владельца и все адресаты уведомлений о заявках.
+
+    Рабочие чаты школы односторонние: бот туда пишет, а «принял, позвоню» в ответ не
+    должно превращаться в нового клиента с меню и вопросом о возрасте ребёнка.
+    """
+    owner = _owner_settings(deps)
+    runtime = _owner_runtime(deps)
+    sources = [owner.ignored_numbers, owner.manager_notify_target]
+    if runtime is not None:
+        sources += [runtime.lead_notify_target, runtime.lead_notify_chat]
+    numbers: set[str] = set()
+    for source in sources:
+        numbers |= ignore_list.parse(source or "")
+    return frozenset(numbers)
 
 
 def _owner_runtime(deps: PipelineDeps) -> "RuntimeSettings | None":

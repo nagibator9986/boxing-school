@@ -410,7 +410,8 @@ class FactSource(str, Enum):
 class FollowupKind(str, Enum):
     FU_SOFT = "fu_soft"
     FU_VALUE = "fu_value"
-    TRIAL_REMINDER_20H = "trial_reminder_20h"
+    TRIAL_REMINDER_20H = "trial_reminder_20h"   # устарело с 22.09.2026
+    TRIAL_REMINDER_MORNING = "trial_reminder_morning"
     TRIAL_REMINDER_2H = "trial_reminder_2h"
     NO_SHOW = "no_show"
 
@@ -634,6 +635,9 @@ class ManagerCard(BaseModel):
     lang: Language = Language.RU
     reason: EscalationReason | None = None
     urgency: Urgency = Urgency.NORMAL
+    #: Короткая строка для рабочего чата школы: «ЗАПИСАЛСЯ: … — зал, когда».
+    #: ``None`` — по этой карточке в такой чат ничего не уходит.
+    short_text: str | None = None
 
 
 # --------------------------------------------------------------------------- #

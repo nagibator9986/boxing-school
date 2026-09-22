@@ -34,7 +34,14 @@ from app.logging_conf import get_logger
 if TYPE_CHECKING:  # pragma: no cover - только для аннотаций
     from app.config import Settings
 
-__all__ = ["RuntimeSettings", "cached_runtime_settings", "load_runtime_settings", "whatsapp_number"]
+__all__ = [
+    "RuntimeSettings",
+    "cached_runtime_settings",
+    "is_group_chat",
+    "load_runtime_settings",
+    "notify_targets",
+    "whatsapp_number",
+]
 
 _log = get_logger(__name__)
 
@@ -57,6 +64,28 @@ def whatsapp_number(raw: str | None) -> str:
         if len(digits) == 11 and digits[0] in "78":
             return "7" + digits[1:]
     return ""
+
+
+def is_group_chat(value: str | None) -> bool:
+    """Групповой чат, а не номер: в идентификаторе группы есть буквы или ``@``."""
+    return bool(re.search(r"[A-Za-z@]", value or ""))
+
+
+def notify_targets(raw: str | None) -> tuple[str, ...]:
+    """Все адресаты уведомлений из записи владельца, по порядку и без повторов.
+
+    Владелец 22.09.2026: заявки идут администратору и в рабочую группу. Номер
+    приводится к chatId WhatsApp, идентификатор группы остаётся как есть.
+    """
+    found: list[str] = []
+    for chunk in re.split(r"[,;\n\r]+", raw or ""):
+        value = chunk.strip()
+        if not value:
+            continue
+        target = value if is_group_chat(value) else whatsapp_number(value)
+        if target and target not in found:
+            found.append(target)
+    return tuple(found)
 
 
 def _parse_range(value: str, fallback: tuple[int, int]) -> tuple[int, int]:
@@ -112,6 +141,9 @@ class RuntimeSettings:
     #: WhatsApp администратора для карточек заявок, как его вписал владелец.
     #: Пусто — работает ``MANAGER_NOTIFY_TARGET`` из переменных сервера.
     lead_notify_target: str = ""
+    #: Чат, куда бот одной строкой пишет о каждой готовой записи: номер или
+    #: идентификатор группового чата Wazzup. Бот туда только пишет.
+    lead_notify_chat: str = ""
     trial_free: bool = True
     operator_pause_minutes: int = 0
     #: Номера, которым бот не отвечает, как их ввёл владелец. Разбор — в
@@ -144,6 +176,7 @@ class RuntimeSettings:
             work_end=work_end,
             lead_notify=_as_bool(values.get("lead_notify", ""), True),
             lead_notify_target=(values.get("lead_notify_target", "") or "").strip(),
+            lead_notify_chat=(values.get("lead_notify_chat", "") or "").strip(),
             trial_free=_as_bool(values.get("trial_free", ""), True),
             ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
             auto_greeting_texts=(values.get("auto_greeting_texts", "") or "").strip(),
@@ -165,9 +198,11 @@ class RuntimeSettings:
             "ignored_numbers": self.ignored_numbers,
             "auto_greeting_texts": self.auto_greeting_texts,
         }
-        target = whatsapp_number(self.lead_notify_target)
-        if target:
-            update["manager_notify_target"] = target
+        targets = notify_targets(self.lead_notify_target)
+        if targets:
+            # В конфигурации процесса адрес один — первый. Остальным карточка уходит
+            # отдельными сообщениями (см. ``_Services.notify_manager``).
+            update["manager_notify_target"] = targets[0]
         return settings.model_copy(update=update)
 
     def prompt_block(self) -> str:

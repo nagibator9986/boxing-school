@@ -356,6 +356,19 @@ def _lead_card_this_turn(ctx: ToolContext) -> ManagerCard | None:
     )
 
 
+def _short_card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: bool) -> str:
+    """Одна строка о записи для рабочего чата: без телефона и без разбора по полям."""
+    return render_card_text(
+        ctx.kb,
+        "lead_card.trial_short_changed" if changed else "lead_card.trial_short",
+        {
+            "child": f"{draft.child_name}, {draft.child_age} лет" if draft.child_age else draft.child_name,
+            "gym": gym.title.ru or gym.id,
+            "when": draft.trial_slot_text or _PLACEHOLDER,
+        },
+    )
+
+
 def _booking_key(gym_id: str | None, slot: datetime | None, child_name: str | None, child_age: int | None) -> tuple:
     """Что делает запись той же самой: зал, минута начала по времени школы, ребёнок.
 
@@ -619,6 +632,7 @@ async def create_trial_lead(
         card = ManagerCard(
             kind=ManagerCardKind.LEAD,
             text=_card_text(ctx, draft, gym, changed=booked_before),
+            short_text=_short_card_text(ctx, draft, gym, changed=booked_before),
             conversation_id=ctx.conversation_id,
             lead_id=lead_id,
             lang=ctx.lang,

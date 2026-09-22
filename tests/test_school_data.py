@@ -74,7 +74,9 @@ def test_no_show_message_is_disabled(kb: KBSnapshot) -> None:
     events = {rule.event for rule in kb.policies.followup_policy}
 
     assert FollowupKind.NO_SHOW not in events
-    assert FollowupKind.TRIAL_REMINDER_20H in events
+    # Владелец 22.09.2026: «если записан на пятницу, в пятницу утром напомнить».
+    assert FollowupKind.TRIAL_REMINDER_MORNING in events
+    assert FollowupKind.TRIAL_REMINDER_20H not in events, "ночное «завтра» заменено утренним"
     assert FollowupKind.TRIAL_REMINDER_2H in events
 
 

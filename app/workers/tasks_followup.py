@@ -83,7 +83,12 @@ _SOFT_KINDS: Final[frozenset[FollowupKind]] = frozenset(
 
 #: Напоминания, привязанные к времени пробного занятия, а не к «сейчас».
 _TRIAL_ANCHORED: Final[frozenset[FollowupKind]] = frozenset(
-    {FollowupKind.TRIAL_REMINDER_20H, FollowupKind.TRIAL_REMINDER_2H, FollowupKind.NO_SHOW}
+    {
+        FollowupKind.TRIAL_REMINDER_20H,
+        FollowupKind.TRIAL_REMINDER_MORNING,
+        FollowupKind.TRIAL_REMINDER_2H,
+        FollowupKind.NO_SHOW,
+    }
 )
 
 #: Сколько задач за один проход подбирает сметка.
@@ -517,6 +522,9 @@ async def _build_message(
     child = getattr(lead, "child_name", None)
     if child:
         params["child"] = child
+    slot = _aware(getattr(lead, "trial_slot", None))
+    if slot is not None:
+        params["time"] = _to_zone(slot, get_settings().timezone).strftime("%H:%M")
     gym_id = getattr(lead, "gym_id", None)
     if gym_id:
         gym = kb.gym(gym_id)
@@ -612,7 +620,20 @@ def _rule_applies(
 def _run_at(
     rule: FollowupRule, *, now: datetime, trial_slot: datetime | None
 ) -> datetime | None:
-    """Когда отправлять. Отрицательный ``delay_hours`` отсчитывается от пробного занятия."""
+    """Когда отправлять.
+
+    ``at_local_time`` — утро того дня, на который записан клиент, по часам школы.
+    Отрицательный ``delay_hours`` отсчитывается от самого занятия.
+    """
+    if rule.at_local_time:
+        moment = _aware(trial_slot)
+        if moment is None:
+            return None
+        local = _to_zone(moment, get_settings().timezone)
+        hour, minute = (int(part) for part in rule.at_local_time.split(":"))
+        morning = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # Занятие раньше этого часа: «сегодня в 08:00» в 09:30 — уже после начала.
+        return morning.astimezone(timezone.utc) if morning < local else None
     if rule.delay_hours < 0:
         if trial_slot is None:
             return None

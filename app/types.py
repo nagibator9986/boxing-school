@@ -391,7 +391,10 @@ class FactSource(str, Enum):
 class FollowupKind(str, Enum):
     FU_SOFT = "fu_soft"
     FU_VALUE = "fu_value"
+    #: Устарело: осталось ради задач, запланированных до 22.09.2026.
     TRIAL_REMINDER_20H = "trial_reminder_20h"
+    #: Утро того дня, на который записан клиент.
+    TRIAL_REMINDER_MORNING = "trial_reminder_morning"
     TRIAL_REMINDER_2H = "trial_reminder_2h"
     NO_SHOW = "no_show"
 
@@ -677,6 +680,9 @@ class ManagerCard(BaseModel):
     lang: Language = Language.RU
     reason: EscalationReason | None = None
     urgency: Urgency = Urgency.NORMAL
+    #: Короткая строка для чата уведомлений: «Записался: Айназаров Али — КСК, Сб 12.09
+    #: в 19:00». ``None`` — в такой чат по этой карточке ничего не уходит.
+    short_text: str | None = None
 
 
 # --------------------------------------------------------------------------- #

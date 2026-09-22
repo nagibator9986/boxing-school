@@ -124,7 +124,7 @@ async def test_reminders_for_tomorrows_trial_are_kept(kb, sessionmaker) -> None:
 
     kinds = await _pending_kinds(sessionmaker, conv_id, kb)
 
-    assert {FollowupKind.TRIAL_REMINDER_20H.value, FollowupKind.TRIAL_REMINDER_2H.value} <= kinds, kinds
+    assert {FollowupKind.TRIAL_REMINDER_MORNING.value, FollowupKind.TRIAL_REMINDER_2H.value} <= kinds, kinds
     assert FollowupKind.NO_SHOW.value not in kinds
 
 
@@ -179,3 +179,87 @@ async def test_missing_surname_is_asked_before_time(kb, state, sessionmaker, set
     assert result.data["needs"] == ["need_surname", "need_time"]
     assert any("Спроси только это" in caveat for caveat in result.caveats)
     assert not any("session_time" in caveat for caveat in result.caveats), "подсказка о времени — следующим шагом"
+
+
+# --------------------------------------------------------------------------- #
+# Напоминание утром в день занятия (владелец 22.09.2026)
+# --------------------------------------------------------------------------- #
+async def _pending_tasks(sessionmaker, conv_id, kb) -> dict[str, datetime]:
+    async with sessionmaker() as db:
+        conv = await db.get(Conversation, conv_id)
+        await schedule_followups(
+            db,
+            conv,
+            decision=PipelineDecision(action=DecisionAction.REPLY, reason="reply", conversation_id=conv_id),
+            policy=kb.policies.followup_policy,
+        )
+        await db.commit()
+        rows = (
+            await db.execute(
+                sa.select(FollowupTask.kind, FollowupTask.run_at).where(
+                    FollowupTask.conversation_id == conv_id, FollowupTask.state == "pending"
+                )
+            )
+        ).all()
+    return {kind: run_at for kind, run_at in rows}
+
+
+def _almaty(moment: datetime) -> datetime:
+    from zoneinfo import ZoneInfo
+
+    aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+    return aware.astimezone(ZoneInfo("Asia/Almaty"))
+
+
+async def test_morning_reminder_lands_on_the_day_of_the_training(kb, sessionmaker) -> None:
+    """Записались в понедельник на пятницу — напоминание уходит утром пятницы, а не ночью."""
+    from zoneinfo import ZoneInfo
+
+    friday_evening = (datetime.now(tz=ZoneInfo("Asia/Almaty")) + timedelta(days=4)).replace(
+        hour=19, minute=0, second=0, microsecond=0
+    )
+    conv_id = await _booked_conversation(sessionmaker, "77015559010", friday_evening.astimezone(UTC))
+
+    tasks = await _pending_tasks(sessionmaker, conv_id, kb)
+
+    run_at = tasks.get(FollowupKind.TRIAL_REMINDER_MORNING.value)
+    assert run_at is not None, tasks
+    local = _almaty(run_at)
+    assert (local.date(), local.hour, local.minute) == (friday_evening.date(), 9, 30), local
+
+
+async def test_no_morning_reminder_for_an_early_class(kb, sessionmaker) -> None:
+    """Занятие в 09:00 — напоминание в 09:30 опоздало бы, его не ставим."""
+    from zoneinfo import ZoneInfo
+
+    early = (datetime.now(tz=ZoneInfo("Asia/Almaty")) + timedelta(days=2)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    )
+    conv_id = await _booked_conversation(sessionmaker, "77015559011", early.astimezone(UTC))
+
+    tasks = await _pending_tasks(sessionmaker, conv_id, kb)
+
+    assert FollowupKind.TRIAL_REMINDER_MORNING.value not in tasks, tasks
+    assert FollowupKind.TRIAL_REMINDER_2H.value in tasks, "напоминание за два часа остаётся"
+
+
+async def test_morning_reminder_text_has_time_address_and_what_to_bring(kb, sessionmaker) -> None:
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from app.workers.tasks_followup import _build_message
+
+    slot = (datetime.now(tz=ZoneInfo("Asia/Almaty")) + timedelta(days=3)).replace(
+        hour=19, minute=0, second=0, microsecond=0
+    )
+    conv_id = await _booked_conversation(sessionmaker, "77015559012", slot.astimezone(UTC))
+
+    async with sessionmaker() as db:
+        conv = await db.get(Conversation, conv_id)
+        message = await _build_message(
+            SimpleNamespace(kb=lambda: kb), db, conv, kind=FollowupKind.TRIAL_REMINDER_MORNING
+        )
+
+    assert message is not None
+    assert "19:00" in message.text and "воду" in message.text
+    assert kb.gym(GYM).title.ru in message.text, message.text

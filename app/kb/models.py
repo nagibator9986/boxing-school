@@ -844,9 +844,23 @@ class FollowupRule(_Base):
     #: Раньше поле было целым, и минимальной паузой были сутки-часы; владелец
     #: попросил дожимать через полчаса — за это время клиент ещё помнит разговор.
     delay_hours: float
+    #: «09:30» — напоминание утром того дня, на который записан клиент. Владелец
+    #: 22.09.2026: «если записан на пятницу, в пятницу утром напомнить, что сегодня
+    #: тренировка». Часами от занятия это не выражается: время занятий разное, а
+    #: «за 20 часов» до вечерней пятницы — это ночь четверга.
+    at_local_time: str | None = None
     only_work_hours: bool = True
     template_id: str
     max_times: int = Field(ge=0)
+
+    @field_validator("at_local_time")
+    @classmethod
+    def _local_time(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", value.strip()):
+            raise ValueError(f"at_local_time '{value}' обязан быть временем вида 09:30")
+        return value.strip()
 
     @field_validator("template_id")
     @classmethod
