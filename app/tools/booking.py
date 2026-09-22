@@ -632,7 +632,15 @@ async def create_trial_lead(
         card = ManagerCard(
             kind=ManagerCardKind.LEAD,
             text=_card_text(ctx, draft, gym, changed=booked_before),
-            short_text=_short_card_text(ctx, draft, gym, changed=booked_before),
+            # Строка в рабочий чат — только про готовую запись. Незавершённая заявка
+            # («нужен звонок», без возраста или времени) в группе читалась бы как
+            # «записался», хотя записывать ещё нечего: администратору она уходит
+            # полной карточкой, где видно, чего не хватает.
+            short_text=(
+                _short_card_text(ctx, draft, gym, changed=booked_before)
+                if session is not None and not missing
+                else None
+            ),
             conversation_id=ctx.conversation_id,
             lead_id=lead_id,
             lang=ctx.lang,

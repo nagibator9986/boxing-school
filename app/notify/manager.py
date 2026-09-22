@@ -31,6 +31,7 @@ from app.types import (
     OutboundMessage,
     ToolServices,
     Urgency,
+    is_group_chat,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - только аннотации, рантайм-зависимости нет
@@ -179,7 +180,7 @@ def manager_target(
 
     chat_id = raw_target
     if channel is ChannelKind.WHATSAPP:
-        from app.admin.runtime_settings import is_group_chat, whatsapp_number
+        from app.admin.runtime_settings import whatsapp_number
 
         if is_group_chat(raw_target):
             # Идентификатор группового чата Wazzup — не номер, менять его нельзя.

@@ -243,6 +243,23 @@ async def test_no_morning_reminder_for_an_early_class(kb, sessionmaker) -> None:
     assert FollowupKind.TRIAL_REMINDER_2H.value in tasks, "напоминание за два часа остаётся"
 
 
+async def test_no_second_morning_reminder_when_booked_the_same_day(kb, sessionmaker, monkeypatch) -> None:
+    """Записались днём на сегодняшний вечер: «сегодня в 19:00» дублировало бы подтверждение."""
+    from zoneinfo import ZoneInfo
+
+    import app.workers.tasks_followup as followup
+
+    today = datetime.now(tz=ZoneInfo("Asia/Almaty")).replace(hour=19, minute=0, second=0, microsecond=0)
+    noon = today.replace(hour=12)
+    monkeypatch.setattr(followup, "_now", lambda: noon.astimezone(UTC))
+    conv_id = await _booked_conversation(sessionmaker, "77015559013", today.astimezone(UTC))
+
+    tasks = await _pending_tasks(sessionmaker, conv_id, kb)
+
+    assert FollowupKind.TRIAL_REMINDER_MORNING.value not in tasks, tasks
+    assert FollowupKind.TRIAL_REMINDER_2H.value in tasks, "напоминание за два часа остаётся"
+
+
 async def test_morning_reminder_text_has_time_address_and_what_to_bring(kb, sessionmaker) -> None:
     from types import SimpleNamespace
     from zoneinfo import ZoneInfo

@@ -63,6 +63,23 @@ def test_targets_are_read_as_numbers_and_group_chats() -> None:
     assert notify_targets("+7 700 000 00 77, 7 700 000 00 77") == (ADMIN,), "повтор не нужен"
 
 
+def test_a_number_with_a_note_beside_it_stays_a_number() -> None:
+    """Владелец подписывает номера: «Zarina +7 …». Это не групповой чат."""
+    assert notify_targets("Zarina +7 700 000 00 77") == (ADMIN,)
+    assert notify_targets("Зарина: +7 700 000 00 77; Айгуль 8 700 000 00 78") == (ADMIN, ZARINA)
+
+
+def test_a_personal_jid_is_not_a_group_chat() -> None:
+    """«77000000077@c.us» — личный адрес абонента, группа — только «@g.us»."""
+    from app.types import is_group_chat
+
+    assert not is_group_chat(f"{ADMIN}@c.us")
+    assert notify_targets(f"{ADMIN}@c.us") == (ADMIN,)
+    assert is_group_chat(GROUP) and is_group_chat("120363012345678901@g.us")
+    assert not is_group_chat("77000000077-1600000000"), "без «@g.us» это не идентификатор группы"
+    assert not is_group_chat("87010000001-87010000002"), "два номера через дефис — не группа"
+
+
 async def test_booking_card_reaches_every_administrator(kb, state, sessionmaker, settings) -> None:
     runtime = RuntimeSettings.from_values({"lead_notify_target": "+7 700 000 00 77, +7 700 000 00 78"})
     deps = await _deps(kb, state, sessionmaker, settings, _booking_llm(), runtime)
@@ -72,6 +89,27 @@ async def test_booking_card_reaches_every_administrator(kb, state, sessionmaker,
     sent = await _sent(sessionmaker)
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), sent
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ZARINA, [])), sent
+
+
+async def test_a_question_for_a_human_also_reaches_every_administrator(
+    kb, state, sessionmaker, settings
+) -> None:
+    """«Нужен живой ответ» — тоже карточка из этой настройки, и ждать её должен не один."""
+    runtime = RuntimeSettings.from_values({"lead_notify_target": "+7 700 000 00 77, +7 700 000 00 78"})
+    llm = FakeLLMClient([
+        FakeTurn.tool(FakeCall("escalate_to_manager", {
+            "reason": "complaint", "question_summary": "Тренер накричал на ребёнка",
+        })),
+        FakeTurn.answer("Передал администратору"),
+    ])
+    deps = await _deps(kb, state, sessionmaker, settings, llm, runtime)
+
+    await process_inbound(deps, webhook_payload("ln-6", "Тренер накричал на ребёнка", chat_id="77015559204"))
+
+    sent = await _sent(sessionmaker)
+    assert "НУЖЕН ЖИВОЙ ОТВЕТ" in "".join(sent.get(ADMIN, [])), sent
+    assert "НУЖЕН ЖИВОЙ ОТВЕТ" in "".join(sent.get(ZARINA, [])), sent
+    assert GROUP not in sent, "короткая строка — только про записи"
 
 
 async def test_work_chat_gets_one_line_without_the_clients_phone(kb, state, sessionmaker, settings) -> None:
@@ -89,6 +127,33 @@ async def test_work_chat_gets_one_line_without_the_clients_phone(kb, state, sess
     assert "Центр — у магазина «Рахат»" in short and "19:00" in short
     assert chat not in short and "Телефон" not in short, "телефон клиента в общий чат не уходит"
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), "карточка администратору остаётся полной"
+
+
+async def test_a_booking_without_a_time_is_not_announced_as_booked(kb, state, sessionmaker, settings) -> None:
+    """Райцентр без расписания: время подбирает администратор, значит и «записался» рано.
+
+    Администратор карточку получает — иначе заявка потеряется; в общий чат уходит
+    только то, у чего есть зал и время.
+    """
+    runtime = RuntimeSettings.from_values(
+        {"lead_notify_target": "+7 700 000 00 77", "lead_notify_chat": GROUP}
+    )
+    llm = FakeLLMClient([
+        FakeTurn.tool(FakeCall("create_trial_lead", {
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": "region_karabalyk",
+            "parent_agreed": True,
+        })),
+        FakeTurn.answer("Записал, администратор подберёт время"),
+    ])
+    deps = await _deps(kb, state, sessionmaker, settings, llm, runtime)
+
+    await process_inbound(
+        deps, webhook_payload("ln-5", "Айназаров Али, 8 лет, Карабалык, запишите", chat_id="77015559203")
+    )
+
+    sent = await _sent(sessionmaker)
+    assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), sent
+    assert GROUP not in sent, sent
 
 
 async def test_bot_stays_silent_in_the_work_chats(kb, state, sessionmaker, settings) -> None:
@@ -111,6 +176,29 @@ def test_a_client_is_not_silenced_by_the_group_chat_id() -> None:
     assert not ignore_list.is_ignored(silent, chat_id="71600000000", phone=None), (
         "у клиента совпали последние десять цифр с отметкой времени группы — это не группа"
     )
+
+
+async def test_a_group_message_never_reaches_the_bot(kb, state, sessionmaker, settings) -> None:
+    """Групповые сообщения Wazzup шлёт с chatType «whatsgroup» — такие бот не разбирает."""
+    runtime = RuntimeSettings.from_values({"lead_notify_chat": GROUP})
+    deps = await _deps(kb, state, sessionmaker, settings, FakeLLMClient([]), runtime)
+
+    decisions = await process_inbound(
+        deps, webhook_payload("ln-4", "принял", chat_id=GROUP, chat_type="whatsgroup")
+    )
+
+    assert decisions == [], "сообщение из группы не должно доходить до пайплайна"
+
+
+def test_a_personal_jid_is_sent_as_a_usual_chat() -> None:
+    from app.channels.outbound import build_send_request
+
+    personal = OutboundMessage(
+        conversation_id=None, channel_id="wa", channel=ChannelKind.WHATSAPP, chat_id=f"{ADMIN}@c.us",
+        lang=Language.RU, kind=OutboundKind.MANAGER_CARD, text="ЗАПИСАЛСЯ: Айназаров Али",
+    )
+
+    assert build_send_request(personal).chatType == "whatsapp"
 
 
 def test_group_chat_is_sent_with_its_own_chat_type() -> None:

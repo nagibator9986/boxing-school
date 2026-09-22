@@ -23,12 +23,13 @@ from typing import Final
 from app.channels.wazzup_schemas import SendMessageRequest
 from app.config import get_settings
 from app.types import (
-    CHANNEL_LIMITS,
-    MAX_MESSAGE_CHARS,
     ArtifactKind,
+    CHANNEL_LIMITS,
     ChannelKind,
+    MAX_MESSAGE_CHARS,
     OutboundKind,
     OutboundMessage,
+    is_group_chat,
 )
 
 # --------------------------------------------------------------------------- #
@@ -651,9 +652,10 @@ def build_send_request(msg: OutboundMessage) -> SendMessageRequest:
         if len(text) > caps.max_text_chars:
             # Последний рубеж: пайплайн обязан был порезать раньше через split_text.
             text = _hard_cut(text, caps.max_text_chars)
-    # Групповой чат WhatsApp: идентификатор группы не номер, и Wazzup ждёт свой chatType.
+    # Групповой чат WhatsApp: идентификатор группы не номер, и Wazzup ждёт свой
+    # chatType. Личный JID абонента («77012345678@c.us») группой не считается.
     chat_type = msg.channel.value
-    if msg.channel is ChannelKind.WHATSAPP and not msg.chat_id.isdigit():
+    if msg.channel is ChannelKind.WHATSAPP and is_group_chat(msg.chat_id):
         chat_type = "whatsgroup"
     return SendMessageRequest(
         channelId=msg.channel_id,

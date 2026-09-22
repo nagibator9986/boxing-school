@@ -30,6 +30,7 @@ from typing import Callable, TYPE_CHECKING, Final
 
 from app.admin.admin_store import SETTING_SPECS, AdminStore
 from app.logging_conf import get_logger
+from app.types import is_group_chat
 
 if TYPE_CHECKING:  # pragma: no cover - только для аннотаций
     from app.config import Settings
@@ -37,7 +38,6 @@ if TYPE_CHECKING:  # pragma: no cover - только для аннотаций
 __all__ = [
     "RuntimeSettings",
     "cached_runtime_settings",
-    "is_group_chat",
     "load_runtime_settings",
     "notify_targets",
     "whatsapp_number",
@@ -64,11 +64,6 @@ def whatsapp_number(raw: str | None) -> str:
         if len(digits) == 11 and digits[0] in "78":
             return "7" + digits[1:]
     return ""
-
-
-def is_group_chat(value: str | None) -> bool:
-    """Групповой чат, а не номер: в идентификаторе группы есть буквы или ``@``."""
-    return bool(re.search(r"[A-Za-z@]", value or ""))
 
 
 def notify_targets(raw: str | None) -> tuple[str, ...]:

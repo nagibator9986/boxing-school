@@ -473,7 +473,10 @@ class _Services:
         lead_card = card.kind is ManagerCardKind.LEAD
         # Владелец 22.09.2026: заявки идут администратору и в рабочую группу. Карточку
         # получает каждый адресат из настройки, а в чат уведомлений уходит одна строка.
-        targets = notify_targets(runtime.lead_notify_target) if (lead_card and runtime) else ()
+        # Вопросы, на которые нужен человек, тоже уходят всем: настройка описана как
+        # «карточки готовых записей и вопросов», и ждать ответа от одного из двух
+        # администраторов, когда родитель уже спросил, — потерянный клиент.
+        targets = notify_targets(runtime.lead_notify_target) if runtime is not None else ()
         sent = False
         for target in targets or (None,):
             message = build_manager_message(card, settings=owner, to=target)

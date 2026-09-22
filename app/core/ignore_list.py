@@ -17,13 +17,9 @@ from __future__ import annotations
 import re
 from typing import Final, Iterable
 
-__all__ = ["is_ignored", "parse", "tail"]
+from app.types import is_group_chat
 
-#: Идентификатор чата, а не номер: в групповых чатах Wazzup есть буквы и ``@``
-#: («77010000000-1600000000@g.us»). Такую запись нельзя сравнивать по десяти
-#: последним цифрам: это отметка времени создания группы, и она может совпасть
-#: с номером живого клиента. Поэтому чат сравнивается целиком.
-_CHAT_ID: Final[re.Pattern[str]] = re.compile(r"[A-Za-z@]")
+__all__ = ["is_ignored", "parse", "tail"]
 
 #: Сколько последних цифр сравнивается.
 _TAIL: Final[int] = 10
@@ -55,7 +51,10 @@ def parse(raw: str | None) -> frozenset[str]:
     """
     numbers: set[str] = set()
     for chunk in re.split(r"[,;\n\r]+", (raw or "").strip()):
-        if _CHAT_ID.search(chunk):
+        if is_group_chat(chunk):
+            # Групповой чат сравнивается целиком: в конце его идентификатора стоит
+            # отметка времени создания группы, и эти десять цифр могут совпасть
+            # с номером живого клиента — тогда бот замолчал бы с родителем.
             numbers.add(chunk.strip().casefold())
             continue
         pieces = [chunk]
