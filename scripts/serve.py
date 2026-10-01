@@ -10,7 +10,8 @@
 Второе решение здесь — **база знаний живёт на диске, а не в образе**. Иначе
 любой передеплой возвращал бы файлы из репозитория и стирал всё, что владелец
 наменял через CRM за неделю. При первом запуске файлы копируются из образа на
-диск; дальше образ их не трогает и дописывает только те, которых на диске нет.
+диск. Дальше новая версия файла из репозитория приезжает, только если владелец
+этот файл не правил: см. :func:`seed_from_image`.
 
 Запуск::
 
@@ -26,12 +27,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +44,11 @@ if str(ROOT) not in sys.path:
 
 #: Каталоги, которые обязаны пережить передеплой: их правит владелец школы.
 SEEDED: tuple[str, ...] = ("kb", "media")
+
+#: Какую версию каждого файла положил на диск сам запуск — отпечаток SHA-256.
+#: Лежит в корне каталога данных, а не в ``kb/``: там его подхватил бы отпечаток
+#: базы знаний.
+SEED_STATE: str = ".seed-state.json"
 
 #: Сколько ждать завершения дочернего процесса после SIGTERM.
 STOP_TIMEOUT_S: float = 15.0
@@ -167,32 +176,162 @@ def warn_if_not_a_volume(data_dir: Path) -> bool:
     return False
 
 
-def seed_from_image(data_dir: Path) -> dict[str, int]:
-    """Копирует базу знаний и медиа из образа на диск. Существующее не трогает.
+def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int]:
+    """Переносит базу знаний и медиа из образа на диск, не трогая правок владельца.
 
-    Правило одно: **файл с диска всегда важнее файла из образа**. На диске лежит
-    то, что владелец правил через CRM; в образе — то, что было в репозитории на
-    момент сборки. Перезапись означала бы молчаливый откат его работы.
+    Возвращает, сколько файлов в каждом каталоге появилось или обновилось.
+
+    Правило: **файл, который владелец правил, важнее файла из образа**. На диске
+    лежит то, что он менял через CRM; перезапись молча отменила бы его работу. Но и
+    правки из репозитория — новые районы, тексты владельца — обязаны доезжать до
+    сервера: раньше на подключённом томе они не появлялись никогда.
+
+    Поэтому для каждого файла запоминается отпечаток версии, которую положил сам
+    запуск (:data:`SEED_STATE`):
+
+    * отпечаток совпадает с диском — файл никто не правил, и новая версия из
+      репозитория его заменяет (база знаний перед этим уходит в резервную копию,
+      которую видно и можно вернуть в CRM);
+    * не совпадает — правка владельца остаётся, а в журнал уходит, что в
+      репозитории есть новее;
+    * истории нет (том подключён до этого правила) — файл, равный образу, берётся
+      под учёт; отличающийся не трогается: чья это правка, уже не узнать.
+
+    Новая версия, с которой база перестала проходить проверку, откатывается: файл
+    из репозитория мог не сойтись с правками владельца в соседнем файле, а бот с
+    непрочитанной базой не отвечает никому.
     """
-    copied: dict[str, int] = {}
+    state = _read_seed_state(data_dir)
+    copies: list[tuple[str, Path, Path, str]] = []
+    updates: list[tuple[str, Path, Path, str]] = []
     for name in SEEDED:
-        source = ROOT / name
-        target = data_dir / name
-        target.mkdir(parents=True, exist_ok=True)
-        count = 0
-        if not source.is_dir():
-            copied[name] = 0
+        source_dir = image_root / name
+        target_dir = data_dir / name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        known = state.setdefault(name, {})
+        if not source_dir.is_dir():
             continue
-        for item in sorted(source.iterdir()):
+        for item in sorted(source_dir.iterdir()):
             if not item.is_file() or item.name.startswith("."):
                 continue
-            destination = target / item.name
-            if destination.exists():
+            destination = target_dir / item.name
+            image_hash = _sha256(item)
+            if not destination.exists():
+                copies.append((name, item, destination, image_hash))
                 continue
-            shutil.copy2(item, destination)
-            count += 1
-        copied[name] = count
-    return copied
+            disk_hash = _sha256(destination)
+            seeded = known.get(item.name)
+            if disk_hash == image_hash:
+                known[item.name] = image_hash
+            elif seeded is None:
+                _log(
+                    f"{name}/{item.name}: отличается от версии в репозитории, а правил ли его "
+                    "владелец — неизвестно. Оставлен как есть."
+                )
+            elif disk_hash != seeded:
+                _log(
+                    f"{name}/{item.name}: в репозитории новая версия, но файл правили в CRM — "
+                    "оставлена правка владельца."
+                )
+            else:
+                updates.append((name, item, destination, image_hash))
+
+    kb_dir, media_dir = data_dir / "kb", data_dir / "media"
+    kb_updates = [row for row in updates if row[0] == "kb"]
+    valid_before = bool(kb_updates) and _kb_loads(kb_dir, media_dir)
+    backup = _backup_kb(kb_dir) if kb_updates else None
+
+    report = {name: 0 for name in SEEDED}
+    for name, item, destination, image_hash in copies + updates:
+        _replace(item, destination)
+        state[name][item.name] = image_hash
+        report[name] += 1
+    for name, item, _, _ in updates:
+        _log(f"{name}/{item.name}: обновлён из репозитория")
+
+    if valid_before and not _kb_loads(kb_dir, media_dir) and backup is not None:
+        for name, item, destination, _ in kb_updates:
+            shutil.copy2(backup / item.name, destination)
+            state[name][item.name] = _sha256(destination)
+            report[name] -= 1
+        _log("=" * 72)
+        _log("ВНИМАНИЕ: новая версия базы знаний из репозитория не сошлась с правками")
+        _log("владельца в других файлах — возвращена прежняя: "
+             + ", ".join(item.name for _, item, _, _ in kb_updates))
+        _log("=" * 72)
+
+    _write_seed_state(data_dir, state)
+    return report
+
+
+def _sha256(path: Path) -> str:
+    """Отпечаток содержимого файла. Видео читаются кусками, а не целиком."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_seed_state(data_dir: Path) -> dict[str, dict[str, str]]:
+    """Отпечатки разложенных версий. Испорченный файл — то же, что истории нет."""
+    try:
+        raw = json.loads((data_dir / SEED_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(name): {str(key): str(value) for key, value in files.items()}
+        for name, files in raw.items()
+        if isinstance(files, dict)
+    }
+
+
+def _write_seed_state(data_dir: Path, state: dict[str, dict[str, str]]) -> None:
+    """Записывает отпечатки атомарно: оборванная запись не должна стереть историю."""
+    target = data_dir / SEED_STATE
+    temporary = target.with_name(target.name + ".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, target)
+
+
+def _replace(source: Path, destination: Path) -> None:
+    """Кладёт файл из образа на место прежнего одним шагом — без полузаписанного файла."""
+    temporary = destination.with_name(f".{destination.name}.seed-tmp")
+    shutil.copy2(source, temporary)
+    os.replace(temporary, destination)
+
+
+def _backup_kb(kb_dir: Path) -> Path:
+    """Копия базы знаний перед обновлением — в том же виде, что делает CRM.
+
+    Каталог ``.backups/<время UTC>-repo`` CRM показывает в «Резервных копиях» и
+    умеет из него восстановить базу, если новая версия из репозитория не нужна.
+    """
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = kb_dir / ".backups" / f"{stamp}-repo"
+    suffix = 1
+    while target.exists():
+        suffix += 1
+        target = kb_dir / ".backups" / f"{stamp}-repo{suffix}"
+    target.mkdir(parents=True)
+    for item in sorted(kb_dir.glob("*.yaml")):
+        shutil.copy2(item, target / item.name)
+    return target
+
+
+def _kb_loads(kb_dir: Path, media_dir: Path) -> bool:
+    """Читается ли база знаний на диске целиком, со всеми перекрёстными проверками."""
+    try:
+        from app.kb import loader as kb_loader
+
+        kb_loader.load_sync(
+            kb_dir, media_dir=media_dir, schema_version=int(os.environ.get("KB_SCHEMA_VERSION", "1"))
+        )
+    except Exception:  # noqa: BLE001 - причину покажет check_kb после запуска
+        return False
+    return True
 
 
 def sqlite_file_of(url: str) -> Path | None:
@@ -445,7 +584,7 @@ def main() -> int:
 
     copied = seed_from_image(data_dir)
     for name, count in copied.items():
-        _log(f"{name}: скопировано из образа файлов — {count} (существующие не тронуты)")
+        _log(f"{name}: из образа новых и обновлённых файлов — {count} (правки владельца не тронуты)")
 
     env = prepare_env(data_dir)
     ensure_schema(env)

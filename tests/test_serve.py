@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -216,3 +217,133 @@ def test_no_warning_outside_railway(
     monkeypatch.delenv("RAILWAY_PUBLIC_DOMAIN", raising=False)
     serve.warn_if_not_a_volume(tmp_path)
     assert "ВНИМАНИЕ" not in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# Новые версии базы из репозитория на подключённом томе
+# --------------------------------------------------------------------------- #
+def _image(tmp_path: Path, files: dict[str, str]) -> Path:
+    """Образ с указанными файлами ``kb/…`` и ``media/…``."""
+    root = tmp_path / "image"
+    for relative, body in files.items():
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    return root
+
+
+def test_untouched_file_takes_the_new_release(tmp_path: Path) -> None:
+    """Владелец 01.10.2026 подключил том — и правки из репозитория перестали доезжать.
+
+    Файл, который никто не правил, обязан обновиться, а прежняя база — лечь в
+    резервную копию, которую видно в CRM.
+    """
+    data = tmp_path / "data"
+    image = _image(tmp_path, {"kb/faq.yaml": "v1\n", "media/route.mp4": "видео 1"})
+    serve.seed_from_image(data, image_root=image)
+
+    _image(tmp_path, {"kb/faq.yaml": "v2\n", "media/route.mp4": "видео 2"})
+    report = serve.seed_from_image(data, image_root=image)
+
+    assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8") == "v2\n"
+    assert (data / "media" / "route.mp4").read_text(encoding="utf-8") == "видео 2"
+    assert report == {"kb": 1, "media": 1}
+    backups = list((data / "kb" / ".backups").glob("*-repo/faq.yaml"))
+    assert [b.read_text(encoding="utf-8") for b in backups] == ["v1\n"], "прежняя версия — в копии"
+
+
+def test_owner_edit_survives_a_new_release(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    data = tmp_path / "data"
+    image = _image(tmp_path, {"kb/pricing.yaml": "v1\n"})
+    serve.seed_from_image(data, image_root=image)
+    (data / "kb" / "pricing.yaml").write_text("# правка владельца\n", encoding="utf-8")
+
+    _image(tmp_path, {"kb/pricing.yaml": "v2\n"})
+    serve.seed_from_image(data, image_root=image)
+
+    assert (data / "kb" / "pricing.yaml").read_text(encoding="utf-8") == "# правка владельца\n"
+    assert "правили в CRM" in capsys.readouterr().out, "о новой версии в репозитории — в журнал"
+
+
+def test_file_without_history_is_taken_under_watch_only_when_it_matches(tmp_path: Path) -> None:
+    """Том подключили до этого правила: чья версия на диске — неизвестно."""
+    data = tmp_path / "data"
+    image = _image(tmp_path, {"kb/gyms.yaml": "v1\n", "kb/faq.yaml": "v1\n"})
+    (data / "kb").mkdir(parents=True)
+    (data / "kb" / "gyms.yaml").write_text("v1\n", encoding="utf-8")   # совпадает с образом
+    (data / "kb" / "faq.yaml").write_text("старое\n", encoding="utf-8")  # не совпадает
+    serve.seed_from_image(data, image_root=image)
+
+    _image(tmp_path, {"kb/gyms.yaml": "v2\n", "kb/faq.yaml": "v2\n"})
+    serve.seed_from_image(data, image_root=image)
+
+    assert (data / "kb" / "gyms.yaml").read_text(encoding="utf-8") == "v2\n"
+    assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8") == "старое\n"
+
+
+def test_broken_seed_state_means_no_history(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    image = _image(tmp_path, {"kb/faq.yaml": "v1\n"})
+    serve.seed_from_image(data, image_root=image)
+    (data / serve.SEED_STATE).write_text("{оборвано", encoding="utf-8")
+    (data / "kb" / "faq.yaml").write_text("# правка владельца\n", encoding="utf-8")
+
+    _image(tmp_path, {"kb/faq.yaml": "v2\n"})
+    serve.seed_from_image(data, image_root=image)
+
+    assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8") == "# правка владельца\n"
+
+
+def test_owner_files_outside_the_image_are_left_alone(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    image = _image(tmp_path, {"media/route.mp4": "видео"})
+    (data / "media").mkdir(parents=True)
+    (data / "media" / "своё.jpg").write_text("фото владельца", encoding="utf-8")
+
+    serve.seed_from_image(data, image_root=image)
+
+    assert (data / "media" / "своё.jpg").read_text(encoding="utf-8") == "фото владельца"
+
+
+def test_release_that_breaks_the_base_is_rolled_back(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Файл из репозитория не сошёлся с правками владельца — бот не должен остаться без базы."""
+    data = tmp_path / "data"
+    image = tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    serve.seed_from_image(data, image_root=image)
+    good = (data / "kb" / "gyms.yaml").read_text(encoding="utf-8")
+
+    (image / "kb" / "gyms.yaml").write_text("gyms: [\n", encoding="utf-8")
+    report = serve.seed_from_image(data, image_root=image)
+
+    assert (data / "kb" / "gyms.yaml").read_text(encoding="utf-8") == good
+    assert report["kb"] == 0
+    assert serve._kb_loads(data / "kb", data / "media"), "база осталась рабочей"
+    assert "возвращена прежняя" in capsys.readouterr().out
+
+    (image / "kb" / "gyms.yaml").write_text(good + "# исправленный выпуск\n", encoding="utf-8")
+    serve.seed_from_image(data, image_root=image)
+    assert (data / "kb" / "gyms.yaml").read_text(encoding="utf-8").endswith("# исправленный выпуск\n")
+
+
+def test_backup_before_a_release_can_be_restored_from_crm(tmp_path: Path) -> None:
+    """Копия «…-repo» — обычная копия CRM: её видно в списке, и из неё база возвращается."""
+    from crm.kbio import KBEditor
+
+    data = tmp_path / "data"
+    image = tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    serve.seed_from_image(data, image_root=image)
+    before = (data / "kb" / "faq.yaml").read_text(encoding="utf-8")
+
+    (image / "kb" / "faq.yaml").write_text(before + "# новый выпуск\n", encoding="utf-8")
+    serve.seed_from_image(data, image_root=image)
+    assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8").endswith("# новый выпуск\n")
+
+    editor = KBEditor(data / "kb", media_dir=data / "media", schema_version=1)
+    stamps = [backup.stamp for backup in editor.backups()]
+    assert any(stamp.endswith("-repo") for stamp in stamps), stamps
+    editor.restore(next(stamp for stamp in stamps if stamp.endswith("-repo")))
+    assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8") == before
