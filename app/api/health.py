@@ -26,6 +26,7 @@ from app.deps import get_settings_dep, metrics_module, runtime_or_none
 from app.kb import loader as kb_loader
 from app.logging_conf import get_logger
 from app.storage import db as storage_db
+from app.types import ChannelKind
 
 router = APIRouter(tags=["health"])
 
@@ -173,20 +174,27 @@ async def _check_channels(settings: Settings) -> bool:
     if runtime is None:
         return False
 
-    wanted = {
-        channel_id
-        for channel_id in (
-            settings.wazzup_channel_id_whatsapp,
-            settings.wazzup_channel_id_instagram,
-        )
-        if channel_id
-    }
     try:
         rows = await asyncio.wait_for(runtime.wazzup.get_channels(), timeout=CHECK_TIMEOUT_S)
     except Exception as exc:
         log.warning("readyz_channels_failed", error=type(exc).__name__)
         _channels_cache = (now, False)
         return False
+
+    # Канал из настроек сверяется с кабинетом так же, как для карточек: ID с опечаткой
+    # или номер телефона вместо ID не делает службу «неготовой», если канал школы
+    # однозначно находится и работает.
+    from app.notify.manager import resolve_channel_id
+
+    wanted = {
+        resolve_channel_id(configured, kind, rows)[0]
+        for kind, configured in (
+            (ChannelKind.WHATSAPP, settings.wazzup_channel_id_whatsapp),
+            (ChannelKind.INSTAGRAM, settings.wazzup_channel_id_instagram),
+        )
+        if (configured or "").strip()
+    }
+    wanted.discard("")
 
     if wanted:
         value = any(row.is_active for row in rows if row.channel_id in wanted)

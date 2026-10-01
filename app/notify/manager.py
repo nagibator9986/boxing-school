@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Sequence
 from uuid import UUID
 
 from app.config import Settings, get_settings
@@ -22,6 +23,7 @@ from app.logging_conf import get_logger
 from app.notify.templates import render_alert, render_escalation_card, render_lead_card
 from app.types import (
     ChannelKind,
+    ChannelState,
     EscalationReason,
     Language,
     LeadDraft,
@@ -174,7 +176,8 @@ def manager_target(
         return None
 
     channel = cfg.manager_notify_channel
-    channel_id = (cfg.manager_notify_channel_id or "").strip() or _default_channel_id(cfg, channel)
+    configured = (cfg.manager_notify_channel_id or "").strip() or _default_channel_id(cfg, channel)
+    channel_id, _ = resolve_channel_id(configured, channel)
     if not channel_id:
         return None
 
@@ -252,6 +255,66 @@ def build_escalation_card(
         reason=reason,
         urgency=urgency,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Канал кабинета Wazzup
+# --------------------------------------------------------------------------- #
+#: Каналы кабинета Wazzup, которые последним видел воркер (``GET /v3/channels``).
+#: По ним проверяется канал из настроек. 01.10.2026 ID в переменных Railway не
+#: совпал ни с одним из трёх каналов кабинета: клиентам бот отвечал (канал берётся
+#: из входящего сообщения), а карточки администратору ушли бы в никуда.
+_ACCOUNT_CHANNELS: tuple[ChannelState, ...] = ()
+
+#: Какими транспортами Wazzup работает канал: WhatsApp бывает и через WABA.
+_TRANSPORTS: Final[dict[ChannelKind, frozenset[str]]] = {
+    ChannelKind.WHATSAPP: frozenset({"whatsapp", "wapi"}),
+    ChannelKind.INSTAGRAM: frozenset({"instagram"}),
+    ChannelKind.TELEGRAM: frozenset({"telegram", "tgapi"}),
+}
+
+#: Номер телефона вместо ID канала: в переменную вписали номер WhatsApp школы.
+_PHONE_RE: Final[re.Pattern[str]] = re.compile(r"^\+?[\d\s()\-]{10,}$")
+
+
+def remember_account_channels(channels: Sequence[ChannelState]) -> None:
+    """Запоминает каналы кабинета: их видит воркер раз в 15 минут и при запуске."""
+    global _ACCOUNT_CHANNELS
+    _ACCOUNT_CHANNELS = tuple(channels)
+
+
+def resolve_channel_id(
+    configured: str | None,
+    channel: ChannelKind,
+    account: Sequence[ChannelState] | None = None,
+) -> tuple[str, str]:
+    """Канал, через который сообщение уйдёт на самом деле, и как он найден.
+
+    * ``configured`` — канал из настроек есть в кабинете;
+    * ``unchecked`` — каналы кабинета ещё не получены, верим настройке;
+    * ``by_phone`` — в настройку вписали номер WhatsApp школы, а не ID канала;
+    * ``only_active`` — настройка не подошла, но рабочий канал этого транспорта
+      в кабинете один, и выбирать не из чего;
+    * ``missing`` — подходящего канала нет или их несколько: остаётся настройка,
+      и в журнал уходит предупреждение со списком каналов кабинета.
+    """
+    rows = tuple(_ACCOUNT_CHANNELS if account is None else account)
+    value = (configured or "").strip()
+    if not rows:
+        return value, "unchecked"
+    by_id = {row.channel_id.strip().lower(): row.channel_id for row in rows}
+    if value and value.lower() in by_id:
+        return by_id[value.lower()], "configured"
+    same_kind = [row for row in rows if row.transport in _TRANSPORTS.get(channel, frozenset())]
+    if _PHONE_RE.match(value):
+        tail = re.sub(r"\D", "", value)[-10:]
+        by_phone = [row for row in same_kind if re.sub(r"\D", "", row.plain_id or "")[-10:] == tail]
+        if len(by_phone) == 1:
+            return by_phone[0].channel_id, "by_phone"
+    active = [row for row in same_kind if row.is_active]
+    if len(active) == 1:
+        return active[0].channel_id, "only_active"
+    return value, "missing"
 
 
 # --------------------------------------------------------------------------- #

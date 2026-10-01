@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Final
+from typing import Any, Final, Sequence
 from uuid import UUID
 
 from app.channels.errors import ErrorDisposition, disposition, normalize_code
@@ -35,6 +35,7 @@ from app.channels.outbound import build_send_request, check_send_allowed, next_b
 from app.logging_conf import bind_correlation, clear_correlation, get_logger
 from app.observability import metrics
 from app.types import (
+    ChannelKind,
     LeadStatus,
     OutboundKind,
     OutboundMessage,
@@ -228,6 +229,47 @@ async def outbox_sweep_cron(ctx: dict[str, Any]) -> None:
         log.info("outbox_sweep_done", processed=processed)
 
 
+#: О каком несовпадении канала уже написано в журнал — раз на процесс, а не раз в 15 минут.
+_REPORTED_CHANNELS: set[tuple[str, str, str]] = set()
+
+
+def _school_channels(settings: Any, channels: Sequence[Any]) -> set[str]:
+    """Каналы школы из настроек — такими, какими их видит кабинет Wazzup.
+
+    Запоминает каналы кабинета для карточек администратору и громко пишет в
+    журнал, если ID из переменной не нашёлся: с правильным ID переменную можно
+    исправить, не залезая в API.
+    """
+    from app.notify.manager import remember_account_channels, resolve_channel_id
+
+    remember_account_channels(channels)
+    wanted: set[str] = set()
+    for variable, kind, configured in (
+        ("WAZZUP_CHANNEL_ID_WHATSAPP", ChannelKind.WHATSAPP, settings.wazzup_channel_id_whatsapp),
+        ("WAZZUP_CHANNEL_ID_INSTAGRAM", ChannelKind.INSTAGRAM, settings.wazzup_channel_id_instagram),
+    ):
+        if not (configured or "").strip():
+            continue
+        resolved, how = resolve_channel_id(configured, kind, channels)
+        if resolved:
+            wanted.add(resolved)
+        report = (variable, str(configured), how)
+        if how != "configured" and report not in _REPORTED_CHANNELS:
+            _REPORTED_CHANNELS.add(report)
+            log.warning(
+                "wazzup_channel_id_mismatch",
+                variable=variable,
+                configured=str(configured),
+                using=resolved if how != "missing" else None,
+                how=how,
+                account_channels=[
+                    f"{row.transport} {row.plain_id or '—'} {row.channel_id} ({row.state})"
+                    for row in channels
+                ],
+            )
+    return wanted
+
+
 async def refresh_channels_cron(ctx: dict[str, Any]) -> None:
     """``GET /v3/channels`` раз в 15 минут: жив ли канал.
 
@@ -243,11 +285,7 @@ async def refresh_channels_cron(ctx: dict[str, Any]) -> None:
         log.warning("channels_refresh_failed", error=type(exc).__name__)
         return
 
-    wanted = {
-        cid
-        for cid in (settings.wazzup_channel_id_whatsapp, settings.wazzup_channel_id_instagram)
-        if cid
-    }
+    wanted = _school_channels(settings, channels)
     broken: list[str] = []
     for channel in channels:
         metrics.observe_channel_state(channel.channel_id, channel.transport, channel.is_active)
