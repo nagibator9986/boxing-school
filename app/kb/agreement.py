@@ -221,9 +221,11 @@ def numbered_choices(text: str, footer: str) -> str:
     цифру…»): маркированный рассказ о зале с вопросом «Записать?» — не выбор.
     ``footer`` — просьба с местом под номера: «Напишите только цифру: {numbers}».
     """
-    if not _CHOICE_REQUEST_RE.search(text or ""):
-        return text
     lines = (text or "").splitlines()
+    # Просьба выбрать — вне самих строк списка: «1. Выберите зал 2. Напишите время» —
+    # это шаги инструкции, а не варианты, и цифру в ответ на них не ждут.
+    if not any(_CHOICE_REQUEST_RE.search(line) for line in lines if not is_option_line(line)):
+        return text
     numbered = [index for index, line in enumerate(lines) if _NUMBERED_OPTION_RE.match(line)]
     bullets = [index for index, line in enumerate(lines) if _BULLET_OPTION_RE.match(line)]
     rows = bullets if len(bullets) >= 2 else numbered

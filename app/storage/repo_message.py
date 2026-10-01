@@ -289,6 +289,41 @@ async def sent_texts(session: AsyncSession, conv_id: UUID, *, limit: int = 20) -
     return [str((row or {}).get("text") or "") for row in rows]
 
 
+async def last_artifact_with_prefix(
+    session: AsyncSession, conv_id: UUID, prefixes: tuple[str, ...]
+) -> str | None:
+    """Последний артефакт диалога с одним из префиксов — его ``artifact_id`` целиком."""
+    if not prefixes:
+        return None
+    stmt = (
+        sa.select(OutboxMessage.payload["artifact_id"].as_string())
+        .where(
+            OutboxMessage.conversation_id == conv_id,
+            OutboxMessage.state.in_(("pending", "sending", "sent")),
+            sa.or_(*(OutboxMessage.payload["artifact_id"].as_string().like(f"{prefix}%") for prefix in prefixes)),
+        )
+        .order_by(OutboxMessage.created_at.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def any_artifact_sent(session: AsyncSession, conv_id: UUID, prefixes: tuple[str, ...]) -> bool:
+    """Уходил ли в этот диалог артефакт с одним из префиксов: ``schedule_``, ``route_``…"""
+    if not prefixes:
+        return False
+    stmt = (
+        sa.select(sa.func.count())
+        .select_from(OutboxMessage)
+        .where(
+            OutboxMessage.conversation_id == conv_id,
+            OutboxMessage.state.in_(("pending", "sending", "sent")),
+            sa.or_(*(OutboxMessage.payload["artifact_id"].as_string().like(f"{prefix}%") for prefix in prefixes)),
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one() or 0) > 0
+
+
 async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id: str) -> int:
     """Сколько раз артефакт уже уходил в этом диалоге.
 

@@ -347,3 +347,39 @@ def test_backup_before_a_release_can_be_restored_from_crm(tmp_path: Path) -> Non
     assert any(stamp.endswith("-repo") for stamp in stamps), stamps
     editor.restore(next(stamp for stamp in stamps if stamp.endswith("-repo")))
     assert (data / "kb" / "faq.yaml").read_text(encoding="utf-8") == before
+
+
+def test_owner_edited_texts_receive_new_keys_from_a_release(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Владелец правил «Тексты» в CRM, а выпуск принёс новый текст, который требует код.
+
+    Без дописывания база не загрузилась бы («отсутствует обязательный ключ»), и бот
+    перестал бы отвечать. Правка владельца при этом обязана остаться.
+    """
+    data = tmp_path / "data"
+    image = tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    i18n = image / "kb" / "i18n.yaml"
+    original = i18n.read_text(encoding="utf-8")
+    # Прошлый выпуск — без ключа card.head_gym, который нужен коду этого выпуска.
+    start = original.index("  card.head_gym:")
+    end = original.index("\n  ", original.index("    kk:", start)) + 1
+    i18n.write_text(original[:start] + original[end:], encoding="utf-8")
+    serve.seed_from_image(data, image_root=image)
+    owner = data / "kb" / "i18n.yaml"
+    owner.write_text(
+        owner.read_text(encoding="utf-8").replace("Работаю для вас 24/7", "Работаю круглосуточно"),
+        encoding="utf-8",
+    )
+
+    i18n.write_text(original, encoding="utf-8")   # новый выпуск с card.head_gym
+    serve.seed_from_image(data, image_root=image)
+
+    merged = owner.read_text(encoding="utf-8")
+    assert "card.head_gym" in merged, "новый текст дописан"
+    assert "Работаю круглосуточно" in merged, "правка владельца осталась"
+    assert serve._kb_loads(data / "kb", data / "media"), "база читается"
+    assert "дописаны новые тексты: card.head_gym" in capsys.readouterr().out
+
+    serve.seed_from_image(data, image_root=image)
+    assert "Работаю круглосуточно" in owner.read_text(encoding="utf-8"), "следующий запуск не затирает правку"

@@ -214,7 +214,16 @@ async def _gym_choice(db: AsyncSession, conv: Conversation, text: str, *, kb: KB
     heading = (kb.text("card.gyms_city_title", Language.RU) or "").strip()
     # Номер относится к последнему списку, который бот предложил: после списка залов
     # бот мог уже спросить «На какую секцию: 1. Бокс, 2. Кикбоксинг?», и «2» — секция.
-    latest_list = next((said for said in recent if offers_choice(said)), None)
+    # А если после списка бот задал обычный вопрос — «Сколько лет ребёнку?», — цифра
+    # отвечает на него: перепроверка 01.10.2026, «8» на возраст превращалось в «зал
+    # №8, Тобыл», когда список залов был среди трёх последних сообщений.
+    latest_list = None
+    for said in recent:
+        if offers_choice(said):
+            latest_list = said
+            break
+        if question_sentence(said):
+            break
     if not heading or latest_list is None or heading not in latest_list:
         return None
     gym = order[number - 1]
@@ -1162,7 +1171,7 @@ async def _run_turn(
             lead=draft,
             intents=intents,
             injection_suspected=injection,
-            gym_id=None,
+            gym_id=await _gym_in_view(db, conv, kb),
             stage=await _client_stage(db, conv),
             just_said=_just_said(
                 text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
@@ -2200,9 +2209,14 @@ async def _answer_age_with_district(
     saved = await _saved_lead(db, conv)
     if saved is not None and saved.gym_id:
         return None
-    # Место клиент уже называл — зал, район или школу: дальше ведёт модель с поиском.
-    said = normalize_text(" ".join(_recent_client_texts(text, stored, lookback=None)))
-    if _names_a_place(kb, said):
+    # Место уже известно — дальше ведёт модель с поиском. Клиент назвал зал, район
+    # или школу; выбрал зал цифрой из списка (это служебная заметка о выборе, а не
+    # его слова — поэтому смотрим весь текст реплик); или ему уже уходили
+    # расписание, дорога или адрес конкретного зала.
+    said = normalize_text(
+        " ".join(_content_text(item) for item in stored if item.get("role") == "user") + f" {text}"
+    )
+    if _names_a_place(kb, said) or await _gym_already_shown(db, conv):
         return None
     question = _kb_text(kb, "funnel.district", lang)
     if not question:
@@ -2253,7 +2267,10 @@ async def _answer_hour_with_sections(
     options = options_at_hour(text, _choice_context(stored))
     if len(options) < 2:
         return None
-    head = _kb_text(kb, "funnel.discipline", lang)
+    # «На какую секцию?» — только когда в этот час разные секции. В КСК в 17:00 есть
+    # кикбоксинг в Пн, Ср, Пт и в Вт, Чт, Сб — там выбирают дни, а не секцию.
+    sections = {option.split(" — ", 1)[0].strip() for option in options}
+    head = _kb_text(kb, "funnel.discipline" if len(sections) == len(options) else "funnel.pick_option", lang)
     footer = _kb_text(kb, "funnel.pick_number", lang)
     if not head or not footer:
         return None
@@ -2281,6 +2298,41 @@ async def _answer_hour_with_sections(
     )
     await _schedule_followups(db, conv, decision, kb=kb, client_text=inbound.text or "")
     return decision
+
+
+#: Карточки конкретного зала: после них зал известен, и спрашивать район поздно.
+_GYM_CARD_PREFIXES: Final[tuple[str, ...]] = ("schedule_", "route_", "gym_location_")
+
+
+async def _gym_in_view(db: AsyncSession, conv: Conversation, kb: KBSnapshot) -> str | None:
+    """Зал, о котором сейчас разговор: последняя карточка зала или сохранённая заявка.
+
+    Перепроверка 01.10.2026, живой прогон: «2» → зал цифрой → расписание КСК →
+    «Да» → имя → «8», и модель в двух прогонах из трёх спросила «в каком зале вам
+    удобнее?». Выбор зала выпадал из окна истории, а строка «выбранный зал» в
+    служебной заметке всегда была пустой — зал туда не передавался.
+    """
+    try:
+        shown = await repo_message.last_artifact_with_prefix(db, conv.id, _GYM_CARD_PREFIXES)
+    except Exception as exc:  # noqa: BLE001 - заметка без зала лучше упавшего хода
+        _log.warning("gym_in_view_lookup_failed", error=type(exc).__name__)
+        shown = None
+    if shown:
+        for prefix in _GYM_CARD_PREFIXES:
+            gym_id = shown[len(prefix):] if shown.startswith(prefix) else ""
+            if gym_id and kb.gym(gym_id) is not None:
+                return gym_id
+    saved = await _saved_lead(db, conv)
+    return saved.gym_id if saved is not None and saved.gym_id else None
+
+
+async def _gym_already_shown(db: AsyncSession, conv: Conversation) -> bool:
+    """Уходило ли клиенту расписание, дорога или адрес конкретного зала."""
+    try:
+        return await repo_message.any_artifact_sent(db, conv.id, _GYM_CARD_PREFIXES)
+    except Exception as exc:  # noqa: BLE001 - без проверки вопрос задаст модель
+        _log.warning("gym_shown_lookup_failed", error=type(exc).__name__)
+        return True
 
 
 def _names_a_place(kb: KBSnapshot, said: str) -> bool:

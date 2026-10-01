@@ -45,6 +45,11 @@ if str(ROOT) not in sys.path:
 #: Каталоги, которые обязаны пережить передеплой: их правит владелец школы.
 SEEDED: tuple[str, ...] = ("kb", "media")
 
+#: Файлы, где у каждой записи свой ключ: недостающие ключи из репозитория дописываются
+#: и в файл, который правил владелец. Код требует свои тексты на загрузке базы — без
+#: этого правка «Текстов» в CRM и следующий выпуск с новым текстом клали бы бота.
+MERGED_KEYS: dict[str, str] = {"i18n.yaml": "strings"}
+
 #: Какую версию каждого файла положил на диск сам запуск — отпечаток SHA-256.
 #: Лежит в корне каталога данных, а не в ``kb/``: там его подхватил бы отпечаток
 #: базы знаний.
@@ -204,6 +209,7 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
     state = _read_seed_state(data_dir)
     copies: list[tuple[str, Path, Path, str]] = []
     updates: list[tuple[str, Path, Path, str]] = []
+    merges: list[tuple[Path, Path]] = []
     for name in SEEDED:
         source_dir = image_root / name
         target_dir = data_dir / name
@@ -228,18 +234,23 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
                     f"{name}/{item.name}: отличается от версии в репозитории, а правил ли его "
                     "владелец — неизвестно. Оставлен как есть."
                 )
+                if name == "kb" and item.name in MERGED_KEYS:
+                    merges.append((item, destination))
             elif disk_hash != seeded:
                 _log(
                     f"{name}/{item.name}: в репозитории новая версия, но файл правили в CRM — "
                     "оставлена правка владельца."
                 )
+                if name == "kb" and item.name in MERGED_KEYS:
+                    merges.append((item, destination))
             else:
                 updates.append((name, item, destination, image_hash))
 
     kb_dir, media_dir = data_dir / "kb", data_dir / "media"
     kb_updates = [row for row in updates if row[0] == "kb"]
-    valid_before = bool(kb_updates) and _kb_loads(kb_dir, media_dir)
-    backup = _backup_kb(kb_dir) if kb_updates else None
+    touches_kb = bool(kb_updates or merges)
+    valid_before = touches_kb and _kb_loads(kb_dir, media_dir)
+    backup = _backup_kb(kb_dir) if touches_kb else None
 
     report = {name: 0 for name in SEEDED}
     for name, item, destination, image_hash in copies + updates:
@@ -248,8 +259,13 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
         report[name] += 1
     for name, item, _, _ in updates:
         _log(f"{name}/{item.name}: обновлён из репозитория")
+    # Отпечаток после дописывания не запоминается: файл остаётся «правленым
+    # владельцем», и следующий выпуск снова только допишет новое, а не заменит его.
+    merged = [destination for item, destination in merges if _merge_missing_keys(item, destination)]
 
     if valid_before and not _kb_loads(kb_dir, media_dir) and backup is not None:
+        for destination in merged:
+            shutil.copy2(backup / destination.name, destination)
         for name, item, destination, _ in kb_updates:
             shutil.copy2(backup / item.name, destination)
             state[name][item.name] = _sha256(destination)
@@ -262,6 +278,43 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
 
     _write_seed_state(data_dir, state)
     return report
+
+
+def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
+    """Дописывает в файл владельца ключи, которых в нём нет, из версии в репозитории.
+
+    Тексты владельца не меняются ни на букву: добавляется только то, чего у него нет.
+    Разбор с сохранением комментариев и кавычек — тот же, что у CRM.
+    """
+    section = MERGED_KEYS.get(source.name)
+    if not section:
+        return []
+    try:
+        from ruamel.yaml import YAML
+
+        engine = YAML()
+        engine.preserve_quotes = True
+        engine.width = 4096
+        engine.indent(mapping=2, sequence=2, offset=0)
+        image = engine.load(source.read_text(encoding="utf-8")) or {}
+        disk = engine.load(destination.read_text(encoding="utf-8")) or {}
+        theirs, ours = image.get(section) or {}, disk.get(section)
+        if ours is None:
+            return []
+        added = [key for key in theirs if key not in ours]
+        if not added:
+            return []
+        for key in added:
+            ours[key] = theirs[key]
+        temporary = destination.with_name(f".{destination.name}.seed-tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            engine.dump(disk, handle)
+        os.replace(temporary, destination)
+    except Exception as exc:  # noqa: BLE001 - не дописали — громко, но запуск продолжается
+        _log(f"ВНИМАНИЕ: kb/{destination.name}: не удалось дописать новые тексты: {exc}")
+        return []
+    _log(f"kb/{destination.name}: правки владельца оставлены, дописаны новые тексты: {', '.join(added)}")
+    return added
 
 
 def _sha256(path: Path) -> str:

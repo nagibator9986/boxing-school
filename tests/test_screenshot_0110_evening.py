@@ -237,3 +237,84 @@ def test_lead_in_never_carries_a_booking_claim() -> None:
     reply = "В 17:30 занятий нет. Али записан на бокс в 09:00. Какое время выбрать?"
 
     assert _lead_in(reply) == "В 17:30 занятий нет."
+
+
+# --------------------------------------------------------------------------- #
+# Перепроверка: вопрос о районе не повторяет уже выбранный зал
+# --------------------------------------------------------------------------- #
+KSK = "ksk_kairbekova_334"
+
+
+async def test_age_after_a_gym_picked_by_number_is_neither_a_gym_nor_a_district_question(deps, kb) -> None:
+    """«2» → список залов → «3» (КСК) → «Сколько лет?» → «8».
+
+    «8» — ответ на вопрос о возрасте, а не зал №8 (Тобыл) из списка двумя сообщениями
+    выше. И вопрос о районе не нужен: зал выбран цифрой — это служебная заметка, а не
+    слова клиента, и заявки на этом шаге ещё нет.
+    """
+    await say(deps, 1, "Здравствуйте")
+    await say(deps, 2, "2")
+    await say(deps, 3, "3", FakeTurn.answer("Сколько лет ребёнку?"))
+
+    reply = await say(deps, 4, "8", FakeTurn.answer("Отлично! Записать на пробное в КСК?"))
+
+    assert deps.llm.requests[-1].user_text == "8", "возраст ушёл модели как есть, а не как зал №8"
+    assert kb.text("funnel.district", Language.RU) not in "\n".join(reply), reply
+
+
+async def test_no_district_question_after_a_gym_schedule_was_sent(deps, kb) -> None:
+    await say(deps, 1, "Какое у вас расписание?", FakeTurn.tool(
+        FakeCall("get_schedule", {"gym_id": KSK})
+    ), FakeTurn.answer("Подходит вам такое время?"))
+    await say(deps, 2, "да, подходит", FakeTurn.answer("Сколько лет ребёнку?"))
+
+    reply = await say(deps, 3, "8", FakeTurn.answer("Отлично! Записать на пробное?"))
+
+    assert kb.text("funnel.district", Language.RU) not in "\n".join(reply), reply
+
+
+async def test_district_check_failure_leaves_the_turn_to_the_model(deps, kb, monkeypatch) -> None:
+    """Не прочли, уходили ли карточки зала, — не рискуем: вопрос задаёт модель."""
+    from app.storage import repo_message
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("база недоступна")
+
+    monkeypatch.setattr(repo_message, "any_artifact_sent", broken)
+    await say(deps, 1, "Хочу записать сына", FakeTurn.answer("Сколько лет ребёнку?"))
+
+    reply = await say(deps, 2, "8", FakeTurn.answer("Отлично! Где вам удобнее заниматься?"))
+
+    assert reply and kb.text("funnel.district", Language.RU) not in reply
+
+
+def test_instruction_steps_are_not_a_choice() -> None:
+    text = "Чтобы записаться:\n1. Выберите зал\n2. Напишите удобное время\n\nЖду ваш ответ."
+
+    assert numbered_choices(text, FOOTER) == text
+
+
+async def test_hour_shared_by_different_days_asks_for_the_option_not_the_section(deps, kb) -> None:
+    """«17» в КСК: бокс и кикбоксинг в двух наборах дней — выбирают вариант, а не секцию."""
+    await say(deps, 1, "Запишите Айназарова Али, 8 лет, в КСК", FakeTurn.tool(
+        FakeCall("create_trial_lead", {
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": KSK, "parent_agreed": True,
+        })
+    ), FakeTurn.answer("Какое время вам удобнее?"))
+
+    reply = "\n".join(await say(deps, 2, "17"))
+
+    assert reply.startswith(kb.text("funnel.pick_option", Language.RU)), reply
+    assert reply.count("17:00") == 3 and reply.rstrip().endswith("Напишите только цифру: 1, 2, 3")
+
+
+
+async def test_model_is_told_which_gym_the_client_is_looking_at(deps) -> None:
+    """После расписания КСК модель знает зал, даже когда выбор выпал из окна истории."""
+    await say(deps, 1, "Какое у вас расписание?", FakeTurn.tool(
+        FakeCall("get_schedule", {"gym_id": KSK})
+    ), FakeTurn.answer("Подходит вам такое время?"))
+
+    await say(deps, 2, "да", FakeTurn.answer("Сколько лет ребёнку?"))
+
+    assert f"выбранный зал: {KSK}" in deps.llm.requests[-1].dynamic_note
