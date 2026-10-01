@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import re
-from typing import Final, Iterable
+from typing import Any, Final, Iterable
 
 from app.types import is_group_chat
 
-__all__ = ["is_ignored", "parse", "tail"]
+__all__ = ["is_ignored", "parse", "silent_numbers", "tail"]
 
 #: Сколько последних цифр сравнивается.
 _TAIL: Final[int] = 10
@@ -75,3 +75,21 @@ def is_ignored(ignored: Iterable[str] | None, *, chat_id: str | None, phone: str
     known = set(ignored)
     candidates = (tail(chat_id), tail(phone), (chat_id or "").strip().casefold())
     return any(candidate in known for candidate in candidates if candidate)
+
+
+def silent_numbers(settings: Any, runtime: Any | None = None) -> frozenset[str]:
+    """Кому бот не отвечает и не пишет сам: список владельца и все рабочие чаты школы.
+
+    ``settings`` — конфигурация с наложенными настройками владельца, ``runtime`` — сами
+    настройки: адресаты заявок и чат уведомлений в конфигурацию процесса не попадают.
+    Один список и для ответов, и для напоминаний: 01.10.2026 администратор написала
+    боту с номера для заявок раньше, чем его вписали в CRM, — и номер получил бы
+    «вы ещё думаете над пробной?», даже когда его вписали.
+    """
+    sources = [getattr(settings, "ignored_numbers", ""), getattr(settings, "manager_notify_target", "")]
+    if runtime is not None:
+        sources += [getattr(runtime, "lead_notify_target", ""), getattr(runtime, "lead_notify_chat", "")]
+    found: set[str] = set()
+    for source in sources:
+        found |= parse(source or "")
+    return frozenset(found)

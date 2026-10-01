@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channels.outbound import check_send_allowed
 from app.config import get_settings
+from app.core import ignore_list
 from app.kb.models import FollowupRule
 from app.logging_conf import bind_correlation, clear_correlation, get_logger
 from app.observability import metrics
@@ -109,7 +110,11 @@ async def send_followup_job(ctx: dict[str, Any], task_id: str) -> None:
     from app.storage import repo_conversation
 
     deps = _deps(ctx)
-    settings = deps.settings
+    runtime = _owner_runtime(deps)
+    # Настройки владельца из CRM: выключатель напоминаний, тихие часы и номера, которым
+    # бот не пишет. Конфигурация процесса их не знает — без этого выключенные в CRM
+    # напоминания уходили, а номер для заявок получал «вы ещё думаете над пробной?».
+    settings = runtime.apply_to(deps.settings) if runtime is not None else deps.settings
     bind_correlation(str(task_id), task=TASK_NAME)
     started = time.perf_counter()
 
@@ -140,7 +145,15 @@ async def send_followup_job(ctx: dict[str, Any], task_id: str) -> None:
                 await session.commit()
                 return
 
-            skip = await _skip_reason(session, conv, task, kind=kind, settings=settings, now=now)
+            skip = await _skip_reason(
+                session,
+                conv,
+                task,
+                kind=kind,
+                settings=settings,
+                now=now,
+                silent=ignore_list.silent_numbers(settings, runtime),
+            )
             if skip == "quiet_hours":
                 run_at = next_allowed_time(
                     now,
@@ -434,8 +447,12 @@ async def _skip_reason(
     kind: FollowupKind,
     settings: Any,
     now: datetime,
+    silent: frozenset[str] = frozenset(),
 ) -> str | None:
     """Почему это напоминание не уйдёт. ``None`` — уйдёт."""
+    # Рабочий чат школы: номер вписали в CRM уже после того, как с него написали боту.
+    if ignore_list.is_ignored(silent, chat_id=conv.chat_id, phone=conv.phone_e164):
+        return "ignored_number"
     if conv.followup_blocked:
         return "blocked"
     if conv.state in _DEAD_STATES:
@@ -690,6 +707,18 @@ def _deps(ctx: dict[str, Any]) -> Any:
     if deps is None:
         raise RuntimeError("В контексте воркера нет PipelineDeps: не отработал startup")
     return deps
+
+
+def _owner_runtime(deps: Any) -> Any | None:
+    """Настройки владельца из CRM. ``None`` — их нет или они не читаются."""
+    factory = getattr(deps, "runtime", None)
+    if factory is None:
+        return None
+    try:
+        return factory()
+    except Exception as exc:  # noqa: BLE001 - без настроек владельца напоминание всё равно решается
+        log.warning("runtime_settings_failed", error=type(exc).__name__)
+        return None
 
 
 def _now() -> datetime:

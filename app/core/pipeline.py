@@ -2867,15 +2867,7 @@ def _silent_numbers(deps: PipelineDeps) -> frozenset[str]:
     Рабочие чаты школы односторонние: бот туда пишет, а «принял, позвоню» в ответ не
     должно превращаться в нового клиента с меню и вопросом о возрасте ребёнка.
     """
-    owner = _owner_settings(deps)
-    runtime = _owner_runtime(deps)
-    sources = [owner.ignored_numbers, owner.manager_notify_target]
-    if runtime is not None:
-        sources += [runtime.lead_notify_target, runtime.lead_notify_chat]
-    numbers: set[str] = set()
-    for source in sources:
-        numbers |= ignore_list.parse(source or "")
-    return frozenset(numbers)
+    return ignore_list.silent_numbers(_owner_settings(deps), _owner_runtime(deps))
 
 
 def _owner_runtime(deps: PipelineDeps) -> "RuntimeSettings | None":
