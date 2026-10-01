@@ -90,6 +90,8 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "lead_card.trial_booked",
     "lead_card.trial_changed",
     "lead_card.trial_short",
+    "funnel.pick_number",
+    "card.head_gym",
     "lead_card.trial_short_changed",
     "lead_card.escalation",
     "system.lead_saved",

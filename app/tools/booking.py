@@ -498,7 +498,9 @@ async def create_trial_lead(
         # «Айназаров Али, 8 лет» — возраст уже разобран из слов клиента, а модель его не
         # передала. Переспрашивать то, что родитель только что написал, нельзя.
         child_age = known.child_age
-    name_said = client_named_name(name, ctx.client_texts) or (
+    # Скриншот владельца 01.10.2026: «Айназаров Али» в самом начале, через восемь
+    # реплик — снова «подскажите фамилию и имя». Имя проверяется по всей переписке.
+    name_said = client_named_name(name, ctx.dialog_client_texts or ctx.client_texts) or (
         bool(known.child_name) and client_named_name(name, (known.child_name or "",))
     )
     age_said = child_age is not None and (

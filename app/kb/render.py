@@ -364,6 +364,7 @@ def render_system_prompt(snapshot: KBSnapshot) -> str:
 #: выглядеть рассылкой, а это детская школа.
 ICON_GYM: Final[str] = "🥊"
 ICON_PIN: Final[str] = "📍"
+ICON_HEAD: Final[str] = "⭐"
 ICON_MAP: Final[str] = "🗺"
 ICON_TIME: Final[str] = "🕒"
 ICON_SCHEDULE: Final[str] = "🗓"
@@ -508,7 +509,11 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     for number, gym in enumerate(listed, start=1):
         name = gym.title.get(lang) or gym.title.ru or gym.id
         address = _clean_address(gym, lang)
-        parts.append(f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}")
+        block = f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}"
+        if gym.is_head:
+            # Владелец 01.10.2026: «основной зал у нас — КСК, там старший тренер».
+            block = f"{block}\n{ICON_HEAD} {_lang_text(snapshot, 'card.head_gym', lang)}"
+        parts.append(block)
 
     if any(not gym.address.filled for gym in gyms):
         parts.append(_lang_text(snapshot, "gap.region_address", lang))

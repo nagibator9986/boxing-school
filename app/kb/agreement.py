@@ -23,8 +23,10 @@ __all__ = [
     "chosen_option",
     "is_bare_agreement",
     "is_option_line",
+    "numbered_choices",
     "offers_choice",
     "offered_options",
+    "options_at_hour",
     "question_sentence",
     "split_agreement",
     "with_agreement",
@@ -183,8 +185,60 @@ def with_choice(text: str, bot_text: str | None) -> str:
     options = offered_options(bot_text)
     index = int(number.group(1))
     if not 1 <= index <= len(options):
-        return text
+        # «9» в ответ на список времени — это 09:00, а не девятый вариант. Владелец
+        # 01.10.2026: «не обязательно же писать 09:00, я написал 9». Выбор засчитывается,
+        # только если вариант с этим часом один: «9» на бокс и кикбоксинг в 09:00 —
+        # это вопрос о секции, его задаёт пайплайн (:func:`options_at_hour`).
+        by_hour = options_at_hour(text, bot_text)
+        if len(by_hour) != 1:
+            return text
+        return f"{(text or '').strip()} {CHOICE_OPEN}{by_hour[0]}{MARKER_CLOSE}"
     return f"{(text or '').strip()} {CHOICE_OPEN}{options[index - 1]}{MARKER_CLOSE}"
+
+
+def options_at_hour(text: str, bot_text: str | None) -> list[str]:
+    """Варианты списка бота на час, который клиент написал числом: «9» → все «09:00».
+
+    Пусто — это не час из списка, а номер варианта или что-то другое.
+    """
+    number = _BARE_NUMBER_RE.match(text or "")
+    if number is None or not offers_choice(bot_text):
+        return []
+    options = offered_options(bot_text)
+    hour = int(number.group(1))
+    if 1 <= hour <= len(options) or hour > 23:
+        return []
+    pattern = re.compile(rf"(?<![\d:]){hour:02d}:\d{{2}}|(?<![\d:]){hour}:\d{{2}}")
+    return [option for option in options if pattern.search(option)]
+
+
+def numbered_choices(text: str, footer: str) -> str:
+    """Варианты с тире — под номерами, а в конце прямая просьба написать цифру.
+
+    Владелец 01.10.2026: «не минусики, а поочерёдность — первое время, второе,
+    третье, четвёртое, чтобы я выбрал и нажал цифру. Как для первоклассников».
+    Перестраивается только явная просьба выбрать («Выберите…», «Напишите
+    цифру…»): маркированный рассказ о зале с вопросом «Записать?» — не выбор.
+    ``footer`` — просьба с местом под номера: «Напишите только цифру: {numbers}».
+    """
+    if not _CHOICE_REQUEST_RE.search(text or ""):
+        return text
+    lines = (text or "").splitlines()
+    numbered = [index for index, line in enumerate(lines) if _NUMBERED_OPTION_RE.match(line)]
+    bullets = [index for index, line in enumerate(lines) if _BULLET_OPTION_RE.match(line)]
+    rows = bullets if len(bullets) >= 2 else numbered
+    if len(rows) < 2:
+        return text
+    for number, index in enumerate(rows, start=1):
+        match = _BULLET_OPTION_RE.match(lines[index]) or _NUMBERED_OPTION_RE.match(lines[index])
+        option = match.group(match.lastindex or 1) if match else lines[index]
+        lines[index] = f"{number}. {option}"
+    # Своя просьба модели после списка («Напишите цифру или своими словами.») —
+    # заменяется одной понятной строкой с самими цифрами.
+    tail = [line for line in lines[rows[-1] + 1 :] if not _CHOICE_REQUEST_RE.search(line)]
+    body = "\n".join(lines[: rows[-1] + 1] + tail).rstrip()
+    numbers = ", ".join(str(number) for number in range(1, len(rows) + 1))
+    return f"{body}\n\n{footer.format(numbers=numbers)}"
 
 
 def chosen_option(text: str | None) -> str | None:

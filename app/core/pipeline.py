@@ -63,10 +63,13 @@ from app.core import (
     postcheck,
 )
 from app.core import session as conv_session
-from app.kb.models import KBSnapshot
+from app.kb.models import KBSnapshot, min_accepted_age
 from app.kb import render
 from app.kb.agreement import (
+    is_option_line,
+    numbered_choices,
     offers_choice,
+    options_at_hour,
     question_sentence,
     split_agreement,
     with_agreement,
@@ -83,6 +86,7 @@ from app.storage import repo_conversation, repo_lead, repo_message, repo_outbox
 from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
+from app.tools.gyms import normalize_text
 from app.types import (
     OWNER_TEXT_ARTIFACT_PREFIX,
     ManagerCardKind,
@@ -965,6 +969,30 @@ async def _run_turn(
                 await _flush_queue(deps, services)
                 return decision
 
+        # --- 6b'. Час вместо номера: «9» на бокс и кикбоксинг в 09:00 -------- #
+        if chosen is None:
+            decision = await _answer_hour_with_sections(
+                deps, db, services, conv, inbound,
+                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
+            )
+            if decision is not None:
+                await db.commit()
+                await _flush_queue(deps, services)
+                return decision
+
+        # --- 6c. Возраст назван, зала ещё нет — вопрос о районе, кодом --------- #
+        # Владелец 01.10.2026: после «8» бот прислал список из восьми залов, и район
+        # клиент написал наугад — «бот не предложил: напишите свой микрорайон».
+        if chosen is None:
+            decision = await _answer_age_with_district(
+                deps, db, services, conv, inbound,
+                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
+            )
+            if decision is not None:
+                await db.commit()
+                await _flush_queue(deps, services)
+                return decision
+
         # --- 7. Guards ----------------------------------------------------- #
         verdict = guards.scan(
             text, lang=lang, lexicon=kb.lexicon, policies=kb.policies,
@@ -1080,7 +1108,7 @@ async def _run_turn(
             text = with_agreement(text, last_bot_text, kb.lexicon.agreement)
             # Цифра в ответ на список бота — выбор варианта, как цифра меню. Скриншот
             # владельца 12.09.2026: «2» на список секций ушло администратору.
-            text = with_choice(text, last_bot_text)
+            text = with_choice(text, _choice_context(history))
         client_turn_text = "" if chose_from_list else text
         choice_note = _choice_note(original_text, text) if chose_from_list else None
         system_instruction, ngrams = _prompt_for(kb, _runtime_block(deps))
@@ -1120,6 +1148,7 @@ async def _run_turn(
             intents=intents,
             injection_suspected=injection,
             client_texts=_recent_client_texts(client_turn_text, stored),
+            dialog_client_texts=_recent_client_texts(client_turn_text, stored, lookback=None),
             saved_lead=await _saved_lead(db, conv),
         )
         executor = await build_tool_executor(deps, ctx)
@@ -1380,6 +1409,12 @@ async def _run_turn(
             if not asked or funnel.is_handover(asked):
                 asked = _kb_text(kb, funnel.next_step_key(draft), lang)
             reply = asked
+        elif (options_question := _booking_question(kb, lang, invocations, options_only=True)) is not None:
+            # Варианты времени и секции из расписания задаёт код, под номерами и с
+            # прямой просьбой «напишите только цифру». Скриншот владельца 01.10.2026:
+            # модель писала их через тире, на «9» отвечала «Напишите цифру» — без цифр.
+            lead_in = _lead_in(reply)
+            reply = f"{lead_in}\n\n{options_question}" if lead_in else options_question
         elif (
             _BOOKING_CLAIM_RE.search(reply)
             and not _booked_this_turn(invocations)
@@ -1395,6 +1430,8 @@ async def _run_turn(
             )
             _log.warning("false_booking_claim", conv_key=conv.conv_key, replaced=bool(question))
             reply = question or ""
+        # Список, который модель написала сама, — тоже под номерами и с цифрами в конце.
+        reply = numbered_choices(reply, _kb_text(kb, "funnel.pick_number", lang))
         if not reply.strip():
             # От ответа ничего не осталось: карточка и была ответом.
             _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
@@ -2136,6 +2173,128 @@ async def _answer_menu_facts(
     return decision
 
 
+async def _answer_age_with_district(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    text: str,
+    correlation_id: str,
+    now: datetime,
+) -> PipelineDecision | None:
+    """Ответ «8» на вопрос о возрасте, а зал ещё не выбран: «В каком районе вы живёте?».
+
+    ``None`` — это не такой ход, и его ведёт модель. Вопрос задаёт код: модель на
+    голую цифру то спрашивала район, то присылала весь список залов, и родитель
+    писал свой микрорайон наугад.
+    """
+    stored = await _stored_contents(db, conv)
+    age = age_answer(text, _last_model_text(stored))
+    # «2» на вопрос о возрасте — ребёнку рано: про возраст приёма расскажет модель.
+    if age is None or age < (min_accepted_age(kb) or 0):
+        return None
+    saved = await _saved_lead(db, conv)
+    if saved is not None and saved.gym_id:
+        return None
+    # Место клиент уже называл — зал, район или школу: дальше ведёт модель с поиском.
+    said = normalize_text(" ".join(_recent_client_texts(text, stored, lookback=None)))
+    if _names_a_place(kb, said):
+        return None
+    question = _kb_text(kb, "funnel.district", lang)
+    if not question:
+        return None
+    await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=question, now=now)
+    await conv_session.save_turn(
+        db,
+        conv,
+        [
+            {"role": "user", "parts": [{"text": inbound.text or text}]},
+            {"role": "model", "parts": [{"text": question}]},
+        ],
+    )
+    decision = _decision(
+        DecisionAction.REPLY,
+        "age_then_district",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+    await _schedule_followups(db, conv, decision, kb=kb, client_text=inbound.text or "")
+    return decision
+
+
+async def _answer_hour_with_sections(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    text: str,
+    correlation_id: str,
+    now: datetime,
+) -> PipelineDecision | None:
+    """«9» на список, где в 09:00 и бокс, и кикбоксинг: «В 09:00 — 1. Бокс 2. Кикбоксинг».
+
+    ``None`` — это не такой ход. Владелец 01.10.2026: «я написал 9 — бот понимает
+    09:00». Живой прогон того же дня: модель ответила «выберите из списка выше» без
+    самого списка, и следующая цифра потеряла смысл.
+    """
+    stored = await _stored_contents(db, conv)
+    options = options_at_hour(text, _choice_context(stored))
+    if len(options) < 2:
+        return None
+    head = _kb_text(kb, "funnel.discipline", lang)
+    footer = _kb_text(kb, "funnel.pick_number", lang)
+    if not head or not footer:
+        return None
+    numbered = "\n".join(f"{number}. {option}" for number, option in enumerate(options, start=1))
+    numbers = ", ".join(str(number) for number in range(1, len(options) + 1))
+    question = f"{head}\n\n{numbered}\n\n{footer.format(numbers=numbers)}"
+    await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=question, now=now)
+    await conv_session.save_turn(
+        db,
+        conv,
+        [
+            {"role": "user", "parts": [{"text": inbound.text or text}]},
+            {"role": "model", "parts": [{"text": question}]},
+        ],
+    )
+    decision = _decision(
+        DecisionAction.REPLY,
+        "hour_then_section",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+    await _schedule_followups(db, conv, decision, kb=kb, client_text=inbound.text or "")
+    return decision
+
+
+def _names_a_place(kb: KBSnapshot, said: str) -> bool:
+    """Назвал ли клиент зал, район или посёлок из базы. ``said`` уже нормализован."""
+    for gym in kb.gyms.gyms:
+        # Сам город районом не считается: «мы в Костанае» не говорит, какой зал ближе.
+        town = gym.settlement if gym.settlement != kb.gyms.city_settlement else ""
+        for place in (*gym.district_aliases, *gym.serves_districts, town):
+            key = normalize_text(place or "")
+            if key and re.search(rf"(?<![0-9a-zа-я]){re.escape(key)}(?![0-9a-zа-я])", said):
+                return True
+    return False
+
+
 #: Хвост последней части, в котором ищем вопрос перед тем, как дописать свой.
 _FUNNEL_TAIL_CHARS: Final[int] = 160
 
@@ -2648,7 +2807,9 @@ def _age_from_dialog(
     return age_answer(current, asked) or age
 
 
-def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[str, ...]:
+def _recent_client_texts(
+    text: str, history: Sequence[dict[str, Any]], *, lookback: int | None = _CLIENT_TEXTS_LOOKBACK
+) -> tuple[str, ...]:
     """Последние реплики клиента: из истории модели и текущая.
 
     Живой прогон 10.09.2026: на «Сериков Ержан, 8 лет» модель сама подставила
@@ -2664,7 +2825,7 @@ def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[
             said.append(clean)
     if (text or "").strip():
         said.append(text.strip())
-    return tuple(said[-_CLIENT_TEXTS_LOOKBACK:])
+    return tuple(said[-lookback:] if lookback else said)
 
 
 async def _stored_contents(db: AsyncSession, conv: Conversation) -> list[dict[str, Any]]:
@@ -2713,8 +2874,18 @@ _SECTION_NEEDS: Final[frozenset[str]] = frozenset({"need_discipline", "unknown_d
 _TIME_NEEDS: Final[frozenset[str]] = frozenset({"need_time", "unknown_time", "unknown_day"})
 
 
-def _booking_question(kb: KBSnapshot, lang: Language, invocations: Sequence[ToolInvocation]) -> str | None:
-    """Следующий вопрос записи по последнему результату ``create_trial_lead``. ``None`` — записи нет."""
+def _booking_question(
+    kb: KBSnapshot,
+    lang: Language,
+    invocations: Sequence[ToolInvocation],
+    *,
+    options_only: bool = False,
+) -> str | None:
+    """Следующий вопрос записи по последнему результату ``create_trial_lead``. ``None`` — записи нет.
+
+    ``options_only`` — только вопрос с вариантами из расписания (секция, время): его
+    код задаёт всегда, а имя и возраст — лишь вместо снятого или ложного ответа.
+    """
     for invocation in reversed(list(invocations)):
         if invocation.name != "create_trial_lead" or invocation.result is None:
             continue
@@ -2723,6 +2894,8 @@ def _booking_question(kb: KBSnapshot, lang: Language, invocations: Sequence[Tool
         if data.get("booked") is not False or not needs:
             return None
         first = needs[0]
+        if options_only and first not in _SECTION_NEEDS | _TIME_NEEDS:
+            return None
         if first in _NAME_NEEDS:
             both = _NAME_NEEDS <= set(needs)
             key = "funnel.name_age" if both else ("funnel.name" if first == "need_name" else "funnel.age")
@@ -2733,14 +2906,28 @@ def _booking_question(kb: KBSnapshot, lang: Language, invocations: Sequence[Tool
             return None
         options = _numbered_options(kb, lang, data.get("options") or [])
         head = _kb_text(kb, "funnel.discipline" if first in _SECTION_NEEDS else "funnel.pick_time", lang)
-        return f"{head}\n\n{options}" if options and head else None
+        if not (options and head):
+            return None
+        numbers = ", ".join(str(number) for number in range(1, len(options.splitlines()) + 1))
+        footer = _kb_text(kb, "funnel.pick_number", lang).format(numbers=numbers)
+        return f"{head}\n\n{options}\n\n{footer}"
     return None
 
 
 def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) -> str:
     """«1. Бокс — Вт, Чт, Сб 19:00» — варианты из расписания зала, по одному в строке."""
     lines: list[str] = []
-    for option in options:
+    # По секции, внутри — по времени: «1. Бокс 09:00, 2. Бокс 18:45, 3. Кикбоксинг 09:00».
+    # Владелец 01.10.2026: «поочерёдность — первое время, второе, третье». Номер,
+    # которым отвечает клиент, разбирается по отправленному тексту, а не по расписанию.
+    ordered = sorted(
+        (option for option in options if isinstance(option, dict)),
+        key=lambda option: (
+            _kb_text(kb, f"card.{option.get('discipline')}", lang),
+            str(option.get("time_start") or ""),
+        ),
+    )
+    for option in ordered:
         if not isinstance(option, dict):
             continue
         label = _kb_text(kb, f"card.{option.get('discipline')}", lang)
@@ -2768,6 +2955,47 @@ def _booked_this_turn(invocations: Sequence[ToolInvocation]) -> bool:
         and (invocation.result.data or {}).get("booked") is True
         for invocation in invocations
     )
+
+
+#: Предложение и его конец: «В 17:30 занятий нет.», «Какое время выбрать?».
+#: Двоеточие и точка между цифрами — часть времени («17:30», «17.00»), не конец фразы.
+_SENTENCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:[^.!?:\n]|(?<=\d)[:.](?=\d))+[.!?:]*")
+
+#: Сколько вводных предложений модели остаётся перед вопросом с вариантами.
+_LEAD_IN_SENTENCES: Final[int] = 2
+
+
+def _lead_in(reply: str) -> str:
+    """Вводные слова модели перед вопросом с вариантами — без её вопроса и списка.
+
+    «В 17:30 занятий нет. На кикбоксинг можно в 17:00 или 19:00 — какое время
+    выбрать?» → «В 17:30 занятий нет.»: объяснение остаётся, а варианты и вопрос
+    задаёт код. Вопросы, заголовки списка («Выберите время:») и просьбы выбрать
+    отбрасываются — иначе вопросов в сообщении стало бы два.
+    """
+    kept: list[str] = []
+    for line in (reply or "").splitlines():
+        if is_option_line(line):
+            break
+        for sentence in _SENTENCE_RE.findall(line):
+            sentence = sentence.strip()
+            if (
+                not sentence
+                or sentence.endswith(("?", ":"))
+                or _CHOICE_ASK_RE.search(sentence)
+                # «Али записан… Ждём вас!» перед вопросом о времени — ложь: записи
+                # ещё нет, раз код спрашивает время (живой прогон 01.10.2026).
+                or _BOOKING_CLAIM_RE.search(sentence)
+            ):
+                continue
+            kept.append(sentence)
+    return " ".join(kept[:_LEAD_IN_SENTENCES])
+
+
+#: Просьба выбрать: в вводных словах ей не место — её задаёт сам вопрос с вариантами.
+_CHOICE_ASK_RE: Final[re.Pattern[str]] = re.compile(
+    r"выбер\w*|напишите\s+(?:цифру|номер)|санын\s+жазыңыз|таңдаңыз", re.IGNORECASE
+)
 
 
 def _owner_text_sent(services: _Services) -> bool:
@@ -3142,6 +3370,30 @@ def _is_blank_model_item(item: dict[str, Any]) -> bool:
         return False
     parts = [part for part in item.get("parts") or [] if isinstance(part, dict)]
     return all(set(part) <= {"text"} and not str(part.get("text") or "").strip() for part in parts)
+
+
+#: Сколько последних сообщений бота смотреть в поисках списка, к которому относится цифра.
+_CHOICE_LOOKBACK: Final[int] = 2
+
+
+def _choice_context(history: Sequence[dict[str, Any]]) -> str:
+    """Сообщение бота со списком, к которому относится цифра клиента.
+
+    Обычно это последнее сообщение. Но если бот после списка только попросил выбрать
+    («Выберите один из вариантов из списка выше»), цифра относится к списку перед
+    этим. Живой прогон 01.10.2026: «1» после такой просьбы ушло модели голой цифрой,
+    секция не засчиталась словами клиента, и запись трижды не прошла.
+    """
+    said = [
+        _content_text(item).strip()
+        for item in reversed(list(history))
+        if item.get("role") == "model" and _content_text(item).strip()
+    ][:_CHOICE_LOOKBACK]
+    if not said:
+        return ""
+    if offers_choice(said[0]) or not _CHOICE_ASK_RE.search(said[0]):
+        return said[0]
+    return next((text for text in said[1:] if offers_choice(text)), said[0])
 
 
 def _last_model_text(history: Sequence[dict[str, Any]]) -> str:

@@ -70,7 +70,8 @@ async def test_first_greeting_shows_the_menu(deps, llm, kb) -> None:
     answer = replies(await say(deps, llm, "gr-1", "Здравствуйте"))
 
     assert kb.text("greeting.first", Language.RU) == answer
-    assert "3. Написать менеджеру" in answer
+    assert "3. Поговорить с менеджером" in answer
+    assert "24/7" in answer, "владелец 01.10.2026: «я бот, работаю 24/7»"
     assert "уже занимаемся" not in answer, (
         "ветка действующих клиентов из меню убрана: под бота открыт отдельный номер"
     )

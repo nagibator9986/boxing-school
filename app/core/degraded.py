@@ -95,11 +95,15 @@ def _location(kb: KBSnapshot, lang: Language, scope: Scope | None = None) -> lis
 
 
 def _without_line(card: str, line: str) -> str | None:
-    """Убирает строку из готовой карточки, не оставляя пустого хвоста."""
-    wanted = (line or "").strip()
+    """Убирает из готовой карточки строки текста ``line`` — их бывает и две.
+
+    Приглашение под списком залов с 01.10.2026 двухстрочное: «Напишите номер
+    зала…» и «Нет зала рядом с домом?…» — выполнить ни то, ни другое некому.
+    """
+    wanted = {row.strip() for row in (line or "").splitlines() if row.strip()}
     if not wanted:
         return card
-    kept = [row for row in card.splitlines() if row.strip() != wanted]
+    kept = [row for row in card.splitlines() if row.strip() not in wanted]
     return "\n".join(kept).strip() or None
 
 
