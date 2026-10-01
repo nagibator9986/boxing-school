@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-08-20"
+updated_at: "2026-10-01"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -106,7 +106,20 @@ gyms:
   - G-8
   - G-15
   internal_note: Головной зал по брифу владельца. internal_note клиенту не показывается и в промпт не попадает.
-  serves_districts: []
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - центральный рынок
+  - центральном рынке
+  - киевский
+  - клуб строителей
+  - церковь
+  - восток
+  - школа 3
+  - школа 4
+  - школа 11
+  - школа 13
+  - школа 14
+  - школа 22
 - id: plaza_szm_70
   scope: city
   settlement: Костанай
@@ -256,8 +269,21 @@ gyms:
   - G-8
   - G-15
   internal_note: null
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
   serves_districts:
   - аэропорт
+  - береке
+  - юбилейный
+  - юбилейном
+  - алтын арман
+  - 2 костанай
+  - второй костанай
+  - школа 15
+  - школа 18
+  - школа 21
+  - школа 22
+  - школа 27
+  - школа 31
 - id: center_kasymkhanova_10
   scope: city
   settlement: Костанай
@@ -314,7 +340,15 @@ gyms:
   - G-8
   - G-15
   internal_note: Два зала заявлены как ЦЕНТР (этот и center_kairbekova_24). Различать по ориентиру.
-  serves_districts: []
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - наримановка
+  - наримановке
+  - автодом
+  - школа 2
+  - школа 3
+  - школа 4
+  - школа 11
 - id: center_kairbekova_24
   scope: city
   settlement: Костанай
@@ -398,7 +432,14 @@ gyms:
   - G-8
   - G-15
   internal_note: null
-  serves_districts: []
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - цум
+  - океан
+  - центр
+  - школа 4
+  - школа 9
+  - школа 11
 - id: magazin15_voinov_8b
   scope: city
   settlement: Костанай
@@ -425,6 +466,7 @@ gyms:
   - романтик
   - воинов интернационалистов
   - воинов-интернационалистов
+  - воинов
   geo_lat: null
   geo_lon: null
   map_url: https://2gis.kz/kostanay/geo/70000001116923416
@@ -476,8 +518,32 @@ gyms:
   - G-2
   - G-8
   - G-15
-  internal_note: "Владелец должен подтвердить: не этот ли зал в шапке Instagram назван «КЖБИ» (конфликт C-3)."
-  serves_districts: []
+  internal_note: "Конфликт C-3 закрыт владельцем 01.10.2026: отдельного зала на КЖБИ нет, район закрывают этот зал и зал в 6-м микрорайоне."
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - кжби
+  - кжби район
+  - kzhbi
+  - железобетон
+  - завод жби
+  - 2 подъем
+  - 2 й подъем
+  - второй подъем
+  - 7 микрорайон
+  - 8 микрорайон
+  - 9 микрорайон
+  - военный городок
+  - военном городке
+  - военгородок
+  - тубдиспансер
+  - наурыз
+  - школа 7
+  - школа 10
+  - школа 16
+  - школа 17
+  - школа 19
+  - школа 20
+  - школа 23
 - id: mkr6_arystanbekova_6
   scope: city
   settlement: Костанай
@@ -535,7 +601,17 @@ gyms:
   - G-8
   - G-15
   internal_note: Новый, шестой зал. Закреплённый креатив в Instagram говорит «5 залов» — конфликт C-1, креатив перевыпустить.
-  serves_districts: []
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - кжби
+  - 5 микрорайон
+  - 7 микрорайон
+  - 8 микрорайон
+  - автовокзал
+  - солнечный
+  - магазин солнечный
+  - школа 7
+  - школа 16
 - id: polevaya_7_3
   scope: city
   settlement: Костанай
@@ -873,42 +949,4 @@ gyms:
   - G-3
   - G-8
   internal_note: null
-  serves_districts: []
-- id: unresolved_kzhbi
-  scope: city
-  settlement: Костанай
-  is_head: false
-  active: false
-  status: unresolved
-  title:
-    ru: КЖБИ — требует уточнения
-    kk: КЖБИ — нақтылауды қажет етеді
-  address:
-    ru: null
-    kk: null
-  landmark:
-    ru: null
-    kk: null
-  district:
-    ru: КЖБИ
-    kk: КЖБИ
-  district_aliases:
-  - кжби
-  - кжби район
-  - kzhbi
-  - железобетон
-  - завод жби
-  geo_lat: null
-  geo_lon: null
-  map_url: null
-  phone: null
-  coaches: []
-  schedule: []
-  capacity_note: null
-  media: []
-  gap_refs:
-  - C-3
-  internal_note: 'Конфликт C-3. До письменного ответа владельца бот не подтверждает и не отрицает наличие зала на КЖБИ: find_gym_by_district на алиас «кжби» возвращает needs_operator и произносит фразу i18n gap.kzhbi.
-
-    '
   serves_districts: []

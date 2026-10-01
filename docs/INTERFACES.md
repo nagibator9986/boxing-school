@@ -1799,6 +1799,9 @@ class FaqEntry(BaseModel):
     escalate_if_empty: bool
     requires_tool: str | None
     forbidden_claims: list[str]
+    emoji_ok: bool = False        # владелец сам прислал текст с эмодзи — запрет снят только здесь
+    verbatim: bool = False        # ответ уходит клиенту дословно, отдельным сообщением от кода
+                                  # (artifact_id = OWNER_TEXT_ARTIFACT_PREFIX + id, «faq:<id>»)
 
 class Artifact(BaseModel):
     id: str

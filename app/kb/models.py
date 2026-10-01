@@ -255,11 +255,11 @@ def _max_len(value: Bilingual, limit: int, what: str) -> None:
             raise ValueError(f"{what}: {lang_code} длиннее {limit} знаков ({len(text)})")
 
 
-def _no_markup(value: Bilingual, what: str) -> None:
+def _no_markup(value: Bilingual, what: str, *, allow_emoji: bool = False) -> None:
     for lang_code, text in (("ru", value.ru), ("kk", value.kk)):
         if text is None:
             continue
-        if EMOJI_RE.search(text):
+        if not allow_emoji and EMOJI_RE.search(text):
             raise ValueError(f"{what}: {lang_code} содержит эмодзи — в текстах клиенту они запрещены")
         if MARKDOWN_RE.search(text):
             raise ValueError(f"{what}: {lang_code} содержит markdown — мессенджер его не отрисует")
@@ -666,6 +666,15 @@ class FaqEntry(_Base):
     escalate_if_empty: bool = True
     requires_tool: str | None = None
     forbidden_claims: list[str] = Field(default_factory=list)
+    #: Владелец сам прислал этот текст с эмодзи, и он уходит клиенту дословно
+    #: («👕 удобную спортивную одежду»). Запрет эмодзи — тон бренда — снимается
+    #: только для такой записи, а не для всей базы.
+    emoji_ok: bool = False
+    #: Ответ уходит клиенту дословно, отдельным сообщением от кода, а не пересказом
+    #: модели. Владелец 01.10.2026 про «что взять с собой»: «Сообщение должно быть
+    #: такое» — а модель писала «удобная спортивная одежда» и своё «специально
+    #: покупать форму не нужно».
+    verbatim: bool = False
 
     @field_validator("id")
     @classmethod
@@ -684,7 +693,7 @@ class FaqEntry(_Base):
     @model_validator(mode="after")
     def _answer_rules(self) -> "FaqEntry":
         _max_len(self.answer, MAX_FAQ_ANSWER_CHARS, f"faq[{self.id}].answer")
-        _no_markup(self.answer, f"faq[{self.id}].answer")
+        _no_markup(self.answer, f"faq[{self.id}].answer", allow_emoji=self.emoji_ok)
         if not self.answer.filled and not self.escalate_if_empty:
             raise ValueError(
                 f"faq[{self.id}]: ответа нет, значит escalate_if_empty обязан быть true — "

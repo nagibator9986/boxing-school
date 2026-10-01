@@ -24,7 +24,7 @@ from app.tools.gyms import (
     normalize_text,
     translit_to_cyrillic,
 )
-from app.types import GapRef, Scope, ToolStatus
+from app.types import Scope, ToolStatus
 
 
 def ids_of(result) -> list[str]:
@@ -156,7 +156,7 @@ async def test_no_match_never_invents_a_gym(ctx, query) -> None:
     assert any("придумывать нельзя" in caveat.lower() for caveat in result.caveats)
 
 
-@pytest.mark.parametrize("query", ["наримановка", "юбилейный", "хбк", "кооператор"])
+@pytest.mark.parametrize("query", ["борки", "черемушки", "хбк", "кооператор"])
 async def test_known_district_without_gym_is_named_honestly(ctx, query) -> None:
     """Район клиенту знаком, но зала там нет — об этом надо сказать прямо."""
     result = await find_gym_by_district(ctx, district_text=query)
@@ -166,15 +166,67 @@ async def test_known_district_without_gym_is_named_honestly(ctx, query) -> None:
     assert any("зала там нет" in caveat.lower() for caveat in result.caveats)
 
 
-@pytest.mark.parametrize("query", ["кжби", "kzhbi", "КЖБИ"])
-async def test_unresolved_kzhbi_goes_to_operator(ctx, query) -> None:
-    """Конфликт C-3: про КЖБИ нельзя утверждать ни «есть», ни «нет»."""
+NEAR_KZHBI = ["magazin15_voinov_8b", "mkr6_arystanbekova_6"]
+
+
+@pytest.mark.parametrize("query", ["кжби", "kzhbi", "КЖБИ", "на кжби"])
+async def test_kzhbi_offers_the_two_nearest_gyms(ctx, query) -> None:
+    """Владелец 01.10.2026: «на КЖБИ зала нет, но есть на 15-м магазине и в 6-м
+    микрорайоне — это шаговая доступность. Почему бот их не предлагает?»
+
+    Раньше КЖБИ был нерешённым конфликтом C-3, и бот отвечал «уточню у
+    администратора и гадать не стану».
+    """
     result = await find_gym_by_district(ctx, district_text=query)
 
-    assert result.ok is False
-    assert result.status is ToolStatus.NEEDS_OPERATOR
-    assert result.gap_ref is GapRef.C3
-    assert set(result.say_if_no_data or {}) == {"ru", "kk"}
+    assert result.ok, result
+    assert ids_of(result) == NEAR_KZHBI
+    assert result.data["nearby_only"] is True, "зала на самом КЖБИ нет — сказать это прямо"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # Список районов владельца, 01.10.2026: зал закрывает соседние районы и школы.
+        ("возле 16 школы", NEAR_KZHBI),
+        ("у 16-ой школы", NEAR_KZHBI),
+        ("16 мектеп", NEAR_KZHBI),
+        ("7-й мкр", NEAR_KZHBI),
+        ("в 8 микрорайоне", NEAR_KZHBI),
+        ("седьмой микрорайон", NEAR_KZHBI),
+        ("у 4 школы", ["center_kairbekova_24", "center_kasymkhanova_10", "ksk_kairbekova_334"]),
+        ("наримановка", ["center_kasymkhanova_10"]),
+        ("юбилейный", ["plaza_szm_70"]),
+        ("ЦУМ", ["center_kairbekova_24"]),
+        ("береке", ["plaza_szm_70"]),
+        ("военный городок", ["magazin15_voinov_8b"]),
+        ("2-й подъём", ["magazin15_voinov_8b"]),
+        ("автовокзал", ["mkr6_arystanbekova_6"]),
+        ("центральный рынок", ["ksk_kairbekova_334"]),
+    ],
+)
+async def test_owner_districts_lead_to_the_gyms_that_serve_them(ctx, query, expected) -> None:
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert ids_of(result) == expected, result.data
+    assert result.data["nearby_only"] is True, "в самом районе зала нет — только рядом"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # Зал, который стоит в самом месте, — первым; чужой номер школы не цепляется.
+        ("школа №10", ["mkr6_arystanbekova_6", "magazin15_voinov_8b"]),
+        ("возле 9 школы", ["ksk_kairbekova_334", "center_kairbekova_24"]),
+        ("6 мкр", ["mkr6_arystanbekova_6"]),
+        ("шестой микрорайон", ["mkr6_arystanbekova_6"]),
+        ("15 магазин", ["magazin15_voinov_8b"]),
+    ],
+)
+async def test_gym_in_the_place_itself_comes_first(ctx, query, expected) -> None:
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert ids_of(result) == expected, result.data
 
 
 @pytest.mark.parametrize("query", ["", "   ", "\n"])
@@ -510,3 +562,19 @@ def test_greeting_offers_the_manager_option(kb) -> None:
     assert "менеджер" in kb.text("greeting.first", Language.RU).lower()
     assert "3." in kb.text("greeting.first", Language.KK)
     assert "4." not in kb.text("greeting.first", Language.RU), "в меню осталось четыре пункта"
+
+
+async def test_kzhbi_question_in_faq_names_the_two_gyms(ctx) -> None:
+    """«Есть зал на КЖБИ?» модель может спросить и у базы фактов, а не у поиска зала.
+
+    Живой прогон 01.10.2026: поиск уже предлагал два зала, а запись FAQ по КЖБИ
+    оставалась пустой с пробелом C-3 — и бот снова отвечал «уточню у администратора».
+    """
+    from app.tools.facts import get_kb_fact
+
+    result = await get_kb_fact(ctx, topic="contacts", scope="city", question="есть зал на кжби")
+
+    assert result.ok, result
+    answer = result.data["answer_ru"]
+    assert "Воинов-интернационалистов 8Б" in answer and "Арыстанбекова 6" in answer
+    assert result.data["gap_ref"] is None

@@ -73,6 +73,7 @@ from app.kb.agreement import (
     with_choice,
 )
 from app.kb.places import scope_by_texts
+from app.kb.sessions import age_answer
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
 from app.llm.prompt import build_system_instruction, prompt_ngrams
@@ -83,6 +84,7 @@ from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
 from app.types import (
+    OWNER_TEXT_ARTIFACT_PREFIX,
     ManagerCardKind,
     SavedLead,
     Scope,
@@ -1088,6 +1090,15 @@ async def _run_turn(
         # Хранимая история без обрезки: по ней проверяется, что назвал сам клиент.
         # Карточки расписания большие, и история для модели теряет старые ходы быстро.
         stored = await _stored_contents(db, conv)
+        if draft.child_age is None:
+            # Возраст, который клиент назвал раньше, — его же словами. Черновик хода
+            # видит только это сообщение, а проверка «назвал сам клиент» — шесть
+            # последних реплик. Скриншот владельца 01.10.2026: «8» в ответ на «сколько
+            # лет ребёнку?» выпало из этого окна, инструмент записи ответил «нужен
+            # возраст», а модель всё равно написала «Записал…».
+            remembered = _age_from_dialog(stored, raw_text, kb=kb, now=now)
+            if remembered is not None:
+                draft = draft.model_copy(update={"child_age": remembered})
         # Разбор переписки на карточку лида не влияет на ответ, поэтому идёт
         # параллельно с ним, а не после: последовательный вызов добавлял к
         # каждому ходу около секунды ожидания на стороне клиента.
@@ -1358,6 +1369,32 @@ async def _run_turn(
             # Клиент уже получил готовое подтверждение записи от кода. Текст модели
             # следом — это «администратор свяжется» или пересказ того же самого.
             reply = ""
+        elif _owner_text_sent(services):
+            # Текст владельца ушёл дословно отдельным сообщением. Пересказ модели следом —
+            # тот же ответ вторым экземпляром и чужими словами: «удобная спортивная
+            # одежда» вместо «👕 удобную спортивную одежду». Остаётся вопрос, который
+            # ведёт дальше. Цены и расписание при этом не теряются: их несут свои карточки.
+            # «Передать ваш вопрос администратору?» здесь неуместен: ответ уже дан —
+            # живой прогон 01.10.2026, модель приняла «отправлено» за «данных нет».
+            asked = question_sentence(reply)
+            if not asked or funnel.is_handover(asked):
+                asked = _kb_text(kb, funnel.next_step_key(draft), lang)
+            reply = asked
+        elif (
+            _BOOKING_CLAIM_RE.search(reply)
+            and not _booked_this_turn(invocations)
+            and not await _already_booked(db, conv)
+        ):
+            # Модель пишет «Записал…», а записи нет: инструмент вернул «не хватает
+            # возраста» или не вызывался вовсе. Скриншот владельца 01.10.2026: «Записал
+            # Айназарова Али… на вторник, 6 октября, в 17:00» — и тут же «сколько лет
+            # ребёнку?». Ложное «вы записаны» хуже любого вопроса: родитель придёт, а
+            # его не ждут. Вместо него уходит следующий шаг записи.
+            question = _booking_question(kb, lang, invocations) or _kb_text(
+                kb, funnel.next_step_key(draft), lang
+            )
+            _log.warning("false_booking_claim", conv_key=conv.conv_key, replaced=bool(question))
+            reply = question or ""
         if not reply.strip():
             # От ответа ничего не осталось: карточка и была ответом.
             _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
@@ -2575,6 +2612,42 @@ _CLIENT_CONTENT_LOOKBACK: Final[int] = 120
 _USER_TAG_RE: Final[re.Pattern[str]] = re.compile(r"</?user_message>")
 
 
+def _user_words(item: dict[str, Any]) -> str:
+    """Что написал клиент в этом элементе истории — без служебных заметок и тегов."""
+    pieces = []
+    for part in item.get("parts") or []:
+        piece = str(part.get("text") or "") if isinstance(part, dict) else ""
+        if piece.lstrip().startswith("[служебная заметка"):
+            continue
+        pieces.append(_USER_TAG_RE.sub("", piece).replace("&lt;", "<").replace("&gt;", ">").strip())
+    return " ".join(piece for piece in pieces if piece)
+
+
+def _age_from_dialog(
+    contents: Sequence[dict[str, Any]], current: str, *, kb: KBSnapshot, now: datetime
+) -> int | None:
+    """Последний возраст ребёнка, названный клиентом в этом диалоге, — его словами.
+
+    «8 лет» в любом сообщении или голое «8» в ответ на вопрос бота о возрасте. Слова
+    бота не считаются: в согласии «Да [согласие на предложение бота: «…»]» берутся
+    только слова клиента, иначе возраст из вопроса бота сошёл бы за ответ.
+    """
+    age: int | None = None
+    asked = ""
+    for item in contents:
+        role = item.get("role")
+        if role == "model":
+            asked = _content_text(item).strip() or asked
+            continue
+        if role != "user":
+            continue
+        own = split_agreement(_user_words(item))[0]
+        found = lexicon.extract_age(own, lexicon=kb.lexicon, now=now) or age_answer(own, asked)
+        if found is not None:
+            age = found
+    return age_answer(current, asked) or age
+
+
 def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[str, ...]:
     """Последние реплики клиента: из истории модели и текущая.
 
@@ -2586,13 +2659,7 @@ def _recent_client_texts(text: str, history: Sequence[dict[str, Any]]) -> tuple[
     for item in history:
         if item.get("role") != "user":
             continue
-        pieces = []
-        for part in item.get("parts") or []:
-            piece = str(part.get("text") or "") if isinstance(part, dict) else ""
-            if piece.lstrip().startswith("[служебная заметка"):
-                continue
-            pieces.append(_USER_TAG_RE.sub("", piece).replace("&lt;", "<").replace("&gt;", ">").strip())
-        clean = " ".join(piece for piece in pieces if piece)
+        clean = _user_words(item)
         if clean:
             said.append(clean)
     if (text or "").strip():
@@ -2682,6 +2749,33 @@ def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) ->
         if label and line not in lines:
             lines.append(line)
     return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, 1)) if len(lines) >= 2 else ""
+
+
+#: Утверждение, что ребёнок уже записан: «Записал Али…», «Вы записаны», «Жаздым».
+#: «Запишу», «записать» и «ещё не записал» сюда не попадают.
+_BOOKING_CLAIM_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<!не )\b(?:записал[аи]?|записался|записались|записан[аыо]?|жаздым|жаздық|"
+    r"жазып қойдым|жазып қойдық|тіркедім|тіркедік|жазылдыңыз)\b",
+    re.IGNORECASE,
+)
+
+
+def _booked_this_turn(invocations: Sequence[ToolInvocation]) -> bool:
+    """Создал ли ``create_trial_lead`` запись в этом ходу."""
+    return any(
+        invocation.name == "create_trial_lead"
+        and invocation.result is not None
+        and (invocation.result.data or {}).get("booked") is True
+        for invocation in invocations
+    )
+
+
+def _owner_text_sent(services: _Services) -> bool:
+    """Ушёл ли в этом ходу текст владельца, который нельзя пересказывать."""
+    return any(
+        (getattr(message, "artifact_id", None) or "").startswith(OWNER_TEXT_ARTIFACT_PREFIX)
+        for message in services.messages
+    )
 
 
 def _trial_confirmed(services: _Services) -> bool:

@@ -20,9 +20,12 @@ from typing import Any, Final, Sequence
 from app.kb.gaps import gap_for_topic, say_no_data
 from app.kb.models import FAQ_TOPICS, Bilingual, FaqEntry, KBSnapshot
 from app.types import (
+    OWNER_TEXT_ARTIFACT_PREFIX,
     EscalationReason,
     GapRef,
     Language,
+    OutboundKind,
+    OutboundMessage,
     RenderHint,
     Scope,
     ToolContext,
@@ -121,6 +124,41 @@ def _best_match(entries: Sequence[Any], question: str) -> Any | None:
     return best if best_score >= 0.5 else None
 
 
+async def _send_owner_text(ctx: ToolContext, entry: FaqEntry, lang: Language) -> ToolResult:
+    """Ответ владельца — клиенту дословно, отдельным сообщением от кода.
+
+    Подсказка VERBATIM модели только советует: живой прогон 01.10.2026 — на «что
+    взять с собой» модель написала «удобная спортивная одежда» и своё «специально
+    покупать форму не нужно», а владелец просил ровно его текст.
+    """
+    text = (entry.answer.get(lang) or entry.answer.ru or "").strip()
+    # Тот же текст уже ушёл в этом ходу — например, в подтверждении записи.
+    sent = (getattr(message, "text", "") or "" for message in getattr(ctx.services, "messages", ()))
+    if not any(text in body for body in sent):
+        await ctx.services.enqueue_outbound(
+            OutboundMessage(
+                conversation_id=ctx.conversation_id,
+                channel_id=ctx.channel_id,
+                channel=ctx.channel,
+                chat_id=ctx.chat_id,
+                lang=lang,
+                kind=OutboundKind.ARTIFACT,
+                text=text,
+                artifact_id=f"{OWNER_TEXT_ARTIFACT_PREFIX}{entry.id}",
+            )
+        )
+    return ToolResult.success(
+        data={"id": entry.id, "topic": entry.topic, "answered": True, "sent_to_client": True},
+        render_hint=RenderHint.SILENT,
+        caveats=[
+            "Клиент уже получил полный ответ владельца отдельным сообщением, слово в слово. "
+            "Это НЕ «данных нет»: администратора не предлагай. Не повторяй и не пересказывай "
+            "ответ — продолжи разговор одним коротким вопросом о записи."
+        ],
+        meta={"faq_id": entry.id, "sent_verbatim": True},
+    )
+
+
 async def get_kb_fact(
     ctx: ToolContext, *, topic: str, scope: str = "any", question: str = ""
 ) -> ToolResult:
@@ -149,6 +187,8 @@ async def get_kb_fact(
         answered = []
 
     # --- готовый ответ владельца ------------------------------------------- #
+    if entry is not None and entry.answered and entry.verbatim:
+        return await _send_owner_text(ctx, entry, lang)
     if entry is not None and entry.answered:
         data = _entry_payload(entry, lang)
         data["also"] = [_entry_payload(other, lang) for other in answered[1:3]]

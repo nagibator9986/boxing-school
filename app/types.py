@@ -286,6 +286,10 @@ class RenderHint(str, Enum):
 #: клиент уже получил готовое подтверждение, и текст модели следом не отправляет.
 TRIAL_CONFIRMATION_ARTIFACT: Final[str] = "trial_confirmation"
 
+#: ``artifact_id`` текста владельца, который уходит клиенту дословно: ``faq:<id>``.
+#: По нему пайплайн видит, что ответ уже отправлен кодом и пересказ модели лишний.
+OWNER_TEXT_ARTIFACT_PREFIX: Final[str] = "faq:"
+
 
 class OutboundKind(str, Enum):
     BOT_REPLY = "bot_reply"

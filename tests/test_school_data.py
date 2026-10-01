@@ -40,10 +40,17 @@ def test_what_to_bring_is_answered_with_the_owners_text(kb: KBSnapshot) -> None:
     """
     entry = next(item for item in kb.faq if item.id == "gear_first_lesson")
 
-    assert entry.answered
-    text = entry.answer.ru.lower()
-    for thing in ("одежд", "чешки", "вод", "босиком"):
-        assert thing in text, f"в ответе нет «{thing}»"
+    # Владелец 01.10.2026: «Сообщение должно быть такое» — дословно, с эмодзи.
+    assert entry.answer.ru == (
+        "На первую тренировку ничего специального покупать заранее не нужно.\n\n"
+        "С собой необходимо взять:\n\n"
+        "👕 удобную спортивную одежду;\n"
+        "👟 чешки или носочки;\n"
+        "💧 воду;\n"
+        "Главное — прийти немного заранее и настроиться на тренировку 😊"
+    )
+    for mark in ("👕", "👟", "💧", "😊"):
+        assert mark in entry.answer.kk, f"в казахском тексте нет «{mark}»"
 
 
 def test_flexible_plan_explains_when_recalculation_applies(kb: KBSnapshot) -> None:

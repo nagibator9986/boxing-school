@@ -74,7 +74,8 @@ def test_real_kb_loads(kb) -> None:
     assert len(kb.active_gyms(Scope.ALL)) == 14
     assert len(kb.active_gyms(Scope.CITY)) == 8
     assert len(kb.active_gyms(Scope.REGION)) == 6
-    assert len(list(kb.unresolved_gyms())) == 1
+    # Конфликт C-3 (КЖБИ) владелец закрыл 01.10.2026: район закрывают два соседних зала.
+    assert len(list(kb.unresolved_gyms())) == 0
     assert kb.pricing.city_plans["standard"].price == 25_000
     assert kb.pricing.region_family_price_per_child == 8_000
 

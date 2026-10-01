@@ -18,12 +18,13 @@ from datetime import datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo
 
-from app.kb.agreement import chosen_option, question_sentence, split_agreement
+from app.kb.agreement import chosen_option, offers_choice, question_sentence, split_agreement
 from app.kb.models import Gym, ScheduleSlot, age_value
 
 __all__ = [
     "SessionChoice",
     "TrialSession",
+    "age_answer",
     "client_named_discipline",
     "client_named_age",
     "client_named_day",
@@ -248,6 +249,44 @@ def _age_of_token(token: str) -> int | None:
 
 
 _AGE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\d:.])\d{1,2}(?![\d:.])|[^\W\d_]+")
+
+
+#: Вопрос бота о возрасте: «сколько лет ребёнку?», «сколько вашему ребёнку лет?»,
+#: «фамилию, имя и возраст», «Балаңыз неше жаста?».
+_AGE_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"сколько[^?]{0,30}?\bлет|возраст|неше\s+жас|жасы", re.IGNORECASE
+)
+
+#: Слова вокруг числа в коротком ответе о возрасте: «ему 8», «уже восемь», «8 жаста».
+_AGE_ANSWER_FILLERS: Final[frozenset[str]] = frozenset(
+    {
+        "ему", "ей", "уже", "скоро", "почти", "нам", "сыну", "дочке", "дочери", "сын",
+        "дочь", "ребенку", "ребёнку", "будет", "исполнилось", "исполнится", "лет", "год",
+        "года", "годика", "жас", "жаста", "жаста", "жасы", "жасқа", "балама", "балаға",
+    }
+)
+
+#: Возраст ребёнка, который вообще имеет смысл в ответе: «1» — скорее пункт меню.
+_AGE_ANSWER_RANGE: Final[range] = range(2, 18)
+
+
+def age_answer(text: str, asked: str) -> int | None:
+    """Возраст из короткого ответа на вопрос бота о возрасте: «8», «ему 8», «восемь».
+
+    Без вопроса голая цифра — что угодно: пункт меню, номер зала, время. На
+    «сколько лет ребёнку?» это ответ. Скриншот владельца 01.10.2026: родитель
+    написал «8», через пять сообщений бот этот возраст уже не видел — и спросил
+    его снова сразу после «Записал Айназарова Али…».
+    """
+    question = question_sentence(asked or "").lower()
+    if not question or not _AGE_QUESTION_RE.search(question) or offers_choice(asked or ""):
+        return None
+    own = split_agreement(text or "")[0].lower()
+    tokens = [token for token in _AGE_TOKEN_RE.findall(own) if token not in _AGE_ANSWER_FILLERS]
+    if len(tokens) != 1:
+        return None
+    age = _age_of_token(tokens[0])
+    return age if age in _AGE_ANSWER_RANGE else None
 
 
 def fold_name(word: str) -> str:

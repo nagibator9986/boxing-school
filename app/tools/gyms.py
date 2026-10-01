@@ -409,8 +409,46 @@ _GENERIC_PLACE_WORDS: Final[frozenset[str]] = frozenset(
         "микрорайон", "мкр", "район", "районе", "улица", "улице", "квартал",
         "дом", "проспект", "город", "городе", "поселок", "посёлок", "село",
         "ауданы", "ауданда", "коше", "көше", "калалык",
+        # Номер школы или магазина и есть адрес; само слово — нет. «школа» из
+        # «возле 16 школы» цепляла синоним КСК «школа 9», и КСК шёл вторым залом.
+        "школа", "школы", "школе", "школу", "школой", "мектеп", "мектепке", "мектептин",
+        "магазин", "магазина", "магазине",
+        # Предлоги места: «возле» цепляло ориентир «возле школы №10».
+        "возле", "около", "рядом", "недалеко", "напротив",
     }
 )
+
+
+#: Номерные ориентиры города. Клиент пишет «возле 16 школы», «у 16 ой школы»,
+#: «16 мектеп», «7 й мкр», «в 8 микрорайоне», а в базе одна запись — «школа 16»,
+#: «7 микрорайон». Обычный разбор на слова число теряет (слова короче трёх букв
+#: отбрасываются), и такой запрос не находил ни одного зала. Текст уже
+#: нормализован: без «№» и дефисов, казахские буквы свёрнуты.
+_SCHOOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)(\d{1,3})\s*(?:я|ой|ая|й|ая)?\s*(?:школ|мектеп)\w*|(?:школ|мектеп)\w*\s*(\d{1,3})(?!\d)"
+)
+_MICRODISTRICT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)(\d{1,2})\s*(?:й|ой|ый|ом|м)?\s*(?:мкр|микрорайон|микр|шагын)\w*"
+    r"|(?:мкр|микрорайон)\w*\s*(\d{1,2})(?!\d)"
+)
+#: Порядковые слова — уже нормализованные: «ь» нормализация выбрасывает
+#: («седьмой» → «седмой»).
+_ORDINAL_MICRODISTRICT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(пят|шест|седм|восм|девят)\w*\s+(?:мкр|микрорайон)\w*"
+)
+_ORDINALS: Final[dict[str, int]] = {"пят": 5, "шест": 6, "седм": 7, "восм": 8, "девят": 9}
+
+
+def _numbered_places(query: str) -> tuple[str, ...]:
+    """«возле 16 школы» → («школа 16»,), «7 й мкр» → («7 микрорайон»,)."""
+    found: list[str] = []
+    for match in _SCHOOL_RE.finditer(query):
+        found.append(f"школа {int(match.group(1) or match.group(2))}")
+    for match in _MICRODISTRICT_RE.finditer(query):
+        found.append(f"{int(match.group(1) or match.group(2))} микрорайон")
+    for match in _ORDINAL_MICRODISTRICT_RE.finditer(query):
+        found.append(f"{_ORDINALS[match.group(1)]} микрорайон")
+    return tuple(dict.fromkeys(found))
 
 
 def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
@@ -427,6 +465,8 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
 
     for query in queries:
         _add(query, 0)
+        for place in _numbered_places(query):
+            _add(place, 0)
         tokens = [token for token in query.split() if len(token) >= 3]
         for index, token in enumerate(tokens):
             # Отдельное служебное слово ничего не различает: по «микрорайон» из
@@ -435,7 +475,12 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
             # «6 микрорайон» — уже адрес.
             if token not in _GENERIC_PLACE_WORDS:
                 _add(token, 8)
-            if index + 1 < len(tokens):
+            # Пара из двух служебных слов места не называет: «возле школы» из «возле
+            # 9 школы» входило в ориентир «возле школы №10», и к КСК добавлялся
+            # 6-й микрорайон. Число у такой пары потеряно — им занят _numbered_places.
+            if index + 1 < len(tokens) and not (
+                token in _GENERIC_PLACE_WORDS and tokens[index + 1] in _GENERIC_PLACE_WORDS
+            ):
                 _add(f"{token} {tokens[index + 1]}", 4)
     return tuple(sorted(forms.items(), key=lambda item: item[1]))
 

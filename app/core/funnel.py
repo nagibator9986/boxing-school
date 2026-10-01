@@ -59,6 +59,9 @@ _HANDOVER_MARKERS: Final[tuple[str, ...]] = (
     "передам администратор",
     "ответит администратор",
     "передаю ваш вопрос",
+    "передать ваш вопрос",
+    "передать вопрос",
+    "передать администратор",
     "передаю менеджер",
     "әкімшіге",
     "әкімші жауап",
@@ -127,7 +130,7 @@ def ask_full_name(reply: str, *, kb: KBSnapshot, lang: Language) -> str:
     return "\n".join(lines) if replaced else reply
 
 
-def _is_handover(text: str) -> bool:
+def is_handover(text: str) -> bool:
     """Похоже ли, что этим ответом бот передаёт разговор человеку."""
     lowered = (text or "").lower()
     return any(marker in lowered for marker in _HANDOVER_MARKERS)
@@ -193,7 +196,7 @@ def pending_question(
     отброшенным хвостом.
     """
     body = (reply or "").strip()
-    if not body or farewell or _is_handover(body) or ends_with_question(body):
+    if not body or farewell or is_handover(body) or ends_with_question(body):
         return None
     question = (kb.text(next_step_key(draft), lang) or "").strip()
     if not question or question in body:
