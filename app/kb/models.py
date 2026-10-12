@@ -297,6 +297,10 @@ class ScheduleSlot(_Base):
     time_end: str
     shift: Literal["first", "second", "any"] = "any"
     note: Bilingual | None = None
+    #: Абонемент на это время, если он не такой, как по общему прайсу. Владелец
+    #: 12.10.2026: в КСК бокс по Вт, Чт, Сб в 9:00 и 17:00 — 20 000 ₸ вместо 25 000,
+    #: «чтобы туда набрался трафик». Пусто — действует общий прайс.
+    price: int | None = Field(default=None, gt=0, le=1_000_000)
 
     @field_validator("time_start", "time_end")
     @classmethod
@@ -1129,6 +1133,12 @@ class KBSnapshot(BaseModel):
             if gym.is_head:
                 return gym
         return None
+
+    def closed_gyms(self) -> tuple[Gym, ...]:
+        """Залы, которые школа закрыла: по ним бот говорит «зала больше нет»."""
+        return tuple(
+            sorted((gym for gym in self.gyms.gyms if gym.status is GymStatus.CLOSED), key=lambda gym: gym.id)
+        )
 
     def unresolved_gyms(self) -> tuple[Gym, ...]:
         """Записи-заглушки нерешённых конфликтов (C-3, КЖБИ), отсортированы по id."""

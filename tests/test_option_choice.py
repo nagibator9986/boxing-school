@@ -22,7 +22,8 @@ from tests.conftest import RecordingQueue, RecordingServices, webhook_payload
 #: Бокс и кикбоксинг Вт·Чт·Сб в 19:00.
 MKR6 = "mkr6_arystanbekova_6"
 #: Бокс и кикбоксинг Пн·Ср·Пт в 09:00 и в 19:00.
-RAHAT = "center_kairbekova_24"
+#: Бокс Вт·Чт·Сб в 09:00 и в 18:45 — два времени у одной секции.
+VOINOV = "magazin15_voinov_8b"
 SECTION_LIST = (
     "В это время в зале проходят и бокс, и кикбоксинг.\n\n"
     "На какую секцию записать Али?\n\n"
@@ -100,16 +101,16 @@ async def test_digit_choice_gives_the_time_when_the_section_has_two(kb) -> None:
 
     from app.tools.booking import create_trial_lead
 
-    offer = "Какое время удобнее?\n1. Бокс — Пн, Ср, Пт 09:00\n2. Бокс — Пн, Ср, Пт 19:00"
+    offer = "Какое время удобнее?\n1. Бокс — Вт, Чт, Сб 09:00\n2. Бокс — Вт, Чт, Сб 18:45"
     ctx = _ctx(kb, "Айназаров Али, 8 лет, на бокс", with_choice("2", offer))
 
     result = await create_trial_lead(
-        ctx, child_name="Айназаров Али", child_age=8, gym_id=RAHAT, parent_agreed=True,
-        discipline="boxing", session_time="19:00",
+        ctx, child_name="Айназаров Али", child_age=8, gym_id=VOINOV, parent_agreed=True,
+        discipline="boxing", session_time="18:45",
     )
 
     assert result.data["booked"] is True, result.data
-    assert ctx.services.leads[-1].trial_slot.astimezone(ZoneInfo("Asia/Almaty")).hour == 19
+    assert ctx.services.leads[-1].trial_slot.astimezone(ZoneInfo("Asia/Almaty")).hour == 18
 
 
 async def test_handover_on_a_bare_digit_or_a_choice_is_refused(kb) -> None:

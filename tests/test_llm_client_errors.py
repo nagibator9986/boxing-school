@@ -276,3 +276,20 @@ def test_unrestricted_call_keeps_auto_mode() -> None:
     fcc = config.tool_config.function_calling_config
     assert fcc.mode is types.FunctionCallingConfigMode.AUTO
     assert not fcc.allowed_function_names
+
+
+
+def test_depleted_prepayment_is_a_quota_error_not_a_bad_request() -> None:
+    """12.10.2026: «402 Your prepayment credits are depleted» — без RESOURCE_EXHAUSTED в тексте.
+
+    Это не ошибка запроса, а пустой счёт: бот обязан прислать администратору тревогу
+    «пополните кредиты», а не молча уходить в «сбой» на каждом сообщении.
+    """
+    error = genai_errors.ClientError(
+        402,
+        {"error": {"code": 402, "status": "RESOURCE_EXHAUSTED",
+                   "message": "Your prepayment credits are depleted. Please go to AI Studio."}},
+    )
+    error.message = "Your prepayment credits are depleted. Please go to AI Studio."
+
+    assert isinstance(_classify(error), LLMQuotaError)

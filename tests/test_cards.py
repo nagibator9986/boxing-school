@@ -40,14 +40,14 @@ def test_gyms_list_is_numbered(kb: KBSnapshot) -> None:
 
 
 def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
-    """Тобыл — восьмой зал в списке города, без оговорок про цену.
+    """Тобыл — последний зал в списке города, без оговорок про цену.
 
     Владелец 10.09.2026: «восьмого зала нашего нету — город Тобыл, Тәуелсіздік
     51» и «цены ниже городских — не надо, у нас одна цена».
     """
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
 
-    assert "8. Тобыл" in text, text
+    assert "6. Тобыл" in text, text
     assert "цены" not in text.lower()
     # Райцентры в нумерованный список не попадают — они одной строкой ниже.
     assert "Житикара" not in text

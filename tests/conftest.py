@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,28 @@ CHANNEL_ID = "11111111-1111-1111-1111-111111111111"
 def kb() -> KBSnapshot:
     """Настоящий снимок ``kb/``: тесты обязаны ловить расхождение кода и данных."""
     snapshot, _ = load_sync(ROOT / "kb", media_dir=ROOT / "media", schema_version=1)
+    return snapshot
+
+
+@pytest.fixture(scope="session")
+def kb_with_closed_gyms(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
+    """Копия базы, где залы, закрытые 12.10.2026, снова открыты.
+
+    Для тестов логики записи, построенных на их расписании: у Рахата бокс и
+    кикбоксинг Пн·Ср·Пт в 09:00 и 19:00, у «Кеме» — одно время. Такой формы
+    расписания у действующих залов нет, а проверяют эти тесты согласие, выбор и
+    время, а не состав залов — его проверяют тесты на настоящей базе (``kb``).
+    """
+    target = tmp_path_factory.mktemp("kb_reopened") / "kb"
+    shutil.copytree(ROOT / "kb", target, ignore=shutil.ignore_patterns(".*"))
+    gyms = target / "gyms.yaml"
+    gyms.write_text(
+        gyms.read_text(encoding="utf-8").replace(
+            "active: false\n  status: closed\n", "active: true\n  status: open\n"
+        ),
+        encoding="utf-8",
+    )
+    snapshot, _ = load_sync(target, media_dir=ROOT / "media", schema_version=1)
     return snapshot
 
 

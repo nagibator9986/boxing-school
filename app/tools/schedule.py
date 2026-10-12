@@ -76,6 +76,8 @@ def _slot_payload(slot: ScheduleSlot, lang: Language) -> dict[str, Any]:
         "age_known": slot.age_known,
         "shift": slot.shift,
         "note": slot.note.get(lang) if slot.note is not None else None,
+        # Абонемент на это время, если он не по общему прайсу (КСК, бокс, Вт/Чт/Сб — 20 000).
+        "price": slot.price,
     }
 
 

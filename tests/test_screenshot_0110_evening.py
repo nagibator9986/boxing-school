@@ -295,17 +295,17 @@ def test_instruction_steps_are_not_a_choice() -> None:
 
 
 async def test_hour_shared_by_different_days_asks_for_the_option_not_the_section(deps, kb) -> None:
-    """«17» в КСК: бокс и кикбоксинг в двух наборах дней — выбирают вариант, а не секцию."""
-    await say(deps, 1, "Запишите Айназарова Али, 8 лет, в КСК", FakeTurn.tool(
+    """«19» в Плазе: бокс и кикбоксинг и в Пн/Ср/Пт, и во Вт/Чт/Сб — выбирают вариант, а не секцию."""
+    await say(deps, 1, "Запишите Айназарова Али, 8 лет, в Плазу", FakeTurn.tool(
         FakeCall("create_trial_lead", {
-            "child_name": "Айназаров Али", "child_age": 8, "gym_id": KSK, "parent_agreed": True,
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": "plaza_szm_70", "parent_agreed": True,
         })
     ), FakeTurn.answer("Какое время вам удобнее?"))
 
-    reply = "\n".join(await say(deps, 2, "17"))
+    reply = "\n".join(await say(deps, 2, "19"))
 
     assert reply.startswith(kb.text("funnel.pick_option", Language.RU)), reply
-    assert reply.count("17:00") == 3 and reply.rstrip().endswith("Напишите только цифру: 1, 2, 3")
+    assert reply.count("19:00") == 4 and reply.rstrip().endswith("Напишите только цифру: 1, 2, 3, 4")
 
 
 

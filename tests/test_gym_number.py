@@ -34,7 +34,7 @@ async def _conv(sessionmaker) -> Conversation:
 
 
 async def test_number_after_the_list_picks_that_gym(kb, state, sessionmaker, settings) -> None:
-    """«7» после карточки залов — это седьмой зал, а не возраст ребёнка."""
+    """«5» после карточки залов — это пятый зал, а не возраст ребёнка."""
     from app.core.pipeline import _gym_choice
 
     llm = FakeLLMClient([FakeTurn.answer("Здравствуйте!")])
@@ -44,14 +44,14 @@ async def test_number_after_the_list_picks_that_gym(kb, state, sessionmaker, set
 
     conv = await _conv(sessionmaker)
     async with sessionmaker() as db:
-        picked = await _gym_choice(db, conv, "7", kb=kb)
+        picked = await _gym_choice(db, conv, "5", kb=kb)
 
     assert picked is not None, "номер зала не опознан"
-    assert "Западный микрорайон" in picked, picked
+    assert "Костанай Плаза" in picked, picked
 
 
 async def test_suburb_number_picks_tobyl(kb, state, sessionmaker, settings) -> None:
-    """Восьмой пункт — Тобыл: владелец считает его восьмым залом школы."""
+    """Последний пункт городского списка — Тобыл: владелец считает его залом города."""
     from app.core.pipeline import _gym_choice
 
     llm = FakeLLMClient([FakeTurn.answer("Здравствуйте!")])
@@ -61,7 +61,7 @@ async def test_suburb_number_picks_tobyl(kb, state, sessionmaker, settings) -> N
 
     conv = await _conv(sessionmaker)
     async with sessionmaker() as db:
-        picked = await _gym_choice(db, conv, "8", kb=kb)
+        picked = await _gym_choice(db, conv, "6", kb=kb)
 
     assert picked and "Тобыл" in picked, picked
 

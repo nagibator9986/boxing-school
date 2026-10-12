@@ -71,8 +71,9 @@ def test_real_kb_loads(kb) -> None:
     # (C-3), она живёт в базе со статусом unresolved и в выдачу не попадает.
     # Седьмой городской — Западный микрорайон, Полевая 7/3: данные владельца от
     # 02.09.2026. Тобыл 10.09.2026 перешёл в городские: «у нас одна цена».
-    assert len(kb.active_gyms(Scope.ALL)) == 14
-    assert len(kb.active_gyms(Scope.CITY)) == 8
+    # Каирбекова 24 и Полевую владелец закрыл 12.10.2026.
+    assert len(kb.active_gyms(Scope.ALL)) == 12
+    assert len(kb.active_gyms(Scope.CITY)) == 6
     assert len(kb.active_gyms(Scope.REGION)) == 6
     # Конфликт C-3 (КЖБИ) владелец закрыл 01.10.2026: район закрывают два соседних зала.
     assert len(list(kb.unresolved_gyms())) == 0

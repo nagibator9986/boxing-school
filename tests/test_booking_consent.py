@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import pytest
 import sqlalchemy as sa
 
 from app.admin.runtime_settings import RuntimeSettings
@@ -27,8 +28,15 @@ from app.types import ChannelKind, IntentHint, Language, ToolContext
 
 from tests.conftest import RecordingQueue, RecordingServices, webhook_payload
 
-#: Бокс и кикбоксинг Пн·Ср·Пт в 09:00 и в 19:00.
+#: Бокс и кикбоксинг Пн·Ср·Пт в 09:00 и в 19:00. Зал закрыт 12.10.2026, но форма его
+#: расписания — два времени у одной секции — лучшая проверка выбора времени, и тесты
+#: этого модуля идут на копии базы, где он открыт (``kb_with_closed_gyms``).
 RAHAT = "center_kairbekova_24"
+
+
+@pytest.fixture
+def kb(kb_with_closed_gyms):
+    return kb_with_closed_gyms
 #: Бокс и кикбоксинг только Пн·Ср·Пт в 19:00.
 KEME = "polevaya_7_3"
 LEADS_NUMBER = "77000000077"

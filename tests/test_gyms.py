@@ -56,11 +56,6 @@ def ids_of(result) -> list[str]:
         ("жанакала", "center_kasymkhanova_10"),
         ("жаңа қала", "center_kasymkhanova_10"),
         ("касымханова", "center_kasymkhanova_10"),
-        # Рахат
-        ("рахат", "center_kairbekova_24"),
-        ("возле рахата", "center_kairbekova_24"),
-        ("у магазина рахат", "center_kairbekova_24"),
-        ("каирбекова 24", "center_kairbekova_24"),
         # 15-й магазин
         ("15й магазин", "magazin15_voinov_8b"),
         ("15-й магазин", "magazin15_voinov_8b"),
@@ -108,34 +103,60 @@ async def test_typos_are_forgiven(ctx, query, expected) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Два зала в «Центре»
+# Закрытые залы: владелец 12.10.2026 убрал Каирбекова 24 и Полевую
 # --------------------------------------------------------------------------- #
-async def test_two_central_gyms_are_never_merged(ctx) -> None:
-    """«Центр» — это два разных зала, бот обязан переспросить про ориентир."""
-    result = await find_gym_by_district(ctx, district_text="центр")
-
-    assert result.ok
-    found = ids_of(result)
-    assert "center_kairbekova_24" in found
-    assert "center_kasymkhanova_10" in found
-    assert result.data["ambiguous"] is True
-    assert any("ориентир" in caveat.lower() for caveat in result.caveats)
+CLOSED = "больше не работает"
+NEAR_RAKHAT = ["center_kasymkhanova_10", "ksk_kairbekova_334"]
 
 
-async def test_landmark_disambiguates_two_central_gyms(ctx) -> None:
-    """Ориентир различает залы: «Рахат» и «Жана-Кала» — разные адреса."""
-    rakhat = await find_gym_by_district(ctx, district_text="центр рахат")
+@pytest.mark.parametrize("query", ["рахат", "возле рахата", "у магазина рахат", "каирбекова 24"])
+async def test_closed_rakhat_gym_is_named_closed_and_the_nearest_are_offered(ctx, query) -> None:
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert ids_of(result) == NEAR_RAKHAT, result.data
+    assert result.data["nearby_only"] is True, "зала по этому адресу нет — только рядом"
+    assert any(CLOSED in caveat for caveat in result.caveats), "сказать прямо, что зал закрыт"
+
+
+@pytest.mark.parametrize("query", ["западный микрорайон", "полевая", "бц кеме"])
+async def test_closed_polevaya_gym_leads_to_the_full_list(ctx, query) -> None:
+    """Владелец выбрал для Западного честное «зала нет» и список, а не Плазу по слову «западный»."""
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert result.data["gyms"] == [], result.data
+    assert result.data["offer_full_list"] is True
+    assert any(CLOSED in caveat for caveat in result.caveats)
+
+
+@pytest.mark.parametrize("query", ["цум", "центр"])
+async def test_districts_the_closed_gym_served_go_to_the_nearest_without_the_closed_story(ctx, query) -> None:
+    """ЦУМ и Центр закрывают действующие залы рядом — «зал у Рахата закрыт» тут ни к чему."""
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert ids_of(result)[0] == "center_kasymkhanova_10", result.data
+    assert not any(CLOSED in caveat for caveat in result.caveats)
+
+
+def test_closed_gyms_are_out_of_every_list(kb) -> None:
+    active = {gym.id for gym in kb.active_gyms(Scope.ALL)}
+
+    assert not active & {"center_kairbekova_24", "polevaya_7_3"}
+    for artifact in ("gym_location_center_kairbekova_24", "gym_location_polevaya_7_3", "route_center_kairbekova_24"):
+        assert kb.artifact(artifact).enabled is False, f"{artifact} уходил бы клиентам"
+
+
+async def test_landmark_finds_the_central_gym(ctx) -> None:
     zhana = await find_gym_by_district(ctx, district_text="центр жана кала")
 
-    assert ids_of(rakhat)[0] == "center_kairbekova_24"
     assert ids_of(zhana)[0] == "center_kasymkhanova_10"
 
 
 async def test_house_number_is_compared_exactly(ctx) -> None:
-    """Каирбекова 24 и Каирбекова 334 — два разных зала на одной улице."""
+    """Каирбекова 24 и Каирбекова 334 — разные дома на одной улице."""
     result = await find_gym_by_district(ctx, district_text="каирбекова 24")
 
-    assert ids_of(result)[0] == "center_kairbekova_24"
+    # КСК на Каирбекова 334 предлагается как ближайший, а не как зал «по этому адресу».
+    assert result.data["nearby_only"] is True, result.data
     # Одна опечатка не имеет права склеить дом 24 с домом 334.
     assert is_fuzzy_match("каирбекова 24", "каирбекова 334")[0] is False
 
@@ -194,10 +215,10 @@ async def test_kzhbi_offers_the_two_nearest_gyms(ctx, query) -> None:
         ("7-й мкр", NEAR_KZHBI),
         ("в 8 микрорайоне", NEAR_KZHBI),
         ("седьмой микрорайон", NEAR_KZHBI),
-        ("у 4 школы", ["center_kairbekova_24", "center_kasymkhanova_10", "ksk_kairbekova_334"]),
+        ("у 4 школы", ["center_kasymkhanova_10", "ksk_kairbekova_334"]),
         ("наримановка", ["center_kasymkhanova_10"]),
         ("юбилейный", ["plaza_szm_70"]),
-        ("ЦУМ", ["center_kairbekova_24"]),
+        ("ЦУМ", ["center_kasymkhanova_10", "ksk_kairbekova_334"]),
         ("береке", ["plaza_szm_70"]),
         ("военный городок", ["magazin15_voinov_8b"]),
         ("2-й подъём", ["magazin15_voinov_8b"]),
@@ -217,7 +238,7 @@ async def test_owner_districts_lead_to_the_gyms_that_serve_them(ctx, query, expe
     [
         # Зал, который стоит в самом месте, — первым; чужой номер школы не цепляется.
         ("школа №10", ["mkr6_arystanbekova_6", "magazin15_voinov_8b"]),
-        ("возле 9 школы", ["ksk_kairbekova_334", "center_kairbekova_24"]),
+        ("возле 9 школы", ["ksk_kairbekova_334"]),
         ("6 мкр", ["mkr6_arystanbekova_6"]),
         ("шестой микрорайон", ["mkr6_arystanbekova_6"]),
         ("15 магазин", ["magazin15_voinov_8b"]),
@@ -246,8 +267,8 @@ async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     result = await get_gyms(ctx, scope="city")
 
     assert result.ok
-    # Семь залов Костаная и Тобыл: 10.09.2026 он перешёл на городской прайс.
-    assert result.data["total_in_scope"] == 8
+    # Пять залов Костаная и Тобыл: Каирбекова 24 и Полевую владелец закрыл 12.10.2026.
+    assert result.data["total_in_scope"] == 6
     assert all(gym["scope"] == Scope.CITY.value for gym in result.data["gyms"])
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
@@ -266,9 +287,15 @@ async def test_get_gyms_region_returns_all_settlements(ctx) -> None:
     assert {g["settlement"] for g in result.data["gyms"] if g["address"] is None} == region
 
 
-async def test_get_gyms_warns_about_duplicate_districts(ctx) -> None:
-    """В городе два «Центра» — модель обязана получить об этом предупреждение."""
-    result = await get_gyms(ctx, scope="city")
+async def test_get_gyms_warns_about_duplicate_districts(ctx, kb_with_closed_gyms) -> None:
+    """Два «Центра» — модель обязана получить предупреждение.
+
+    С 12.10.2026 «Центр» в городе один; правило проверяется на копии базы, где
+    закрытый зал у Рахата снова открыт.
+    """
+    from dataclasses import replace
+
+    result = await get_gyms(replace(ctx, kb=kb_with_closed_gyms), scope="city")
 
     assert "центр" in result.data["duplicate_districts"]
     assert any("ориентир" in caveat.lower() for caveat in result.caveats)
@@ -364,7 +391,7 @@ async def test_get_gyms_respects_limit(ctx) -> None:
     result = await get_gyms(ctx, scope="all", limit=2)
 
     assert len(result.data["gyms"]) == 2
-    assert result.data["total_in_scope"] == 14
+    assert result.data["total_in_scope"] == 12
     assert any("не все" in caveat.lower() for caveat in result.caveats)
 
 

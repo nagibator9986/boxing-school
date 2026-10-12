@@ -320,6 +320,12 @@ def _classify(exc: BaseException) -> LLMError:
     status = _status_of(exc)
     message = str(getattr(exc, "message", "") or exc)
     lowered = message.lower()
+    # 402 — кончились оплаченные кредиты (предоплата AI Studio). 12.10.2026 Gemini ответил
+    # «402 Your prepayment credits are depleted» без слова RESOURCE_EXHAUSTED в тексте,
+    # и отказ уходил в «некорректный запрос»: тревога «пополните счёт» не срабатывала,
+    # а клиенты получали «сбой» без объяснения администратору.
+    if status == 402 or "credits are depleted" in lowered:
+        return LLMQuotaError(f"оплаченные кредиты Gemini кончились: {message[:300]}")
     if status == 429 or "resource_exhausted" in lowered:
         squashed = _429_haystack(exc, message)
         minute = any(marker in squashed for marker in _RATE_MARKERS)

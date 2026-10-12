@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-10-01"
+updated_at: "2026-10-12"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -67,6 +67,10 @@ gyms:
     - fri
     time_start: "19:00"
     time_end: "20:30"
+  # Владелец 12.10.2026: «зал разделён на две секции. Пн, Ср, Пт — кикбоксинг,
+  # абонемент 25 000 как был. Вт, Чт, Сб — бокс, утром в 9:00 и вечером в 17:00.
+  # Эти два времени не набираются уже год — на них делаем по 20 000». Кикбоксинга
+  # по Вт, Чт, Сб в КСК больше нет.
   - discipline: boxing
     age_from: null
     age_to: null
@@ -76,17 +80,7 @@ gyms:
     - sat
     time_start: 09:00
     time_end: "10:30"
-  # Владелец 10.09.2026: «по расписанию не дописано только КСК — вторник,
-  # четверг, суббота 17:00–18:30»; в это время занимаются обе секции.
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - tue
-    - thu
-    - sat
-    time_start: "17:00"
-    time_end: "18:30"
+    price: 20000
   - discipline: boxing
     age_from: null
     age_to: null
@@ -96,6 +90,7 @@ gyms:
     - sat
     time_start: "17:00"
     time_end: "18:30"
+    price: 20000
   capacity_note: null
   media:
   - gym_location_ksk_kairbekova_334
@@ -119,7 +114,13 @@ gyms:
   - школа 11
   - школа 13
   - школа 14
-  - школа 22
+  - школа 22  # Владелец 12.10.2026: зал у Рахата закрыт — его районы закрывают ближайшие залы.
+  - рахат
+  - рахата
+  - цум
+  - океан
+  - каирбекова 24
+
 - id: plaza_szm_70
   scope: city
   settlement: Костанай
@@ -315,6 +316,7 @@ gyms:
   map_url: https://2gis.kz/kostanay/geo/70000001116923383
   phone: null
   coaches: []
+  # Владелец 12.10.2026: «график работы Касымханова 18:00–19:00».
   schedule:
   - discipline: kickboxing
     age_from: null
@@ -323,13 +325,13 @@ gyms:
     - tue
     - thu
     - sat
-    time_start: "17:30"
+    time_start: "18:00"
     time_end: "19:00"
   - discipline: boxing
     age_from: null
     age_to: null
     days: *id002
-    time_start: "17:30"
+    time_start: "18:00"
     time_end: "19:00"
   capacity_note: null
   media:
@@ -348,13 +350,22 @@ gyms:
   - школа 2
   - школа 3
   - школа 4
-  - школа 11
+  - школа 11  # Владелец 12.10.2026: зал у Рахата закрыт — его районы закрывают ближайшие залы.
+  - рахат
+  - рахата
+  - цум
+  - океан
+  - центр
+  - каирбекова 24
+
+# Владелец 12.10.2026: «нужно убрать адрес каирбекова 24 и полевая». Запись остаётся
+# закрытой, а не удаляется: по ней читаются старые заявки и напоминания.
 - id: center_kairbekova_24
   scope: city
   settlement: Костанай
   is_head: false
-  active: true
-  status: open
+  active: false
+  status: closed
   title:
     ru: Центр — у магазина «Рахат»
     kk: Орталық — «Рахат» дүкені жанында
@@ -612,12 +623,14 @@ gyms:
   - магазин солнечный
   - школа 7
   - школа 16
+# Владелец 12.10.2026: «нужно убрать адрес каирбекова 24 и полевая». Запись остаётся
+# закрытой, а не удаляется: по ней читаются старые заявки и напоминания.
 - id: polevaya_7_3
   scope: city
   settlement: Костанай
   is_head: false
-  active: true
-  status: open
+  active: false
+  status: closed
   title:
     ru: Западный микрорайон — БЦ «Кеме»
     kk: Батыс шағын ауданы — «Кеме» БО
@@ -698,6 +711,7 @@ gyms:
   map_url: https://2gis.kz/kostanay/geo/70000001116923454
   phone: null
   coaches: []
+  # Владелец 12.10.2026: «график работы Тобол 19:30–21:00».
   schedule:
   - discipline: kickboxing
     age_from: null
@@ -706,14 +720,14 @@ gyms:
     - mon
     - wed
     - fri
-    time_start: "19:00"
-    time_end: "20:30"
+    time_start: "19:30"
+    time_end: "21:00"
   - discipline: boxing
     age_from: null
     age_to: null
     days: *id005
-    time_start: "19:00"
-    time_end: "20:30"
+    time_start: "19:30"
+    time_end: "21:00"
   capacity_note: null
   media:
   - route_region_tobyl

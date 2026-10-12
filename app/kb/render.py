@@ -572,10 +572,51 @@ def render_price_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> 
         discount_label = pricing.city_family_discount.label.get(lang)
         if discount_label:
             parts.append(f"{ICON_FAMILY} {discount_label}")
+        # Особая цена отдельных занятий — сразу в прайсе, иначе родитель видит
+        # 25 000 ₸ и не узнаёт про 20 000 ₸ в КСК по Вт, Чт, Сб.
+        parts.extend(f"{ICON_PRICE} {line}" for line in special_price_lines(snapshot, lang))
 
     if len(parts) <= 1:
         return _lang_text(snapshot, "gap.generic", lang)
     return _blocks(parts)
+
+
+def special_prices(snapshot: KBSnapshot) -> list[dict[str, object]]:
+    """Занятия с особой ценой в залах города: зал, секция, дни, время, абонемент.
+
+    Слоты с одной ценой, секцией и днями сводятся в одну строку: «Вт, Чт, Сб в
+    09:00, 17:00», а не две строки подряд.
+    """
+    grouped: dict[tuple[str, str, tuple[str, ...], int], list[str]] = {}
+    for gym in city_list_order(snapshot):
+        for slot in gym.schedule:
+            if slot.price is None:
+                continue
+            key = (gym.id, slot.discipline, tuple(slot.days), slot.price)
+            grouped.setdefault(key, []).append(slot.time_start)
+    return [
+        {"gym_id": gym_id, "discipline": discipline, "days": list(days),
+         "times": sorted(times), "price": price}
+        for (gym_id, discipline, days, price), times in grouped.items()
+    ]
+
+
+def special_price_lines(snapshot: KBSnapshot, lang: Language) -> list[str]:
+    """Особые цены строками для прайса: «КСК — школа №9: Бокс, Вт, Чт, Сб в 09:00, 17:00 — …»."""
+    lines: list[str] = []
+    for item in special_prices(snapshot):
+        gym = snapshot.gym(str(item["gym_id"]))
+        if gym is None:
+            continue
+        lines.append(snapshot.text(
+            "card.special_price", lang,
+            gym=gym.title.get(lang) or gym.title.ru or gym.id,
+            discipline=_lang_text(snapshot, f"card.{item['discipline']}", lang),
+            days=_days_line(list(item["days"]), lang),
+            times=", ".join(item["times"]),
+            price=_money(int(item["price"])),
+        ))
+    return lines
 
 
 def _plan_block(plan: PlanPrice, lang: Language) -> str:
@@ -731,6 +772,8 @@ def render_schedule_card(
             line = f"{days} · {slot.time_start}–{slot.time_end}"
             if slot.age_known:
                 line += f" ({slot.age_from}–{slot.age_to})"
+            if slot.price is not None:
+                line += f" — {snapshot.text('card.slot_price', lang, price=_money(slot.price))}"
             lines.append(f"{ICON_TIME} {line}")
         parts.append("\n".join(lines))
 

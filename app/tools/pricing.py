@@ -137,6 +137,11 @@ def _city_showcase(kb: KBSnapshot) -> dict[str, Any]:
         "validity_note_kk": pricing.city_validity_note.kk,
         "plans": plans,
     }
+    # Особая цена отдельных занятий: без неё модель называла бы 25 000 ₸ на бокс в
+    # КСК по Вт, Чт, Сб, а фильтр снимал бы честные «20 000 ₸» как выдумку.
+    from app.kb.render import special_prices
+
+    showcase["special_prices"] = special_prices(kb)
     if pricing.city_single is not None:
         showcase["single"] = _plan_view(Plan.SINGLE.value, pricing.city_single)
     discount = pricing.city_family_discount
@@ -301,15 +306,37 @@ async def calculate_price(
         )
 
     if parsed_scope is Scope.CITY:
-        return _calc_city(
+        return _with_special_prices(kb, _calc_city(
             kb,
             plan=parsed_plan,
             children_count=children_count,
             single_sessions=single_sessions,
             mode=mode,
             step=step,
-        )
+        ))
     return _calc_region(kb, plan=parsed_plan, children_count=children_count, mode=mode, step=step)
+
+
+#: Подсказка модели к особой цене отдельных занятий.
+_SPECIAL_PRICE_CAVEAT: Final[str] = (
+    "Есть занятия с особой ценой абонемента (special_prices): называй её, когда родитель "
+    "выбирает эти занятия или спрашивает про них. Остальное — по тарифам выше."
+)
+
+
+def _with_special_prices(kb: KBSnapshot, result: ToolResult) -> ToolResult:
+    """Особая цена отдельных занятий — в каждом расчёте по городу.
+
+    Владелец 12.10.2026: в КСК бокс по Вт, Чт, Сб в 9:00 и 17:00 — 20 000 ₸. Без этого
+    модель на «сколько стоит бокс в КСК утром» называла бы 25 000 ₸.
+    """
+    from app.kb.render import special_prices
+
+    specials = special_prices(kb)
+    if not specials or not result.ok:
+        return result
+    result.data["special_prices"] = specials
+    return result.model_copy(update={"caveats": (*result.caveats, _SPECIAL_PRICE_CAVEAT)})
 
 
 def _calc_city(

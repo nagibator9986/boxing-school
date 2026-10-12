@@ -21,7 +21,8 @@ ADMIN = "77000000077"
 ZARINA = "77000000078"
 GROUP = "77000000077-1600000000@g.us"
 CHANNEL = "00000000-0000-4000-8000-000000000002"
-RAHAT = "center_kairbekova_24"
+#: Бокс и кикбоксинг Вт·Чт·Сб в 19:00.
+MKR6 = "mkr6_arystanbekova_6"
 
 
 async def _deps(kb, state, sessionmaker, settings, llm, runtime: RuntimeSettings) -> PipelineDeps:
@@ -49,7 +50,7 @@ async def _sent(sessionmaker) -> dict[str, list[str]]:
 def _booking_llm() -> FakeLLMClient:
     return FakeLLMClient([
         FakeTurn.tool(FakeCall("create_trial_lead", {
-            "child_name": "Айназаров Али", "child_age": 8, "gym_id": RAHAT, "parent_agreed": True,
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": MKR6, "parent_agreed": True,
             "session_time": "19:00", "discipline": "boxing",
         })),
         FakeTurn.answer("Готово"),
@@ -124,7 +125,7 @@ async def test_work_chat_gets_one_line_without_the_clients_phone(kb, state, sess
     sent = await _sent(sessionmaker)
     short = "".join(sent.get(GROUP, []))
     assert short.startswith("ЗАПИСАЛСЯ: Айназаров Али"), sent
-    assert "Центр — у магазина «Рахат»" in short and "19:00" in short
+    assert "6-й микрорайон — у школы №10" in short and "19:00" in short
     assert chat not in short and "Телефон" not in short, "телефон клиента в общий чат не уходит"
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), "карточка администратору остаётся полной"
 

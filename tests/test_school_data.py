@@ -15,21 +15,24 @@ def _days(slot) -> list[str]:
     return [str(getattr(day, "value", day)) for day in slot.days]
 
 
-def test_ksk_has_groups_on_tue_thu_sat_evening(kb: KBSnapshot) -> None:
-    """«По расписанию не дописано только КСК: вторник, четверг, суббота 17:00–18:30».
-
-    В это время занимаются обе секции. Пометка «по боксу переданы не все часы»
-    снята: владелец сказал, что не хватало только этих часов.
-    """
+def test_ksk_kickboxing_mon_wed_fri_and_discounted_boxing_tue_thu_sat(kb: KBSnapshot) -> None:
+    """Владелец 12.10.2026: «Пн, Ср, Пт — кикбоксинг, абонемент 25 000 как был. Вт, Чт, Сб —
+    бокс, утром в 9:00 и вечером в 17:00 — по 20 000, чтобы набрался трафик»."""
     gym = kb.gym("ksk_kairbekova_334")
-    evening = {
-        slot.discipline
-        for slot in gym.schedule
-        if _days(slot) == ["tue", "thu", "sat"] and slot.time_start == "17:00"
-    }
+    by_days: dict[tuple[str, ...], set[tuple[str, str, int | None]]] = {}
+    for slot in gym.schedule:
+        by_days.setdefault(tuple(_days(slot)), set()).add((slot.discipline, slot.time_start, slot.price))
 
-    assert evening == {"boxing", "kickboxing"}
-    assert not any(getattr(slot.note, "filled", False) for slot in gym.schedule)
+    assert by_days[("mon", "wed", "fri")] == {
+        ("kickboxing", "09:00", None), ("kickboxing", "17:00", None), ("kickboxing", "19:00", None),
+    }
+    assert by_days[("tue", "thu", "sat")] == {("boxing", "09:00", 20000), ("boxing", "17:00", 20000)}
+
+
+def test_kasymkhanova_and_tobyl_new_hours(kb: KBSnapshot) -> None:
+    """Владелец 12.10.2026: Касымханова 18:00–19:00, Тобыл 19:30–21:00."""
+    assert {(s.time_start, s.time_end) for s in kb.gym("center_kasymkhanova_10").schedule} == {("18:00", "19:00")}
+    assert {(s.time_start, s.time_end) for s in kb.gym("region_tobyl").schedule} == {("19:30", "21:00")}
 
 
 def test_what_to_bring_is_answered_with_the_owners_text(kb: KBSnapshot) -> None:

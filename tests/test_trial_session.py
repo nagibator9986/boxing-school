@@ -73,10 +73,11 @@ def test_no_time_means_ask_the_parent(kb: KBSnapshot) -> None:
 
 
 def test_both_sections_at_that_time_means_ask_which(kb: KBSnapshot) -> None:
-    """В КСК по вторникам в 17:00 идут и бокс, и кикбоксинг — секцию выбирает родитель."""
-    assert choose(kb, time="17:00", day="tue", now=local(8, 10)).problem == "need_discipline"
+    """На Касымханова по вторникам в 18:00 и бокс, и кикбоксинг — секцию выбирает родитель."""
+    kasym = "center_kasymkhanova_10"
+    assert choose(kb, time="18:00", day="tue", now=local(8, 10), gym=kasym).problem == "need_discipline"
 
-    session = choose(kb, time="17:00", day="tue", discipline="boxing", now=local(8, 10)).session
+    session = choose(kb, time="18:00", day="tue", discipline="boxing", now=local(8, 10), gym=kasym).session
     assert (session.starts_at.day, session.discipline) == (8, "boxing")
 
 

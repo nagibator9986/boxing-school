@@ -204,7 +204,7 @@ artifacts:
   render_from: gyms
 - id: gym_location_center_kairbekova_24
   kind: location_text
-  enabled: true
+  enabled: false
   scope: city
   gym_id: center_kairbekova_24
   title:
@@ -264,7 +264,7 @@ artifacts:
   render_from: gyms
 - id: gym_location_polevaya_7_3
   kind: location_text
-  enabled: true
+  enabled: false
   scope: city
   gym_id: polevaya_7_3
   title:
@@ -425,7 +425,7 @@ artifacts:
   render_from: null
 - id: route_center_kairbekova_24
   kind: video
-  enabled: true
+  enabled: false
   scope: any
   gym_id: center_kairbekova_24
   title:

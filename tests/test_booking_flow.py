@@ -510,7 +510,7 @@ async def test_facts_menu_item_answers_from_the_knowledge_base(deps, llm) -> Non
 
     assert llm.generate_calls == calls_before, "пункт меню ушёл к модели"
     text = " ".join(replies(decisions))
-    assert "Каирбекова 24" in text, "нет списка залов"
+    assert "Касымханова 10" in text, "нет списка залов"
     assert "25 000" in text, "нет цен"
     assert text.rstrip().endswith("?"), "ответ не ведёт клиента дальше"
 
@@ -526,7 +526,7 @@ async def test_facts_menu_item_arrives_as_two_messages(deps, llm) -> None:
     # Порядок: прайс, затем список залов — вопрос о номере относится к списку
     # и стоит последним.
     assert "₸" in sent[0], sent[0]
-    assert "Каирбекова 24" in sent[1] and sent[1].rstrip().endswith("?"), sent[1]
+    assert "Касымханова 10" in sent[1] and sent[1].rstrip().endswith("?"), sent[1]
 
 
 async def test_digit_later_in_dialogue_is_left_alone(deps, llm) -> None:

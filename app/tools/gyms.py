@@ -485,19 +485,32 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(forms.items(), key=lambda item: item[1]))
 
 
-def _score_gym(gym: Gym, forms: Sequence[tuple[str, int]]) -> tuple[int, str, str]:
-    """Вес совпадения зала с запросом: ``(score, тип совпадения, что совпало)``."""
+def _score_gym(
+    gym: Gym,
+    forms: Sequence[tuple[str, int]],
+    *,
+    sources: Sequence[str] | None = None,
+    whole_keys_only: bool = False,
+) -> tuple[int, str, str]:
+    """Вес совпадения зала с запросом: ``(score, тип совпадения, что совпало)``.
+
+    ``sources`` — искать только по этим источникам ключей (например, ``("nearby",)``).
+    ``whole_keys_only`` — ключ засчитывается, только если он целиком есть в запросе:
+    «центр» не совпадает с «центр рахат», а «у рахата» с «рахат» — совпадает.
+    """
     best_score = 0
     best_kind = "fallback"
     best_key = ""
     for source, keys in _gym_keys(gym).items():
+        if sources is not None and source not in sources:
+            continue
         exact_w, contains_w, fuzzy_w = _SOURCE_WEIGHTS[source]
         for key in keys:
             for query, penalty in forms:
                 score = 0
                 if key == query:
                     score = exact_w
-                elif _contains_phrase(query, key) or _contains_phrase(key, query):
+                elif _contains_phrase(query, key) or (not whole_keys_only and _contains_phrase(key, query)):
                     score = contains_w - max(0, abs(len(key) - len(query)) // 8)
                 else:
                     matched, distance = is_fuzzy_match(query, key)
@@ -552,8 +565,42 @@ async def find_gym_by_district(
             gap_ref=GapRef.C3,
         )
 
+    # Закрытый зал: «Рахат», «Каирбекова 24», «Западный микрорайон». Владелец 12.10.2026
+    # убрал два адреса. Совпадение с ним сильнее, чем с действующими залами, — значит,
+    # клиент назвал место закрытого зала: сказать прямо, что зала там больше нет, и
+    # предложить залы, которые закрывают этот район. Случайные совпадения по слову
+    # («западный» в «северо-западный» у Плазы) за ближайший зал не выдаются.
+    closed_hit = None
+    for gym in kb.closed_gyms():
+        # Только собственные приметы закрытого зала — синонимы и адрес. Районы, которые
+        # он лишь обслуживал («ЦУМ», «Центр»), закрывают действующие залы рядом, и
+        # «зал у Рахата закрыт» клиенту оттуда ни к чему.
+        score, _, _ = _score_gym(gym, forms, sources=("alias", "text"), whole_keys_only=True)
+        if score >= MIN_MATCH_SCORE and (closed_hit is None or score > closed_hit[1]):
+            closed_hit = (gym, score)
+    if closed_hit is not None and (not scored or closed_hit[1] >= scored[0][0]):
+        closed_title = closed_hit[0].title.get(lang) or closed_hit[0].title.ru or closed_hit[0].id
+        closed_caveat = (
+            f"Зал «{closed_title}» больше не работает — школа его закрыла. Скажи это прямо "
+            "первой фразой и не называй его адрес."
+        )
+        nearby = []
+        for gym in kb.active_gyms(Scope.ALL):
+            score, kind, key = _score_gym(gym, forms, sources=("nearby",))
+            if score >= MIN_MATCH_SCORE:
+                nearby.append((score, kind, key, gym))
+        nearby.sort(key=lambda row: (-row[0], row[3].id))
+        if nearby:
+            scored = nearby
+        else:
+            scored = []
+            queries_closed = True
+    else:
+        closed_caveat = None
+        queries_closed = False
+
     if not scored:
-        known_without_gym = _known_district_without_gym(kb, queries)
+        known_without_gym = _known_district_without_gym(kb, queries) or queries_closed
         caveats = [
             "Совпадений нет. Зал придумывать нельзя. Отправь карточку gyms_list_city "
             "со ВСЕМИ залами — выбирать за клиента, какие три показать, здесь нельзя: "
@@ -565,6 +612,8 @@ async def find_gym_by_district(
                 "Район клиенту знаком, но зала там нет — скажи об этом прямо и предложи "
                 "ближайшие из существующих точек по списку.",
             )
+        if closed_caveat:
+            caveats.insert(0, closed_caveat)
         return ToolResult.success(
             data={
                 "query": district_text,
@@ -601,6 +650,8 @@ async def find_gym_by_district(
     # поедет не туда; сказать «зала нет» и замолчать — потерять клиента,
     # которому до соседнего зала десять минут пешком.
     nearby_only = all(row[1] == "nearby" for row in top)
+    if closed_caveat:
+        caveats.insert(0, closed_caveat)
     if nearby_only:
         caveats.insert(
             0,
