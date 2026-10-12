@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 import string
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Final, Mapping
 
 from app.config import get_settings
@@ -215,6 +215,21 @@ _NAME_PLACEHOLDERS: Final[frozenset[str]] = frozenset(
 )
 
 
+#: Слова, которыми имя ребёнка не бывает: где учится, в каком классе, где живёт.
+#: Диалог 10.10.2026: на «Запишу — подскажите фамилию и имя» родитель ответил «Учимся
+#: в 9 школе», и ребёнок ушёл в запись и в напоминание как «Учимся 9 школа». Только
+#: целые словоформы: по началу слова отсеялись бы Садикова, Школьников и Мкртчян.
+_NOT_NAME_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "школа", "школы", "школе", "школу", "школой", "мектеп", "мектепте", "мектепке",
+        "класс", "класса", "классе", "сынып", "сыныпта", "гимназия", "гимназии", "лицей",
+        "лицее", "лицея", "садик", "садике", "садика", "детсад", "детсаду",
+        "учимся", "учится", "учусь", "учатся", "ходим", "ходит", "ходят",
+        "микрорайон", "микрорайоне", "мкр",
+    }
+)
+
+
 def _clean_name(value: str | None, limit: int = MAX_NAME_CHARS) -> str | None:
     """Имя без служебного мусора; ``None``, если это не имя.
 
@@ -231,6 +246,11 @@ def _clean_name(value: str | None, limit: int = MAX_NAME_CHARS) -> str | None:
     # «Айгуль сын» — имя мамы из контакта и слово «сын»: живой прогон 10.09.2026
     # записал ребёнка именно так. Слово родства внутри имени — признак подмены.
     if any(token.casefold().strip(".,!?") in _NAME_PLACEHOLDERS for token in cleaned.split()):
+        return None
+    # Цифр в имени не бывает, а слово про школу или класс — ответ на другой вопрос.
+    if any(char.isdigit() for char in cleaned):
+        return None
+    if any(token.casefold().strip(".,!?") in _NOT_NAME_WORDS for token in cleaned.split()):
         return None
     return cleaned
 
@@ -372,15 +392,16 @@ def _short_card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: b
 def _booking_key(gym_id: str | None, slot: datetime | None, child_name: str | None, child_age: int | None) -> tuple:
     """Что делает запись той же самой: зал, минута начала по времени школы, ребёнок.
 
-    SQLite пояс не хранит: слот, записанный во времени школы, возвращается «19:00» без
-    пояса. Поэтому сравнивается местное время школы, а не UTC — иначе та же запись
-    выглядела бы переносом на пять часов и уходила бы второй карточкой.
+    Слот черновика приходит с поясом школы, сохранённый из SQLite — без пояса, но в UTC
+    (база приводит время к UTC при записи). Оба сводятся к одному местному времени —
+    иначе та же запись выглядела бы переносом на пять часов и уходила бы второй карточкой.
     """
     from zoneinfo import ZoneInfo
 
     moment = slot
-    if moment is not None and moment.tzinfo is not None:
-        moment = moment.astimezone(ZoneInfo(_school_tz())).replace(tzinfo=None)
+    if moment is not None:
+        aware = moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+        moment = aware.astimezone(ZoneInfo(_school_tz())).replace(tzinfo=None)
     minute = moment.replace(second=0, microsecond=0) if moment else None
     return gym_id, minute, (child_name or "").casefold(), child_age
 

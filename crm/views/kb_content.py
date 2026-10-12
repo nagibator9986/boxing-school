@@ -528,7 +528,7 @@ def lexicon() -> Any:
             field = f"intent::{name}"
             if field in request.form:
                 intents[name] = lines(request.form, field)
-        for name in ("kk_words", "kk_translit", "ru_translit", "districts_extra"):
+        for name in ("kk_words", "kk_translit", "ru_translit", "districts_extra", "typo_exceptions"):
             if name in request.form:
                 document[name] = lines(request.form, name)
         return _save(

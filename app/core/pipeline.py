@@ -1325,6 +1325,17 @@ async def _run_turn(
                 offending=list(pc.offending)[:5],
             )
             question = _booking_question(kb, lang, invocations)
+            if (
+                question is None
+                and "?" not in split_agreement(text)[0]
+                and not intents
+                and not await _already_booked(db, conv)
+            ):
+                # Клиент ничего не спросил, а отвечал на вопрос записи — и ответ модели
+                # сняли. Диалог 10.10.2026: на «В каком районе вы живёте?» клиент написал
+                # «Да все верно», модель повторила его же «понедельник 17:00» без данных
+                # инструмента — и разговор ушёл администратору. Вопрос записи задаётся снова.
+                question = _funnel_reask(kb, lang, _last_model_text(stored))
             if question is not None:
                 # Посреди записи снятый фильтром ответ — не повод звать администратора.
                 # Владелец 12.09.2026: «при запросе записи не должен передавать менеджеру».
@@ -1476,7 +1487,16 @@ async def _run_turn(
             # ближе?» из карточки и тут же «Какой район вам ближе?» (прогон, ru и kk).
             reply = funnel.drop_questions(reply)
         tail_question: str | None = None
-        if not services.paused and booking_offer is None and not card_asks:
+        if (
+            not services.paused
+            and booking_offer is None
+            and not card_asks
+            # Воронка ведёт к записи, а записанному вести некуда. Черновик хода видит
+            # только это сообщение: на «Ок» после подтверждения ему не хватало зала, и
+            # клиент получил «В каком районе вы живёте?» (диалог 10.10.2026). Запись
+            # этого хода уже в базе, а её подтверждение и так снимает текст модели.
+            and not await _already_booked(db, conv)
+        ):
             tail_question = funnel.pending_question(
                 reply,
                 draft=draft,
@@ -2963,6 +2983,39 @@ def _booking_question(
         numbers = ", ".join(str(number) for number in range(1, len(options.splitlines()) + 1))
         footer = _kb_text(kb, "funnel.pick_number", lang).format(numbers=numbers)
         return f"{head}\n\n{options}\n\n{footer}"
+    return None
+
+
+#: Вопросы записи, которые можно задать повторно слово в слово: без вариантов из расписания.
+_REASK_KEYS: Final[tuple[str, ...]] = (
+    "funnel.district",
+    "funnel.name_age",
+    "funnel.name",
+    "funnel.age",
+    "funnel.contact",
+)
+
+
+def _funnel_reask(kb: KBSnapshot, lang: Language, last_bot_text: str) -> str | None:
+    """Вопрос записи, который бот задал последним, — чтобы задать его снова. ``None`` — не задавал.
+
+    На вопрос о районе вместо него уходит список залов: он заканчивается тем же вопросом,
+    но даёт ответить номером — клиент, не назвавший район, обычно просто не знает, что писать.
+    """
+    said = " ".join((last_bot_text or "").split())
+    for key in _REASK_KEYS:
+        question = _kb_text(kb, key, lang)
+        if not question or " ".join(question.split()) not in said:
+            continue
+        if key == "funnel.district":
+            try:
+                card = render.render_gyms_list_card(kb, scope=Scope.CITY, lang=lang).strip()
+            except Exception as exc:  # noqa: BLE001 - без списка остаётся сам вопрос
+                _log.warning("reask_gyms_list_failed", error=type(exc).__name__)
+                card = ""
+            if card and "?" in card:
+                return card
+        return question
     return None
 
 

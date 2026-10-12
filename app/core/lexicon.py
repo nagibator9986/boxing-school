@@ -74,6 +74,10 @@ _DEFAULT_AGE_PATTERNS: Final[tuple[str, ...]] = (
     r"(\d{4})\s*(?:года рождения|г\.?\s?р\.?|жылы)",
 )
 
+#: Подстраховка на случай словаря без ``typo_exceptions`` (владелец правил его до 12.10.2026,
+#: и новый ключ в файл на диске не попал): слова, которые опечаткой не считаются.
+_DEFAULT_TYPO_EXCEPTIONS: Final[frozenset[str]] = frozenset({"почему"})
+
 #: Подстраховка на случай пустого словаря: маркеры пола.
 _DEFAULT_GENDER_MARKERS: Final[dict[Gender, tuple[str, ...]]] = {
     Gender.M: ("сын", "сына", "сыну", "мальчик", "мальчика", "пацан", "ұл", "ұлым"),
@@ -171,6 +175,11 @@ def intent_hints(text: str, *, lexicon: LexiconFile) -> tuple[IntentHint, ...]:
 
     if not found:
         word_list = tokens(haystack)
+        # Настоящее слово — не опечатка: «почему» на одну букву от «почем», и 12.10.2026
+        # на «А почему 22:00?» клиент получил прайс.
+        real_words = _DEFAULT_TYPO_EXCEPTIONS | {
+            normalize(word) for word in (lexicon.typo_exceptions or ()) if word
+        }
         for intent, phrases in (lexicon.intents or {}).items():
             if intent in found:
                 continue
@@ -178,6 +187,8 @@ def intent_hints(text: str, *, lexicon: LexiconFile) -> tuple[IntentHint, ...]:
                 if " " in phrase or len(phrase) < 5:
                     continue
                 for index, word in enumerate(word_list):
+                    if word in real_words:
+                        continue
                     if len(word) >= 5 and _damerau_close(word, phrase.lower()):
                         found.setdefault(intent, index)
                         break

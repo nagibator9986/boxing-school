@@ -487,7 +487,8 @@ def ensure_schema(env: dict[str, str]) -> bool:
     единой таблицы. Клиент при этом получал молчание, а в журнале лежало
     «no such table: conversation».
 
-    Операция идемпотентна: существующие таблицы не трогаются.
+    Операция идемпотентна: существующие таблицы не трогаются, а разовые правки
+    уже лежащих строк (``app/storage/upgrade.py``) выполняются один раз.
     """
     import asyncio
 
@@ -497,18 +498,26 @@ def ensure_schema(env: dict[str, str]) -> bool:
         from app.config import reset_settings_cache
 
         reset_settings_cache()
+        from app.config import get_settings
         from app.storage import db as storage_db
         from app.storage.models import Base
+        from app.storage.upgrade import upgrade_sqlite_data
 
-        async def _create() -> None:
+        async def _create() -> list[str]:
             engine = storage_db.build_engine()
             try:
                 async with engine.begin() as connection:
                     await connection.run_sync(Base.metadata.create_all)
+                # Правка данных — своей транзакцией: сорвётся она — таблицы всё равно на месте.
+                async with engine.begin() as connection:
+                    return await upgrade_sqlite_data(
+                        connection, timezone_name=get_settings().timezone
+                    )
             finally:
                 await engine.dispose()
 
-        asyncio.run(_create())
+        for line in asyncio.run(_create()):
+            _log(f"база диалогов: {line}")
         _log("схема базы диалогов на месте")
         return True
     except Exception as exc:  # noqa: BLE001 - причину показываем целиком

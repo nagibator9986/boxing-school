@@ -92,6 +92,15 @@ _TRIAL_ANCHORED: Final[frozenset[FollowupKind]] = frozenset(
     }
 )
 
+#: Напоминания «перед занятием»: после его начала они бессмысленны и не уходят.
+_BEFORE_TRIAL: Final[frozenset[FollowupKind]] = frozenset(
+    {
+        FollowupKind.TRIAL_REMINDER_20H,
+        FollowupKind.TRIAL_REMINDER_MORNING,
+        FollowupKind.TRIAL_REMINDER_2H,
+    }
+)
+
 #: Сколько задач за один проход подбирает сметка.
 SWEEP_LIMIT: Final[int] = 100
 
@@ -473,6 +482,12 @@ async def _skip_reason(
         if last_in is not None and created is not None and last_in > created:
             return "replied"
 
+    if kind in _BEFORE_TRIAL and await _trial_started(session, conv, now):
+        # Срок мог быть посчитан неверно (до 12.10.2026 время пробного читалось со
+        # сдвигом на пять часов) или отложен тихими часами за начало занятия.
+        # «Через два часа тренировка» после тренировки хуже, чем ничего.
+        return "trial_passed"
+
     if is_quiet_hours(
         now,
         start_hour=settings.followup_quiet_hours_start,
@@ -484,6 +499,15 @@ async def _skip_reason(
     if not within_service_window(conv, now):
         return "window"
     return None
+
+
+async def _trial_started(session: AsyncSession, conv: Conversation, now: datetime) -> bool:
+    """Началось ли уже пробное занятие, на которое записан диалог."""
+    from app.storage import repo_lead
+
+    lead = await repo_lead.get_by_conversation(session, conv.id)
+    slot = _aware(getattr(lead, "trial_slot", None))
+    return slot is not None and slot <= now
 
 
 async def _stop_word_in_dialog(session: AsyncSession, conv: Conversation) -> str | None:

@@ -69,6 +69,8 @@ async def test_booking_without_a_time_asks_by_the_schedule(kb, state, sessionmak
 
 
 async def _booked_conversation(sessionmaker, chat: str, trial_slot: datetime):
+    """Запись как у инструмента: слот приходит с поясом школы, а не заранее в UTC —
+    тест на UTC пропустил сдвиг на пять часов (диалог 10.10.2026)."""
     async with sessionmaker() as db:
         conv = Conversation(conv_key=f"wa:{chat}", channel_id="wa-1", chat_type="whatsapp", chat_id=chat)
         db.add(conv)
@@ -218,7 +220,7 @@ async def test_morning_reminder_lands_on_the_day_of_the_training(kb, sessionmake
     friday_evening = (datetime.now(tz=ZoneInfo("Asia/Almaty")) + timedelta(days=4)).replace(
         hour=19, minute=0, second=0, microsecond=0
     )
-    conv_id = await _booked_conversation(sessionmaker, "77015559010", friday_evening.astimezone(UTC))
+    conv_id = await _booked_conversation(sessionmaker, "77015559010", friday_evening)
 
     tasks = await _pending_tasks(sessionmaker, conv_id, kb)
 
@@ -235,7 +237,7 @@ async def test_no_morning_reminder_for_an_early_class(kb, sessionmaker) -> None:
     early = (datetime.now(tz=ZoneInfo("Asia/Almaty")) + timedelta(days=2)).replace(
         hour=9, minute=0, second=0, microsecond=0
     )
-    conv_id = await _booked_conversation(sessionmaker, "77015559011", early.astimezone(UTC))
+    conv_id = await _booked_conversation(sessionmaker, "77015559011", early)
 
     tasks = await _pending_tasks(sessionmaker, conv_id, kb)
 
@@ -252,7 +254,7 @@ async def test_no_second_morning_reminder_when_booked_the_same_day(kb, sessionma
     today = datetime.now(tz=ZoneInfo("Asia/Almaty")).replace(hour=19, minute=0, second=0, microsecond=0)
     noon = today.replace(hour=12)
     monkeypatch.setattr(followup, "_now", lambda: noon.astimezone(UTC))
-    conv_id = await _booked_conversation(sessionmaker, "77015559013", today.astimezone(UTC))
+    conv_id = await _booked_conversation(sessionmaker, "77015559013", today)
 
     tasks = await _pending_tasks(sessionmaker, conv_id, kb)
 

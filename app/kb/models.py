@@ -977,6 +977,8 @@ class LexiconFile(_Base):
     districts_extra: list[str] = Field(default_factory=list)
     #: Слова короткого согласия: «да», «давайте», «иә» (см. ``app.kb.agreement``).
     agreement: list[str] = Field(default_factory=list)
+    #: Настоящие слова, которые опечаткой слова из ``intents`` не считаются: «почему» — не «почем».
+    typo_exceptions: list[str] = Field(default_factory=list)
 
     @field_validator("age_patterns")
     @classmethod
@@ -997,6 +999,7 @@ class LexiconFile(_Base):
             ("ru_translit", self.ru_translit),
             ("districts_extra", self.districts_extra),
             ("agreement", self.agreement),
+            ("typo_exceptions", self.typo_exceptions),
         ):
             for word in words:
                 if word != word.lower():

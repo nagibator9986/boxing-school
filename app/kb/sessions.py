@@ -250,6 +250,22 @@ def _age_of_token(token: str) -> int | None:
 
 _AGE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\d:.])\d{1,2}(?![\d:.])|[^\W\d_]+")
 
+#: Слова, при которых число — номер, а не возраст: «в 9 школе», «школа №9», «во 2 классе»,
+#: «7 мкр». Диалог 10.10.2026: на «Учимся в 9 школе» бот записал ребёнку 9 лет, хотя
+#: возраст никто не называл.
+_NUMBERED_NOUN: Final[str] = r"(?:школ|мектеп|класс|сынып|гимнази|лице|мкр|микр|шагын|магазин|№)"
+_PLACE_NUMBER_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?<![\d:.])\d{{1,3}}(?![\d:.])\s*-?\s*(?:(?:й|я|ая|ой|ый|ом|м|ую|го)\s*)?"
+    rf"{_NUMBERED_NOUN}[^\W\d_]*"
+    rf"|{_NUMBERED_NOUN}[^\W\d_]*\s*(?:№\s*)?\d{{1,3}}(?![\d:])",
+    re.IGNORECASE,
+)
+
+
+def _without_place_numbers(text: str) -> str:
+    """Текст без номеров школ, классов и микрорайонов: возрастом они не бывают."""
+    return _PLACE_NUMBER_RE.sub(" ", text)
+
 
 #: Вопрос бота о возрасте: «сколько лет ребёнку?», «сколько вашему ребёнку лет?»,
 #: «фамилию, имя и возраст», «Балаңыз неше жаста?».
@@ -281,7 +297,7 @@ def age_answer(text: str, asked: str) -> int | None:
     question = question_sentence(asked or "").lower()
     if not question or not _AGE_QUESTION_RE.search(question) or offers_choice(asked or ""):
         return None
-    own = split_agreement(text or "")[0].lower()
+    own = _without_place_numbers(split_agreement(text or "")[0].lower())
     tokens = [token for token in _AGE_TOKEN_RE.findall(own) if token not in _AGE_ANSWER_FILLERS]
     if len(tokens) != 1:
         return None
@@ -316,7 +332,7 @@ def client_named_age(age: int | None, texts) -> bool:
     if age is None:
         return False
     for text in texts:
-        own = split_agreement(text)[0].lower()
+        own = _without_place_numbers(split_agreement(text)[0].lower())
         if any(_age_of_token(token) == age for token in _AGE_TOKEN_RE.findall(own)):
             return True
         for match in _KK_TENS_RE.finditer(own):

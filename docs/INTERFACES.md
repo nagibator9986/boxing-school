@@ -1470,7 +1470,10 @@ model, tool, latency_ms, tokens_in, tokens_out, tokens_cached, cost_usd, outcome
 
 Диалект — PostgreSQL, `ts` = `TIMESTAMPTZ`, `id` = `UUID` (`server_default` не используем, id
 генерирует приложение). **Все имена таблиц в единственном числе.** Персональные данные хранятся
-**открытым текстом** — `TypeDecorator`-ов, шифрования и колонок `delete_after` в проекте нет.
+**открытым текстом** — шифрующих `TypeDecorator`-ов и колонок `delete_after` в проекте нет.
+`ts` объявлен как `UtcDateTime`: время с поясом кладётся в базу как UTC. На SQLite пояс не
+хранится, и наивное время из базы везде читается как UTC (до 12.10.2026 `lead.trial_slot`
+лежал местным временем — правка строк в `app/storage/upgrade.py`).
 Таблицы `consent_record` и `audit_event` **не создаются**.
 
 **`conversation`**
@@ -1850,6 +1853,8 @@ class LexiconFile(BaseModel):
     age_patterns: list[str]
     gender_markers: dict[Gender, list[str]]
     districts_extra: list[str]
+    agreement: list[str]
+    typo_exceptions: list[str]   # настоящие слова, которые опечаткой слова из intents не считаются
 
 class KBSnapshot(BaseModel):
     """Иммутабельный снимок базы знаний. Живёт в памяти, меняется атомарным swap."""

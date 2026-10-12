@@ -93,6 +93,20 @@ _FILLER_WORDS: Final[frozenset[str]] = frozenset(
 
 _WORD_RE: Final[re.Pattern[str]] = re.compile(r"[^\W_]+", re.UNICODE)
 
+#: Гласная окончания короткого слова: «школа» и «школы», «этаж» и «этаже» — одно слово.
+#: Диалог 10.10.2026: под карточкой КСК («Каирбекова 334, школа №9 (цокольный этаж)»)
+#: модель написала «…по адресу Каирбекова 334, в цокольном этаже школы №9», и пересказ
+#: прошёл как новая мысль — совпали пять слов из семи.
+_ENDING_VOWELS: Final[str] = "аеёиоуыэюя"
+
+
+def _stem(word: str) -> str:
+    """Основа слова для сравнения. Длинные слова — по первым буквам, у коротких
+    отбрасывается гласная окончания: срез в пять букв её не снимал («школы» ≠ «школа»)."""
+    if 4 < len(word) <= 6 and word[-1] in _ENDING_VOWELS:
+        word = word[:-1]
+    return word[:_STEM]
+
 
 def _words(text: str, *, drop_filler: bool = False) -> list[str]:
     """Значимые слова строки в нижнем регистре.
@@ -102,7 +116,7 @@ def _words(text: str, *, drop_filler: bool = False) -> list[str]:
     """
     words = [m.group(0).lower() for m in _WORD_RE.finditer(text)]
     skip = _STOP_WORDS | _FILLER_WORDS if drop_filler else _STOP_WORDS
-    return [word[:_STEM] for word in words if word not in skip]
+    return [_stem(word) for word in words if word not in skip]
 
 
 def _is_repeat(line: str, card_words: frozenset[str]) -> bool:

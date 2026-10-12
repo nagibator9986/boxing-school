@@ -24,6 +24,7 @@
       <div class="field"><label>Казахский латиницей</label><textarea name="kk_translit" rows="6">{{ (doc.get('kk_translit') or []) | join('\n') }}</textarea></div>
       <div class="field"><label>Русский латиницей</label><textarea name="ru_translit" rows="6">{{ (doc.get('ru_translit') or []) | join('\n') }}</textarea></div>
       <div class="field"><label>Как ещё называют районы</label><textarea name="districts_extra" rows="6">{{ (doc.get('districts_extra') or []) | join('\n') }}</textarea></div>
+      <div class="field"><label>Настоящие слова, а не опечатки</label><textarea name="typo_exceptions" rows="6">{{ (doc.get('typo_exceptions') or []) | join('\n') }}</textarea><div class="hint">Бот прощает одну опечатку: «абонимнт» — это «абонемент». Слова отсюда опечаткой не считаются никогда: «почему» — не «почем».</div></div>
     </div>
   </div>
 

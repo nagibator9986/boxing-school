@@ -8,7 +8,7 @@
 * ``JSONB`` объявлен как ``JSON`` с вариантом ``JSONB`` для PostgreSQL — так одна и та же
   модель работает и на Railway (postgres+asyncpg), и на SQLite (тесты, локальный запуск);
 * персональные данные (телефон, имя ребёнка, имя родителя) хранятся **открытым текстом**:
-  юридический слой исключён из объёма работ, ``TypeDecorator``-ов и шифрования в проекте нет;
+  юридический слой исключён из объёма работ, шифрующих ``TypeDecorator``-ов в проекте нет;
 * таблиц ``consent_record`` и ``audit_event``, а также колонок ``delete_after`` не существует.
 
 Значения enum-колонок хранятся строками (``Text``): контракт требует именно ``Text``,
@@ -48,8 +48,28 @@ JSON_TYPE: Final[sa.types.TypeEngine[Any]] = sa.JSON(none_as_null=True).with_var
     postgresql.JSONB(astext_type=sa.Text(), none_as_null=True), "postgresql"
 )
 
+class UtcDateTime(sa.types.TypeDecorator[datetime]):
+    """TIMESTAMPTZ, который любое время с поясом кладёт в базу как UTC.
+
+    SQLite пояс не хранит: момент «17:00 по Алматы» ложился в файл как «17:00» без
+    пояса, а читатели по соглашению проекта считают такое время UTC — напоминание
+    о пробном приходило с текстом «сегодня в 22:00» и за два часа до занятия, которое
+    уже закончилось (живой диалог 10.10.2026). Приведение здесь, а не в каждом
+    месте записи, держит соглашение «наивное время из базы — это UTC» для всех
+    колонок разом; на PostgreSQL момент тот же, меняется только запись.
+    """
+
+    impl = sa.DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(timezone.utc)
+        return value
+
+
 #: ``ts`` из контракта — TIMESTAMPTZ.
-TS: Final[sa.types.TypeEngine[datetime]] = sa.DateTime(timezone=True)
+TS: Final[sa.types.TypeEngine[datetime]] = UtcDateTime()
 
 
 def utcnow() -> datetime:

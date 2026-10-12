@@ -383,3 +383,54 @@ def test_owner_edited_texts_receive_new_keys_from_a_release(tmp_path: Path, caps
 
     serve.seed_from_image(data, image_root=image)
     assert "Работаю круглосуточно" in owner.read_text(encoding="utf-8"), "следующий запуск не затирает правку"
+
+
+def test_schema_step_moves_old_trial_slots_to_utc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пусковой шаг схемы один раз переводит время пробного из местного в UTC.
+
+    До 12.10.2026 SQLite хранил «17:00 по Алматы» как «17:00», а напоминание читало это
+    как UTC: «сегодня в 22:00» (диалог 10.10.2026). Правку уже лежащих строк делает запуск.
+    """
+    import asyncio
+
+    import sqlalchemy as sa
+
+    from app.storage import db as storage_db
+    from app.storage.models import Base, Conversation, Lead
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    env = serve.prepare_env(tmp_path)
+
+    async def _old_row() -> None:
+        engine = storage_db.build_engine(env["DATABASE_URL"])
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            async with storage_db.build_sessionmaker(engine)() as db:
+                conv = Conversation(conv_key="wa:1", channel_id="wa-1", chat_type="whatsapp", chat_id="1")
+                db.add(conv)
+                await db.flush()
+                db.add(Lead(
+                    conversation_id=conv.id, status="trial_booked", lang="ru", channel="whatsapp",
+                    child_name="Али", child_age=8,
+                ))
+                await db.commit()
+            async with engine.begin() as conn:
+                await conn.exec_driver_sql("UPDATE lead SET trial_slot = '2026-10-12 17:00:00.000000'")
+        finally:
+            await engine.dispose()
+
+    async def _stored() -> str:
+        engine = storage_db.build_engine(env["DATABASE_URL"])
+        try:
+            async with engine.connect() as conn:
+                return str((await conn.execute(sa.text("SELECT trial_slot FROM lead"))).scalar_one())
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_old_row())
+
+    assert serve.ensure_schema(env) is True
+    assert asyncio.run(_stored()).startswith("2026-10-12 12:00:00")
+    assert serve.ensure_schema(env) is True, "повторный запуск"
+    assert asyncio.run(_stored()).startswith("2026-10-12 12:00:00"), "второй раз не сдвигает"
