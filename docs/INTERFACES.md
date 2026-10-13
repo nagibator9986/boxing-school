@@ -541,6 +541,7 @@ class OutboundMessage(BaseModel):
     text: str | None = None
     content_uri: str | None = None
     artifact_id: str | None = None
+    merged_artifact_ids: tuple[str, ...] = ()  # материалы, дописанные к сообщению склейкой
     ref_message_id: str | None = None
     clear_unanswered: Literal[False] = False
     delay_ms: int = 0
@@ -771,7 +772,11 @@ class ToolServices(Protocol):
         ...
 
     async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
-        """Сколько раз артефакт уже уходил в этом диалоге."""
+        """Сколько раз артефакт уже уходил в этом диалоге (и дописанным склейкой тоже)."""
+        ...
+
+    async def escalation_open(self, *, within_minutes: int) -> bool:
+        """Передан ли вопрос диалога человеку недавно, а он ещё не ответил."""
         ...
 
 
@@ -2287,7 +2292,7 @@ def estimate_cost_usd(usage: LLMUsage, *, price_in: float, price_out: float) -> 
 
 ```python
 TOOL_NAMES: Final[tuple[str, ...]] = (
-    "get_gyms", "find_gym_by_district", "calculate_price", "get_schedule",
+    "get_gyms", "find_gym_by_district", "calculate_price", "get_schedule", "find_sessions",
     "get_kb_fact", "send_content", "create_trial_lead", "escalate_to_manager",
 )
 
@@ -2419,6 +2424,18 @@ async def get_schedule(ctx: ToolContext, *, gym_id: str, child_age: int | None =
     Существует именно для того, чтобы модель не выдумывала время."""
 ```
 
+### 11.5a `find_sessions` — занятия во всех залах (`app/tools/schedule.py`, с 13.10.2026)
+
+```python
+async def find_sessions(ctx: ToolContext, *, discipline: str | None = None, day: str | None = None,
+                        time_from: str | None = None, time_to: str | None = None,
+                        scope: str = "city") -> ToolResult:
+    """Секция (boxing/kickboxing), день (mon…sun, today, tomorrow — по часам школы) и
+    промежуток начала [time_from, time_to). Карточку не шлёт: data.sessions — зал, дни, время.
+    Сегодняшние уже начавшиеся занятия — в data.already_started_today; время, названное
+    клиентом, — в data.requested_times (фильтр не считает его выдумкой)."""
+```
+
 ### 11.6 `get_kb_fact` — детерминированный поиск (`app/tools/facts.py`)
 
 ```json
@@ -2547,6 +2564,7 @@ Enum `reason` в схеме — ровно `TOOL_ESCALATION_REASONS` (9 знач
 | `get_gyms` | да | нет | `VERBATIM` |
 | `find_gym_by_district` | да | нет | `VERBATIM` |
 | `get_schedule` | да (сейчас всегда `no_data`) | нет | `VERBATIM` |
+| `find_sessions` | да | нет | `SUMMARIZE` |
 | `get_kb_fact` | да (поиск по KB) | нет | `VERBATIM` |
 | `send_content` | да (выбор из реестра) | да (outbox) | `SILENT` |
 | `create_trial_lead` | нет | да (lead + карточка) | `SUMMARIZE` |

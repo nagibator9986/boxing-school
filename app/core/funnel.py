@@ -139,7 +139,7 @@ def is_handover(text: str) -> bool:
 def turn_showed_a_gym(messages: Sequence[OutboundMessage]) -> bool:
     """Ушли ли в этом ходу расписание или видео дороги до зала."""
     return any(
-        str(getattr(message, "artifact_id", "") or "").startswith(_GYM_SHOWN_PREFIXES)
+        any(artifact.startswith(_GYM_SHOWN_PREFIXES) for artifact in message.artifacts())
         for message in messages
     )
 

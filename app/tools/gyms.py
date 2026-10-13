@@ -437,10 +437,15 @@ _ORDINAL_MICRODISTRICT_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(пят|шест|седм|восм|девят)\w*\s+(?:мкр|микрорайон)\w*"
 )
 _ORDINALS: Final[dict[str, int]] = {"пят": 5, "шест": 6, "седм": 7, "восм": 8, "девят": 9}
+#: «у 15-го магазина», «15 магазин», «магазин 15» → «15 магазин», как в синонимах зала.
+_SHOP_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<!\d)(\d{1,3})\s*(?:й|ой|ый|го|ого|м|ом)?\s*магазин\w*|магазин\w*\s*(\d{1,3})(?!\d)"
+)
 
 
 def _numbered_places(query: str) -> tuple[str, ...]:
-    """«возле 16 школы» → («школа 16»,), «7 й мкр» → («7 микрорайон»,)."""
+    """«возле 16 школы» → («школа 16»,), «7 й мкр» → («7 микрорайон»,), «у 15-го магазина» →
+    («15 магазин»,)."""
     found: list[str] = []
     for match in _SCHOOL_RE.finditer(query):
         found.append(f"школа {int(match.group(1) or match.group(2))}")
@@ -448,6 +453,8 @@ def _numbered_places(query: str) -> tuple[str, ...]:
         found.append(f"{int(match.group(1) or match.group(2))} микрорайон")
     for match in _ORDINAL_MICRODISTRICT_RE.finditer(query):
         found.append(f"{_ORDINALS[match.group(1)]} микрорайон")
+    for match in _SHOP_RE.finditer(query):
+        found.append(f"{int(match.group(1) or match.group(2))} магазин")
     return tuple(dict.fromkeys(found))
 
 
@@ -557,6 +564,23 @@ async def find_gym_by_district(
         if score >= MIN_MATCH_SCORE:
             scored.append((score, kind, key, gym))
     scored.sort(key=lambda row: (-row[0], row[3].id))
+    if scored and _names_district_without_gym(kb, queries):
+        # Клиент назвал район, где зала нет («Западный микрорайон»), а залы совпали
+        # только куском слова — «западный» в «Северо-Западный» у Плазы. Это другой район:
+        # выдать Плазу за зал клиента значит отправить его не туда. Остаются залы, чей
+        # ключ назван целиком, — например, закреплённые за этим районом.
+        scored = [
+            row for row in scored
+            if _score_gym(row[3], forms, whole_keys_only=True)[0] >= MIN_MATCH_SCORE
+        ]
+
+    # Та же улица, другой дом: «Каирбекова 24» и КСК на Каирбекова 334. Зал рядом, а не
+    # «по вашему адресу» — иначе модель скажет «да, наш зал у вас», и человек пойдёт не
+    # в тот дом. До 13.10.2026 это держал синоним закрытого зала на Каирбекова 24.
+    scored = [
+        (score, "nearby", key, gym) if kind != "nearby" and _names_another_house(gym, queries) else (score, kind, key, gym)
+        for score, kind, key, gym in scored
+    ]
 
     if unresolved_hit is not None and (not scored or unresolved_hit[1] >= scored[0][0]):
         return ToolResult.needs_operator(
@@ -682,6 +706,52 @@ async def find_gym_by_district(
     )
 
 
+#: «улица номер» в запросе: «каирбекова 24», «воинов интернационалистов 8б».
+_HOUSE_RE: Final[re.Pattern[str]] = re.compile(r"([^\W\d_]{4,})\s+(\d{1,4})")
+
+
+def gyms_named_in(kb: KBSnapshot, text: str | None) -> frozenset[str]:
+    """Какие действующие залы называет текст: лучшие совпадения, без модели.
+
+    «Кск», «Касымханова 10», «в центре», «возле 16 школы» (два зала рядом). Пусто —
+    зал не назван. Тем же разбором, что и поиск по району, поэтому одно и то же место
+    инструмент записи и поиск понимают одинаково.
+    """
+    queries = [query for query in dict.fromkeys(_variants(text or "")) if query]
+    if not queries:
+        return frozenset()
+    forms = _query_forms(queries)
+    # Ключ зала должен целиком стоять в словах клиента: «9» в ответ на «сколько лет?» —
+    # не «школа 9» у КСК, «возле магазина» — не «15 магазин», «2» — не «школа 2».
+    scores = {
+        gym.id: _score_gym(gym, forms, whole_keys_only=True)[0] for gym in kb.active_gyms(Scope.ALL)
+    }
+    best = max(scores.values(), default=0)
+    if best < MIN_MATCH_SCORE:
+        return frozenset()
+    return frozenset(gym_id for gym_id, score in scores.items() if score == best)
+
+
+def _names_another_house(gym: Gym, queries: Sequence[str]) -> bool:
+    """Назвал ли клиент улицу зала, но другой номер дома."""
+    address = normalize_text(gym.address.ru or "")
+    for query in queries:
+        for street, number in _HOUSE_RE.findall(query):
+            if street in _GENERIC_PLACE_WORDS:
+                continue
+            found = re.search(rf"(?<![0-9a-zа-я]){re.escape(street)}\s+(\d{{1,4}})", address)
+            if found and found.group(1) != number:
+                return True
+    return False
+
+
+def _names_district_without_gym(kb: KBSnapshot, queries: Sequence[str]) -> bool:
+    """Назван ли район без зала целиком — без допуска опечаток, в отличие от
+    :func:`_known_district_without_gym`: здесь от ответа зависит, отбросить ли залы."""
+    keys = [key for key in (normalize_text(district) for district in kb.lexicon.districts_extra) if key]
+    return any(key == query or _contains_phrase(query, key) for key in keys for query in queries)
+
+
 def _known_district_without_gym(kb: KBSnapshot, queries: Sequence[str]) -> bool:
     """Назвал ли клиент район Костаная, в котором зала нет (``lexicon.districts_extra``)."""
     for district in kb.lexicon.districts_extra:
@@ -696,6 +766,7 @@ def _known_district_without_gym(kb: KBSnapshot, queries: Sequence[str]) -> bool:
 
 __all__ = [
     "MAX_DISTRICT_MATCHES",
+    "gyms_named_in",
     "MAX_GYMS_LIMIT",
     "find_gym_by_district",
     "fuzzy_threshold",

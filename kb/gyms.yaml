@@ -119,7 +119,6 @@ gyms:
   - рахата
   - цум
   - океан
-  - каирбекова 24
 
 - id: plaza_szm_70
   scope: city
@@ -158,87 +157,8 @@ gyms:
   phone: null
   coaches: []
   schedule:
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days: &id001
-    - tue
-    - thu
-    - sat
-    time_start: "19:00"
-    time_end: "20:30"
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days: *id001
-    time_start: "19:00"
-    time_end: "20:30"
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "17:00"
-    time_end: "18:30"
-    shift: any
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "17:00"
-    time_end: "18:30"
-    shift: any
-    note: null
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "19:00"
-    time_end: "20:30"
-    shift: any
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "19:00"
-    time_end: "20:30"
-    shift: any
-    note: null
+  # Владелец 13.10.2026: «на Плазе Аймед тренировки только по графику вторник, четверг,
+  # суббота 9:00–10:30 и 19:00–20:30». Пн, Ср, Пт здесь занятий нет.
   - discipline: kickboxing
     age_from: null
     age_to: null
@@ -249,7 +169,6 @@ gyms:
     time_start: "09:00"
     time_end: "10:30"
     shift: second
-    note: null
   - discipline: boxing
     age_from: null
     age_to: null
@@ -260,7 +179,24 @@ gyms:
     time_start: "09:00"
     time_end: "10:30"
     shift: second
-    note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "19:00"
+    time_end: "20:30"
   capacity_note: null
   media:
   - gym_location_plaza_szm_70
@@ -311,6 +247,10 @@ gyms:
   - касымханова
   - касымханова 10
   - касымхановой
+  # С 13.10.2026 зал в центре один: «центр» — его район, а не соседний («в центре
+  # зала нет» было бы неправдой).
+  - центр
+  - центре
   geo_lat: null
   geo_lon: null
   map_url: https://2gis.kz/kostanay/geo/70000001116923383
@@ -341,7 +281,7 @@ gyms:
   - G-2
   - G-8
   - G-15
-  internal_note: Два зала заявлены как ЦЕНТР (этот и center_kairbekova_24). Различать по ориентиру.
+  internal_note: null
   # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
   serves_districts:
   - наримановка
@@ -355,102 +295,7 @@ gyms:
   - рахата
   - цум
   - океан
-  - центр
-  - каирбекова 24
 
-# Владелец 12.10.2026: «нужно убрать адрес каирбекова 24 и полевая». Запись остаётся
-# закрытой, а не удаляется: по ней читаются старые заявки и напоминания.
-- id: center_kairbekova_24
-  scope: city
-  settlement: Костанай
-  is_head: false
-  active: false
-  status: closed
-  title:
-    ru: Центр — у магазина «Рахат»
-    kk: Орталық — «Рахат» дүкені жанында
-  address:
-    ru: Каирбекова 24
-    kk: Қайырбеков көшесі 24
-  landmark:
-    ru: магазин «Рахат»
-    kk: «Рахат» дүкені
-  district:
-    ru: Центр
-    kk: Орталық
-  district_aliases:
-  - рахат
-  - рахате
-  - каирбекова 24
-  - кайырбекова 24
-  - центр рахат
-  geo_lat: null
-  geo_lon: null
-  map_url: https://2gis.kz/kostanay/geo/70000001116923405
-  phone: null
-  coaches: []
-  schedule:
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "19:00"
-    time_end: "20:30"
-    shift: any
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "19:00"
-    time_end: "20:30"
-    shift: any
-    note: null
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - mon
-    - wed
-    - fri
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
-  capacity_note: null
-  media:
-  - gym_location_center_kairbekova_24
-  - route_center_kairbekova_24
-  gap_refs:
-  - G-2
-  - G-8
-  - G-15
-  internal_note: null
-  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
-  serves_districts:
-  - цум
-  - океан
-  - центр
-  - школа 4
-  - школа 9
-  - школа 11
 - id: magazin15_voinov_8b
   scope: city
   settlement: Костанай
@@ -499,28 +344,7 @@ gyms:
     days: *id003
     time_start: "18:45"
     time_end: "19:45"
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - tue
-    - thu
-    - sat
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - tue
-    - thu
-    - sat
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-    note: null
+  # Утренних тренировок (Вт, Чт, Сб 09:00) здесь нет — владелец, 13.10.2026.
   capacity_note: null
   media:
   - gym_location_magazin15_voinov_8b
@@ -623,65 +447,6 @@ gyms:
   - магазин солнечный
   - школа 7
   - школа 16
-# Владелец 12.10.2026: «нужно убрать адрес каирбекова 24 и полевая». Запись остаётся
-# закрытой, а не удаляется: по ней читаются старые заявки и напоминания.
-- id: polevaya_7_3
-  scope: city
-  settlement: Костанай
-  is_head: false
-  active: false
-  status: closed
-  title:
-    ru: Западный микрорайон — БЦ «Кеме»
-    kk: Батыс шағын ауданы — «Кеме» БО
-  address:
-    ru: Полевая 7/3, напротив 5-й поликлиники
-    kk: Полевая көшесі 7/3, 5-емханаға қарама-қарсы
-  landmark:
-    ru: напротив 5-й поликлиники
-    kk: 5-емханаға қарама-қарсы
-  district:
-    ru: Западный микрорайон
-    kk: Батыс шағын ауданы
-  district_aliases:
-  - полевая
-  - кеме
-  - бц кеме
-  - западный
-  - западный микрорайон
-  - зпд
-  - поликлиник
-  - батыс
-  geo_lat: null
-  geo_lon: null
-  map_url: https://2gis.kz/kostanay/geo/70000001117090364
-  phone: null
-  coaches: []
-  schedule:
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days: &id_polevaya
-    - mon
-    - wed
-    - fri
-    time_start: "19:00"
-    time_end: "20:30"
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days: *id_polevaya
-    time_start: "19:00"
-    time_end: "20:30"
-  capacity_note: null
-  media:
-  - gym_location_polevaya_7_3
-  gap_refs:
-  - G-2
-  - G-8
-  - G-15
-  internal_note: Седьмой зал города, данные от владельца 02.09.2026 (адрес, ориентир, расписание, 2ГИС). Видео дороги пока нет; район и охват соседних районов не заданы.
-  serves_districts: []
 - id: region_tobyl
   scope: city
   settlement: Тобыл

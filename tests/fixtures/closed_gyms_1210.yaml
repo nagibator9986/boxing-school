@@ -1,0 +1,150 @@
+# Залы, закрытые 12.10.2026 и удалённые из kb/gyms.yaml 13.10.2026 по просьбе владельца
+# («Каирбекова 24 вы так и не убрали»). Записи — как были, только без видео.
+# Тестовые копии базы (tests/conftest.py) дописывают их в конец gyms.yaml: на расписании
+# Рахата (две секции в одно время, два времени у секции) построены тесты логики записи,
+# а на закрытых записях — ответ «этот зал больше не работает».
+- id: center_kairbekova_24
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: false
+  status: closed
+  title:
+    ru: Центр — у магазина «Рахат»
+    kk: Орталық — «Рахат» дүкені жанында
+  address:
+    ru: Каирбекова 24
+    kk: Қайырбеков көшесі 24
+  landmark:
+    ru: магазин «Рахат»
+    kk: «Рахат» дүкені
+  district:
+    ru: Центр
+    kk: Орталық
+  district_aliases:
+  - рахат
+  - рахате
+  - каирбекова 24
+  - кайырбекова 24
+  - центр рахат
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001116923405
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+    shift: any
+    note: null
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+    note: null
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: null
+  # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
+  serves_districts:
+  - цум
+  - океан
+  - центр
+  - школа 4
+  - школа 9
+  - школа 11
+- id: polevaya_7_3
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: false
+  status: closed
+  title:
+    ru: Западный микрорайон — БЦ «Кеме»
+    kk: Батыс шағын ауданы — «Кеме» БО
+  address:
+    ru: Полевая 7/3, напротив 5-й поликлиники
+    kk: Полевая көшесі 7/3, 5-емханаға қарама-қарсы
+  landmark:
+    ru: напротив 5-й поликлиники
+    kk: 5-емханаға қарама-қарсы
+  district:
+    ru: Западный микрорайон
+    kk: Батыс шағын ауданы
+  district_aliases:
+  - полевая
+  - кеме
+  - бц кеме
+  - западный
+  - западный микрорайон
+  - зпд
+  - поликлиник
+  - батыс
+  geo_lat: null
+  geo_lon: null
+  map_url: https://2gis.kz/kostanay/geo/70000001117090364
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days: &id_polevaya
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:30"
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days: *id_polevaya
+    time_start: "19:00"
+    time_end: "20:30"
+  capacity_note: null
+  media: []
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: Седьмой зал города, данные от владельца 02.09.2026 (адрес, ориентир, расписание, 2ГИС). Видео дороги пока нет; район и охват соседних районов не заданы.
+  serves_districts: []

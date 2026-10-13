@@ -202,26 +202,6 @@ artifacts:
   max_send_per_dialog: 1
   gap_ref: G-15
   render_from: gyms
-- id: gym_location_center_kairbekova_24
-  kind: location_text
-  enabled: false
-  scope: city
-  gym_id: center_kairbekova_24
-  title:
-    ru: Как найти зал у магазина «Рахат»
-    kk: «Рахат» дүкені жанындағы залды қалай табуға болады
-  when_to_send_ru: когда просят локацию зала в центре, у магазина Рахат, Каирбекова 24
-  body: null
-  file_path: null
-  file_mime: null
-  file_bytes: null
-  file_sha256: null
-  channels:
-    whatsapp: allow
-    instagram: allow
-  max_send_per_dialog: 1
-  gap_ref: G-15
-  render_from: gyms
 - id: gym_location_magazin15_voinov_8b
   kind: location_text
   enabled: true
@@ -251,26 +231,6 @@ artifacts:
     ru: Как найти зал в 6-м микрорайоне
     kk: 6-шағын аудандағы залды қалай табуға болады
   when_to_send_ru: когда просят локацию зала в 6-м микрорайоне, Арыстанбекова 6, у школы №10
-  body: null
-  file_path: null
-  file_mime: null
-  file_bytes: null
-  file_sha256: null
-  channels:
-    whatsapp: allow
-    instagram: allow
-  max_send_per_dialog: 1
-  gap_ref: G-15
-  render_from: gyms
-- id: gym_location_polevaya_7_3
-  kind: location_text
-  enabled: false
-  scope: city
-  gym_id: polevaya_7_3
-  title:
-    ru: Как найти зал на Полевой
-    kk: Полевая көшесіндегі залды қалай табуға болады
-  when_to_send_ru: когда просят локацию зала на Полевой, 7/3, в бизнес-центре «Кеме»
   body: null
   file_path: null
   file_mime: null
@@ -423,29 +383,6 @@ artifacts:
   max_send_per_dialog: 1
   gap_ref: null
   render_from: null
-- id: route_center_kairbekova_24
-  kind: video
-  enabled: false
-  scope: any
-  gym_id: center_kairbekova_24
-  title:
-    ru: Как добраться — Центр, у магазина «Рахат»
-    kk: Қалай жетуге болады — Орталық, «Рахат» дүкенінің қасында
-  when_to_send_ru: "как только разговор дошёл до этого зала: назвали его адрес, клиент выбрал этот зал, спрашивает где находится, как добраться, где вход или просит показать дорогу. Видео с подписью заменяет объяснение словами"
-  body:
-    ru: null
-    kk: null
-  file_mime: video/mp4
-  file_path: route_center_kairbekova_24.mp4
-  file_bytes: 1878335
-  file_sha256: 7fff99f5a1d091529b9c0bfd91d7ad73a7b1ccf8490752446bf58e81fa747025
-  channels:
-    telegram: allow
-    whatsapp: allow
-    instagram: deny
-  max_send_per_dialog: 1
-  gap_ref: null
-  render_from: route
 - id: route_center_kasymkhanova_10
   kind: video
   enabled: true

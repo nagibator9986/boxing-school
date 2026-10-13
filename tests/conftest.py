@@ -15,7 +15,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Final
 from uuid import UUID, uuid4
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,26 +75,87 @@ def kb() -> KBSnapshot:
     return snapshot
 
 
+#: Залы, удалённые из базы 13.10.2026 (Рахат и «Кеме»), — записи как были, без видео.
+CLOSED_GYMS_1210: Final[Path] = ROOT / "tests" / "fixtures" / "closed_gyms_1210.yaml"
+
+#: Утренние занятия «Романтика» (Вт, Чт, Сб 09:00), снятые владельцем 13.10.2026.
+_ROMANTIK_NO_MORNINGS: Final[str] = (
+    "  # Утренних тренировок (Вт, Чт, Сб 09:00) здесь нет — владелец, 13.10.2026.\n"
+)
+_ROMANTIK_MORNINGS: Final[str] = "".join(
+    f"  - discipline: {discipline}\n    age_from: null\n    age_to: null\n    days:\n"
+    "    - tue\n    - thu\n    - sat\n    time_start: \"09:00\"\n    time_end: \"10:30\"\n"
+    "    shift: second\n    note: null\n"
+    for discipline in ("kickboxing", "boxing")
+)
+
+
+def _kb_variant(tmp_path_factory: pytest.TempPathFactory, name: str, edit) -> KBSnapshot:
+    """Копия базы, в которой ``edit`` поправил ``gyms.yaml``. Рабочая база не трогается."""
+    target = tmp_path_factory.mktemp(name) / "kb"
+    shutil.copytree(ROOT / "kb", target, ignore=shutil.ignore_patterns(".*"))
+    gyms = target / "gyms.yaml"
+    before = gyms.read_text(encoding="utf-8")
+    after = edit(before)
+    assert after != before, f"{name}: правка базы ничего не изменила — устарел якорь"
+    gyms.write_text(after, encoding="utf-8")
+    snapshot, _ = load_sync(target, media_dir=ROOT / "media", schema_version=1)
+    return snapshot
+
+
 @pytest.fixture(scope="session")
 def kb_with_closed_gyms(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
-    """Копия базы, где залы, закрытые 12.10.2026, снова открыты.
+    """Копия базы, где залы, закрытые 12.10.2026 и удалённые 13.10.2026, снова работают.
 
     Для тестов логики записи, построенных на их расписании: у Рахата бокс и
     кикбоксинг Пн·Ср·Пт в 09:00 и 19:00, у «Кеме» — одно время. Такой формы
     расписания у действующих залов нет, а проверяют эти тесты согласие, выбор и
     время, а не состав залов — его проверяют тесты на настоящей базе (``kb``).
     """
-    target = tmp_path_factory.mktemp("kb_reopened") / "kb"
-    shutil.copytree(ROOT / "kb", target, ignore=shutil.ignore_patterns(".*"))
-    gyms = target / "gyms.yaml"
-    gyms.write_text(
-        gyms.read_text(encoding="utf-8").replace(
-            "active: false\n  status: closed\n", "active: true\n  status: open\n"
-        ),
-        encoding="utf-8",
+    reopened = CLOSED_GYMS_1210.read_text(encoding="utf-8").replace(
+        "active: false\n  status: closed\n", "active: true\n  status: open\n"
     )
-    snapshot, _ = load_sync(target, media_dir=ROOT / "media", schema_version=1)
-    return snapshot
+    return _kb_variant(tmp_path_factory, "kb_reopened", lambda text: text + reopened)
+
+
+@pytest.fixture(scope="session")
+def kb_with_closed_gym_records(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
+    """Копия базы, где Рахат и «Кеме» есть, но закрыты (``status: closed``).
+
+    Ответ «этот зал больше не работает» остаётся на будущие закрытия: проверяется он
+    здесь, а в настоящей базе закрытых записей с 13.10.2026 нет.
+    """
+    closed = CLOSED_GYMS_1210.read_text(encoding="utf-8")
+    return _kb_variant(tmp_path_factory, "kb_closed_records", lambda text: text + closed)
+
+
+#: Расписание Плазы до 13.10.2026 — на месте нового, от комментария владельца до видео зала.
+PLAZA_SCHEDULE_1210: Final[Path] = ROOT / "tests" / "fixtures" / "plaza_schedule_1210.yaml"
+_PLAZA_1310_HEAD: Final[str] = "  # Владелец 13.10.2026: «на Плазе Аймед тренировки только по графику"
+_PLAZA_MEDIA: Final[str] = "  capacity_note: null\n  media:\n  - gym_location_plaza_szm_70\n"
+
+
+def _schedule_1210(text: str) -> str:
+    """Расписание залов, каким оно было 12.10.2026: утро «Романтика» и прежняя Плаза."""
+    text = text.replace(_ROMANTIK_NO_MORNINGS, _ROMANTIK_MORNINGS)
+    start, end = text.index(_PLAZA_1310_HEAD), text.index(_PLAZA_MEDIA)
+    plaza = "".join(
+        line for line in PLAZA_SCHEDULE_1210.read_text(encoding="utf-8").splitlines(keepends=True)
+        if not line.startswith("#")
+    )
+    return text[:start] + plaza + text[end:]
+
+
+@pytest.fixture(scope="session")
+def kb_schedule_1210(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
+    """Копия базы с расписанием до 13.10.2026: владелец снял утро «Романтика» и сократил Плазу.
+
+    На прежнем расписании построены тесты выбора из нескольких вариантов: у секции два
+    времени (Романтик 09:00 и 18:45), в 09:00 — и бокс, и кикбоксинг, а у Плазы один час
+    (19:00) идёт и в Пн/Ср/Пт, и во Вт/Чт/Сб. Такой формы у нынешних залов нет, а
+    проверяют эти тесты выбор, а не расписание — его проверяют тесты на настоящей базе.
+    """
+    return _kb_variant(tmp_path_factory, "kb_schedule_1210", _schedule_1210)
 
 
 @pytest.fixture(scope="session")
@@ -121,6 +182,7 @@ class RecordingServices:
         self.cards: list[ManagerCard] = []
         self.pauses: list[tuple[str, int, PauseReason]] = []
         self.artifact_sends: dict[str, int] = {}
+        self.escalated_recently = False
 
     async def enqueue_outbound(self, message: OutboundMessage) -> UUID:
         """Записывает исходящее и возвращает синтетический id."""
@@ -143,6 +205,10 @@ class RecordingServices:
     async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
         """Сколько раз артефакт уже уходил в диалоге."""
         return self.artifact_sends.get(artifact_id, 0)
+
+    async def escalation_open(self, *, within_minutes: int) -> bool:
+        """Передан ли вопрос администратору недавно — задаётся тестом."""
+        return self.escalated_recently
 
 
 class RecordingQueue:

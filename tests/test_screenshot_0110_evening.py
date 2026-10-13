@@ -24,6 +24,14 @@ from tests.conftest import RecordingQueue, webhook_payload
 
 CHAT = "77015550118"
 VOINOV = "magazin15_voinov_8b"
+
+
+@pytest.fixture
+def kb(kb_schedule_1210):
+    """Диалог 18:15 шёл по расписанию до 13.10.2026: у секции «Романтика» два времени, в
+    09:00 — и бокс, и кикбоксинг, у Плазы 19:00 в разные дни. Выбор из нескольких
+    вариантов проверяется на копии базы с тем расписанием (``kb_schedule_1210``)."""
+    return kb_schedule_1210
 FOOTER = "Напишите только цифру: {numbers}"
 
 

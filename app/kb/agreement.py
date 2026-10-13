@@ -44,7 +44,16 @@ _NUMBERED_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d{1,2})\s*[.)]\
 _BULLET_OPTION_RE: Final[re.Pattern[str]] = re.compile(r"^\s*[—–•·-]\s+(\S.*?)\s*$")
 #: Просьба выбрать вместо вопроса: «Выберите время:», «Напишите номер или своими словами.»
 _CHOICE_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
-    r"выбер\w*|напишите\s+(?:цифру|номер)|санын\s+жазыңыз|нөмірін\s+жазыңыз|таңдаңыз", re.IGNORECASE
+    # «Напишите только цифру» — так говорит и наша же строка из базы (funnel.pick_number):
+    # без «только» в шаблоне список модели с ней в конце оставался с тире (прогон 13.10.2026).
+    r"выбер\w*|напишите\s+(?:только\s+)?(?:одну\s+)?(?:цифру|номер)|санын\s+жазыңыз"
+    r"|нөмірін\s+жазыңыз|таңдаңыз",
+    re.IGNORECASE,
+)
+#: Вопрос-выбор над списком: «На какую секцию записать ребёнка?», «Қай уақыт ыңғайлы?».
+_CHOICE_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яёәғқңөұүһі])(?:как(?:ой|ая|ое|ую|ие|им|ом)|котор\w+|қай|қайсы\w*)(?![а-яёәғқңөұүһі]).*\?\s*$",
+    re.IGNORECASE,
 )
 #: Голый номер варианта: «2», «2.», «2)».
 _BARE_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(\d{1,2})\s*[.)]?\s*$")
@@ -226,14 +235,15 @@ def numbered_choices(text: str, footer: str) -> str:
     ``footer`` — просьба с местом под номера: «Напишите только цифру: {numbers}».
     """
     lines = (text or "").splitlines()
-    # Просьба выбрать — вне самих строк списка: «1. Выберите зал 2. Напишите время» —
-    # это шаги инструкции, а не варианты, и цифру в ответ на них не ждут.
-    if not any(_CHOICE_REQUEST_RE.search(line) for line in lines if not is_option_line(line)):
-        return text
     numbered = [index for index, line in enumerate(lines) if _NUMBERED_OPTION_RE.match(line)]
     bullets = [index for index, line in enumerate(lines) if _BULLET_OPTION_RE.match(line)]
     rows = bullets if len(bullets) >= 2 else numbered
     if len(rows) < 2:
+        return text
+    # Просьба выбрать — вне самих строк списка: «1. Выберите зал 2. Напишите время» —
+    # это шаги инструкции, а не варианты, и цифру в ответ на них не ждут.
+    asks = any(_CHOICE_REQUEST_RE.search(line) for line in lines if not is_option_line(line))
+    if not asks and not _question_above_closing_list(lines, rows):
         return text
     for number, index in enumerate(rows, start=1):
         match = _BULLET_OPTION_RE.match(lines[index]) or _NUMBERED_OPTION_RE.match(lines[index])
@@ -245,6 +255,18 @@ def numbered_choices(text: str, footer: str) -> str:
     body = "\n".join(lines[: rows[-1] + 1] + tail).rstrip()
     numbers = ", ".join(str(number) for number in range(1, len(rows) + 1))
     return f"{body}\n\n{footer.format(numbers=numbers)}"
+
+
+def _question_above_closing_list(lines: list[str], rows: list[int]) -> bool:
+    """«На какую секцию записать?» сразу над списком, и списком сообщение кончается.
+
+    Это тоже выбор, хоть «выберите» и не сказано: на «👆» модель прислала «— Бокс
+    — Кикбоксинг» под таким вопросом (прогон 13.10.2026). Рассказ о зале с «Записать?»
+    под списком выбором не становится: там вопрос стоит после строк, а не над ними.
+    """
+    above = [line for line in lines[: rows[0]] if line.strip()]
+    after = [line for line in lines[rows[-1] + 1 :] if line.strip()]
+    return bool(above) and not after and bool(_CHOICE_QUESTION_RE.search(above[-1].strip()))
 
 
 def chosen_option(text: str | None) -> str | None:

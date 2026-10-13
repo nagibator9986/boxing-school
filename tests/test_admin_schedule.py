@@ -96,10 +96,10 @@ def sandbox(tmp_path, kb_dir, media_dir):
 def test_apply_replaces_schedule_and_clears_gap(sandbox) -> None:
     kb, media = sandbox
     parsed = parse_schedule_text(REAL_KSK)
-    result = apply_schedule(kb, "center_kairbekova_24", parsed.as_yaml_dicts(),
+    result = apply_schedule(kb, "center_kasymkhanova_10", parsed.as_yaml_dicts(),
                             media_dir=media, schema_version=1)
     assert result.slots_after == 4
-    assert len(read_schedule(kb, "center_kairbekova_24")) == 4
+    assert len(read_schedule(kb, "center_kasymkhanova_10")) == 4
 
 def test_broken_edit_is_rolled_back(sandbox) -> None:
     """Невалидная правка откатывается, а бот продолжает работать по старой базе."""
@@ -169,12 +169,13 @@ def test_admin_refusal_changes_nothing(console) -> None:
     admin.handle("chat-2", "/admin")
     admin.handle("chat-2", "1")   # раздел «Расписание залов»
     admin.handle("chat-2", "1")   # первый зал в списке
-    before = read_schedule(kb, "center_kairbekova_24")
+    # Файл целиком, а не расписание одного зала: какой зал первый в списке, тест не знает.
+    before = (kb / "gyms.yaml").read_text(encoding="utf-8")
     admin.handle("chat-2", REAL_KSK)
     answer = admin.handle("chat-2", "нет")
 
     assert "не сохранил" in answer.lower()
-    assert read_schedule(kb, "center_kairbekova_24") == before
+    assert (kb / "gyms.yaml").read_text(encoding="utf-8") == before
 
 
 def test_admin_reports_parse_errors_instead_of_saving_garbage(console) -> None:

@@ -57,7 +57,7 @@ async def test_booking_without_a_time_asks_by_the_schedule(kb, state, sessionmak
     )
 
     decisions = await process_inbound(
-        deps, webhook_payload("tb-1", "Да, записывайте", chat_id="77015559001")
+        deps, webhook_payload("tb-1", "Да, записывайте в КСК", chat_id="77015559001")
     )
 
     booking = [inv for d in decisions for inv in d.invocations if inv.name == "create_trial_lead"]
@@ -140,7 +140,7 @@ async def _book(kb, state, sessionmaker, settings, chat: str, args: dict):
         sessionmaker=sessionmaker, state=state, llm=llm, kb=kb_loader.get_snapshot,
         queue=RecordingQueue(), settings=settings,
     )
-    decisions = await process_inbound(deps, webhook_payload(f"{chat}-1", "Да, Али, 8 лет, на 19:00", chat_id=chat))
+    decisions = await process_inbound(deps, webhook_payload(f"{chat}-1", "Да, Али, 8 лет, на 19:00 в КСК", chat_id=chat))
     booking = [inv for d in decisions for inv in d.invocations if inv.name == "create_trial_lead"]
     client = "\n".join(out.text or "" for d in decisions for out in d.outbound)
     return booking[0].result, client

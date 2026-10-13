@@ -27,6 +27,7 @@ from typing import Any, Final, Mapping
 
 from app.config import get_settings
 from app.kb import render
+from app.kb.agreement import chosen_option, split_agreement
 from app.kb.gaps import say_no_data
 from app.kb.models import Gym, KBSnapshot, ScheduleSlot
 from app.kb.sessions import (
@@ -37,9 +38,11 @@ from app.kb.sessions import (
     client_named_discipline,
     client_named_name,
     client_named_time,
+    client_times,
     normalize_time,
     resolve_trial_session,
 )
+from app.tools.gyms import gyms_named_in
 from app.types import (
     TRIAL_CONFIRMATION_ARTIFACT,
     EscalationReason,
@@ -389,6 +392,34 @@ def _short_card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: b
     )
 
 
+def _client_chose_gym(ctx: ToolContext, gym: Gym) -> bool:
+    """Выбрал ли этот зал сам родитель.
+
+    Да — если он назвал зал или его район своими словами, выбрал его номером из
+    списка, согласился на предложение бота, где назван только этот зал, или уже
+    записан сюда (повторный вызов той же записи).
+    """
+    saved = ctx.saved_lead
+    if saved is not None and saved.gym_id == gym.id and saved.status == LeadStatus.TRIAL_BOOKED.value:
+        return True
+    kb = ctx.kb
+    for raw in ctx.dialog_client_texts or ctx.client_texts:
+        own, proposal = split_agreement(raw)
+        if gym.id in gyms_named_in(kb, own):
+            return True
+        for offered in (proposal, chosen_option(raw)):
+            if offered and gyms_named_in(kb, offered) == {gym.id}:
+                return True
+    return any(gyms_named_in(kb, picked) == {gym.id} for picked in ctx.list_choices)
+
+
+def _moves_booked_time(saved: Any, session: TrialSession) -> bool:
+    """Переносит ли эта запись уже сделанную на другое время."""
+    if saved is None or saved.status != LeadStatus.TRIAL_BOOKED.value or saved.trial_slot is None:
+        return False
+    return _booking_key(None, saved.trial_slot, None, None) != _booking_key(None, session.starts_at, None, None)
+
+
 def _booking_key(gym_id: str | None, slot: datetime | None, child_name: str | None, child_age: int | None) -> tuple:
     """Что делает запись той же самой: зал, минута начала по времени школы, ребёнок.
 
@@ -482,24 +513,37 @@ async def create_trial_lead(
             gap_ref=GapRef.C3,
         )
 
+    # --- зал выбрал родитель -------------------------------------------------- #
+    # Диалог 12.10.2026: клиент ни разу не назвал КСК — модель сама показала его
+    # расписание и записала туда, а клиенту был нужен центр. Зал решает, куда семья
+    # поедет, поэтому он — тоже слова родителя, а не выбор модели.
+    gym_chosen = _client_chose_gym(ctx, gym)
+
     # --- конкретное занятие -------------------------------------------------- #
     # Владелец 10.09.2026: «пускай бот полностью сам конвертирует — мы записали вас
     # на 19:00». Дату считает код по расписанию зала; модель её не называет.
     session: TrialSession | None = None
     choice: SessionChoice | None = None
     said_time: str | None = None
-    if gym.schedule:
+    if gym.schedule and gym_chosen:
         # Время, день и секцию выбирает родитель, а не модель. Живой прогон
         # 10.09.2026: на «Сериков Ержан, 8 лет» модель сама подставила «бокс,
         # суббота 17:00» и отправила подтверждение — клиент ничего из этого не
         # называл. Аргумент, которого нет в словах клиента, считается не выбранным.
         texts = ctx.client_texts
         said_time = normalize_time(session_time) if client_named_time(session_time, texts) else None
+        # Секцию родитель выбирает один раз за разговор. Живой диалог 12.10.2026: «Бокс»
+        # в начале, запись в КСК, затем «нет, в центре» — и шестью репликами позже бот
+        # снова спросил «На какую секцию записать ребёнка?». Время и день по-прежнему
+        # берутся из последних реплик: при переносе их выбирают заново.
+        said_discipline = client_named_discipline(discipline, texts) or client_named_discipline(
+            discipline, ctx.dialog_client_texts, single_only=True
+        )
         choice = resolve_trial_session(
             gym,
             time_text=said_time,
             day=session_day if client_named_day(session_day, texts) else None,
-            discipline=discipline if client_named_discipline(discipline, texts) else None,
+            discipline=discipline if said_discipline else None,
             now=ctx.now,
             tz_name=_school_tz(),
             min_lead_hours=float(kb.policies.trial_min_lead_hours),
@@ -511,6 +555,13 @@ async def create_trial_lead(
     # ошибки: иначе фильтр не признал бы время в «вам удобнее в 17:00 или 19:00?».
     needs: list[str] = []
     hints: list[str] = []
+    if not gym_chosen:
+        # Зал спрашивается первым: от него зависят и секции, и время.
+        needs.append("need_gym")
+        hints.append(
+            "Родитель не выбирал этот зал — не выбирай за него. Код сам пришлёт список "
+            "залов с номерами; не перечисляй их и не задавай свой вопрос."
+        )
     # Имя и возраст — тоже слова родителя, а не догадка модели. Живой прогон
     # 10.09.2026: на «На бокс» бот спросил «фамилию сына» — ребёнка ещё никто не
     # называл. Имя, названное раньше и уже разобранное в заявку, тоже годится.
@@ -543,6 +594,24 @@ async def create_trial_lead(
         needs.append(choice.problem or "need_time")
         if not hints:
             hints.append(_choice_hint(kb, choice))
+    confirm_when: str | None = None
+    moving = session is not None and _moves_booked_time(ctx.saved_lead, session)
+    asked_times = client_times(ctx.client_texts)
+    other_time = session is not None and bool(asked_times) and session.time_start not in asked_times
+    if session is not None and said_time is None and (moving or other_time):
+        # Время, которого родитель не выбирал: в зале секция идёт в другой час, и код
+        # взял единственный. Диалог 12.10.2026: запись в КСК на 09:00, «нет, в центре» —
+        # и запись молча уехала на 18:00; живой прогон того же диалога: «на завтра на
+        # 9.00» — и запись в центр на 18:00. Наутро: «Вчера на 9.00 договорились»,
+        # «Можно пораньше?», «К 15.00» — и два вызова администратора. Сначала вопрос.
+        needs.append("need_time_confirm")
+        confirm_when = render.trial_when(kb, session, ctx.lang)
+        if not hints:
+            hints.append(
+                "Время записи не то, что выбирал родитель, — код сам спросит, подходит ли оно. "
+                "Не записывай и не подтверждай сам; можешь одной фразой сказать, что в "
+                "названное родителем время занятий нет."
+            )
     if needs:
         # Один вопрос за сообщение — правило промпта. Скриншот владельца 11.09.2026:
         # модель получила «спроси всё одним сообщением», спросила секцию, а возраст так
@@ -555,7 +624,10 @@ async def create_trial_lead(
                 "booked": False,
                 "status": needs[0],
                 "needs": needs,
-                "gym_id": gym.id,
+                "gym_id": gym.id if gym_chosen else None,
+                "discipline": session.discipline if session is not None else None,
+                "confirm_when": confirm_when,
+                "confirm_kind": ("move" if moving else "book") if confirm_when else None,
                 "child_name": name if name_said else None,
                 # Время, которое назвал сам клиент: «в 17:30 занятий нет» — не выдумка,
                 # и фильтр не должен снимать такой ответ.

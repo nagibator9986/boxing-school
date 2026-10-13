@@ -37,13 +37,13 @@ from app.tools.escalation import escalate_to_manager
 from app.tools.facts import get_kb_fact
 from app.tools.gyms import find_gym_by_district, get_gyms
 from app.tools.pricing import calculate_price
-from app.tools.schedule import get_schedule
+from app.tools.schedule import find_sessions, get_schedule
 
 #: Реализация инструмента: первый позиционный параметр — ``ctx``, остальные — только ключевые.
 ToolFn = Callable[..., Awaitable[ToolResult]]
 
 TOOL_NAMES: Final[tuple[str, ...]] = (
-    "get_gyms", "find_gym_by_district", "calculate_price", "get_schedule",
+    "get_gyms", "find_gym_by_district", "calculate_price", "get_schedule", "find_sessions",
     "get_kb_fact", "send_content", "create_trial_lead", "escalate_to_manager",
 )
 
@@ -63,6 +63,7 @@ _IMPLS: Final[dict[str, ToolFn]] = {
     "find_gym_by_district": find_gym_by_district,
     "calculate_price": calculate_price,
     "get_schedule": get_schedule,
+    "find_sessions": find_sessions,
     "get_kb_fact": get_kb_fact,
     "send_content": send_content,
     "create_trial_lead": create_trial_lead,
@@ -174,7 +175,8 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Узнать расписание конкретного зала. Использовать всегда при вопросе о времени, "
             "днях недели и возрастных группах. Время занятий не называть без вызова этого "
-            "инструмента ни при каких условиях."
+            "инструмента ни при каких условиях. Другое время или день по всем залам "
+            "(«пораньше», «к трём», «в субботу») — find_sessions."
         ),
         parameters={
             "type": "object",
@@ -188,6 +190,31 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
                 },
             },
             "required": ["gym_id"],
+        },
+        deterministic=True,
+        side_effect=False,
+    ),
+    ToolSpec(
+        name="find_sessions",
+        description=(
+            "Найти занятия во всех залах города по секции, дню и времени начала. Использовать, "
+            "когда клиент просит другое время или день («можно пораньше», «к трём», «есть ли в "
+            "субботу утром?», «где бокс вечером?») или когда в его зале нужного времени нет. "
+            "Называть только найденные занятия; если их нет — сказать прямо."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "discipline": {"type": "string", "enum": ["boxing", "kickboxing"]},
+                "day": {
+                    "type": "string",
+                    "enum": ["today", "tomorrow", "mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+                    "description": "День занятия; today и tomorrow — по часам школы",
+                },
+                "time_from": {"type": "string", "description": "Начало не раньше, HH:MM"},
+                "time_to": {"type": "string", "description": "Начало раньше этого времени, HH:MM"},
+                "scope": {"type": "string", "enum": ["city", "region", "all"]},
+            },
         },
         deterministic=True,
         side_effect=False,
@@ -350,6 +377,9 @@ TOOL_ALLOWS: Final[dict[str, tuple[PostcheckFailKind, ...]]] = {
     "find_gym_by_district": (PostcheckFailKind.ADDRESS, PostcheckFailKind.GYM_NAME),
     "calculate_price": (PostcheckFailKind.MONEY,),
     "get_schedule": (PostcheckFailKind.TIME, PostcheckFailKind.WEEKDAY),
+    "find_sessions": (
+        PostcheckFailKind.TIME, PostcheckFailKind.WEEKDAY, PostcheckFailKind.ADDRESS, PostcheckFailKind.GYM_NAME,
+    ),
     "get_kb_fact": (),
     "send_content": (),
     "create_trial_lead": (),
@@ -362,6 +392,7 @@ TOOL_RENDER_HINTS: Final[dict[str, RenderHint]] = {
     "find_gym_by_district": RenderHint.VERBATIM,
     "calculate_price": RenderHint.NUMBERS_ONLY,
     "get_schedule": RenderHint.VERBATIM,
+    "find_sessions": RenderHint.SUMMARIZE,
     "get_kb_fact": RenderHint.VERBATIM,
     "send_content": RenderHint.SILENT,
     "create_trial_lead": RenderHint.SUMMARIZE,

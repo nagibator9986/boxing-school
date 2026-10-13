@@ -30,6 +30,7 @@ __all__ = [
     "client_named_day",
     "client_named_name",
     "client_named_time",
+    "client_times",
     "fold_name",
     "normalize_time",
     "resolve_trial_session",
@@ -154,9 +155,22 @@ _RANGE_END_RE: Final[re.Pattern[str]] = re.compile(
 
 
 def _offered_times(proposal: str | None) -> set[str]:
-    """Время начала в предложении бота, без концов диапазонов."""
+    """Время начала в предложении бота, без концов диапазонов.
+
+    Бот пишет время через двоеточие, а дату — через точку: в «во вторник, 13.10 в
+    18:00?» «13.10» — это дата, а не 13:10. Иначе «Да» на такой вопрос ничего не
+    выбирало (в нём будто два времени), и бот переспрашивал его по кругу (13.10.2026).
+    """
     starts = _RANGE_END_RE.sub(r"\1", proposal or "")
-    return {f"{int(match.group(1)):02d}:{match.group(2)}" for match in _HHMM_RE.finditer(starts)}
+    found = [(match.group(0), match.group(1), match.group(2)) for match in _HHMM_RE.finditer(starts)]
+    if any(":" in raw for raw, _, _ in found):
+        found = [item for item in found if ":" in item[0]]
+    return {f"{int(hours):02d}:{minutes}" for _, hours, minutes in found}
+
+
+def client_times(texts) -> frozenset[str]:
+    """Время, которое клиент назвал сам, — в виде расписания ``HH:MM``."""
+    return frozenset(_client_times(list(texts)))
 
 
 def client_named_time(time_text: str | None, texts) -> bool:
@@ -165,12 +179,19 @@ def client_named_time(time_text: str | None, texts) -> bool:
     return wanted is not None and wanted in _client_times(list(texts))
 
 
-def client_named_discipline(discipline: str | None, texts) -> bool:
-    """Назвал ли клиент эту секцию сам. «Кикбоксинг» боксом не считается."""
+def client_named_discipline(discipline: str | None, texts, *, single_only: bool = False) -> bool:
+    """Назвал ли клиент эту секцию сам. «Кикбоксинг» боксом не считается.
+
+    ``single_only`` — засчитывать только реплики, где клиент назвал одну секцию: «чем
+    бокс отличается от кикбоксинга?» — вопрос, а не выбор. Так проверяется вся
+    переписка, а не последние реплики.
+    """
     named: set[str] = set()
     for raw in texts:
         text, proposal = split_agreement(raw)
-        named |= _disciplines_in(text)
+        own = _disciplines_in(text)
+        if not single_only or len(own) == 1:
+            named |= own
         # Из предложения бота секция засчитывается, только если она там одна.
         offered = _disciplines_in(proposal or "")
         if len(offered) == 1:

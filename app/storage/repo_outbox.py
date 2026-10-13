@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Final
+from typing import Any, Final, Sequence
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -85,7 +85,9 @@ async def enqueue(session: AsyncSession, msg: OutboundMessage) -> UUID:
     return existing
 
 
-async def append_text(session: AsyncSession, outbox_id: UUID, extra: str) -> bool:
+async def append_text(
+    session: AsyncSession, outbox_id: UUID, extra: str, *, artifact_ids: Sequence[str] = ()
+) -> bool:
     """Дописывает текст к ещё не отправленной строке очереди. ``False`` — нельзя.
 
     Нужна, чтобы клиент не получал очередью четыре сообщения подряд там, где
@@ -103,6 +105,11 @@ async def append_text(session: AsyncSession, outbox_id: UUID, extra: str) -> boo
         return False
 
     payload["text"] = f"{payload['text']}\n\n{extra}".strip()
+    if artifact_ids:
+        # Материал дописанного сообщения должен считаться отправленным: иначе бот
+        # пришлёт его снова следующим ходом (count_artifact_sends его не видел).
+        merged = list(payload.get("merged_artifact_ids") or [])
+        payload["merged_artifact_ids"] = merged + [item for item in artifact_ids if item not in merged]
     row.payload = payload
     row.updated_at = utcnow()
     await session.flush()

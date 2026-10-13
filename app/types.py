@@ -571,9 +571,17 @@ class OutboundMessage(BaseModel):
     text: str | None = None
     content_uri: str | None = None
     artifact_id: str | None = None
+    #: Материалы, дописанные к этому сообщению склейкой: подтверждение записи после
+    #: карточки расписания уходит одним сообщением, но «отправлено» оно для каждого.
+    merged_artifact_ids: tuple[str, ...] = ()
     ref_message_id: str | None = None
     clear_unanswered: Literal[False] = False
     delay_ms: int = 0
+
+    def artifacts(self) -> tuple[str, ...]:
+        """Все материалы в этом сообщении: свой и дописанные склейкой."""
+        own = (self.artifact_id,) if self.artifact_id else ()
+        return own + tuple(self.merged_artifact_ids)
 
     @model_validator(mode="after")
     def _exactly_one_payload(self) -> "OutboundMessage":
@@ -889,6 +897,10 @@ class ToolServices(Protocol):
         """Сколько раз артефакт уже уходил в этом диалоге."""
         ...
 
+    async def escalation_open(self, *, within_minutes: int) -> bool:
+        """Передан ли вопрос диалога человеку недавно, а он ещё не ответил."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
@@ -915,10 +927,13 @@ class ToolContext:
     #: Последние реплики самого клиента, без служебных пометок. По ним инструменты
     #: проверяют, что время, секцию и посёлок назвал клиент, а не придумала модель.
     client_texts: tuple[str, ...] = ()
-    #: Все реплики клиента в этом диалоге, его словами. Только для имени: цифры из
-    #: давних реплик (номер зала, пункт меню) сошли бы за время или возраст, а имя
-    #: родитель пишет один раз — в начале, и переспрашивать его нельзя.
+    #: Все реплики клиента в этом диалоге, его словами. Для имени, зала и секции: цифры
+    #: из давних реплик (номер зала, пункт меню) сошли бы за время или возраст, а имя,
+    #: зал и секцию родитель называет один раз, и переспрашивать их нельзя.
     dialog_client_texts: tuple[str, ...] = ()
+    #: Варианты, которые клиент выбрал цифрой из списка залов, — развёрнутые: «2» после
+    #: списка — это «зал «КСК — школа №9» (Каирбекова 334)». В словах клиента их нет.
+    list_choices: tuple[str, ...] = ()
     #: Заявка, уже сохранённая в этом диалоге до хода.
     saved_lead: SavedLead | None = None
 

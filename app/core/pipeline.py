@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Final, Sequence
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -68,6 +69,7 @@ from app.kb import render
 from app.kb.agreement import (
     is_option_line,
     numbered_choices,
+    offered_options,
     offers_choice,
     options_at_hour,
     question_sentence,
@@ -86,7 +88,7 @@ from app.storage import repo_conversation, repo_lead, repo_message, repo_outbox
 from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
-from app.tools.gyms import normalize_text
+from app.tools.gyms import gyms_named_in, normalize_text
 from app.types import (
     OWNER_TEXT_ARTIFACT_PREFIX,
     ManagerCardKind,
@@ -458,13 +460,19 @@ class _Services:
 
         outbox_id = self.outbox[-1][0]
         try:
-            if not await repo_outbox.append_text(self.session, outbox_id, text):
+            if not await repo_outbox.append_text(
+                self.session, outbox_id, text, artifact_ids=message.artifacts()
+            ):
                 return None
         except Exception as exc:  # noqa: BLE001 - склейка не важнее самого ответа
             _log.warning("outbox_merge_failed", error=type(exc).__name__)
             return None
 
-        self.messages[-1] = previous.model_copy(update={"text": joined})
+        # Метка дописанного материала сохраняется: живой прогон 12.10.2026 —
+        # подтверждение записи склеилось с карточкой расписания, потеряло свою метку,
+        # и текст модели ушёл следом, хотя после подтверждения его не отправляют.
+        merged = tuple(dict.fromkeys(previous.merged_artifact_ids + message.artifacts()))
+        self.messages[-1] = previous.model_copy(update={"text": joined, "merged_artifact_ids": merged})
         return outbox_id
 
     async def upsert_lead(self, draft: LeadDraft) -> UUID:
@@ -519,6 +527,12 @@ class _Services:
             now=_utcnow(),
         )
         self.paused = True
+
+    async def escalation_open(self, *, within_minutes: int) -> bool:
+        """Передан ли вопрос диалога человеку недавно, а он ещё не ответил."""
+        return await pause.escalation_open(
+            self.session, self.conv.id, now=self.turn_started_at, within_minutes=within_minutes
+        )
 
     async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
         """Сколько раз артефакт уже уходил в этот диалог."""
@@ -1158,6 +1172,7 @@ async def _run_turn(
             injection_suspected=injection,
             client_texts=_recent_client_texts(client_turn_text, stored),
             dialog_client_texts=_recent_client_texts(client_turn_text, stored, lookback=None),
+            list_choices=_list_choices(stored, text if chose_from_list else None),
             saved_lead=await _saved_lead(db, conv),
         )
         executor = await build_tool_executor(deps, ctx)
@@ -1167,12 +1182,12 @@ async def _run_turn(
         child_talk = await _child_talk_continues(db, conv, text)
         dynamic_note = build_dynamic_note(
             lang=lang,
-            now=now,
+            now=_school_time(now, settings),
             lead=draft,
             intents=intents,
             injection_suspected=injection,
             gym_id=await _gym_in_view(db, conv, kb),
-            stage=await _client_stage(db, conv),
+            stage=await _client_stage(db, conv, kb=kb, now=now, settings=settings),
             just_said=_just_said(
                 text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
             ),
@@ -1325,17 +1340,21 @@ async def _run_turn(
                 offending=list(pc.offending)[:5],
             )
             question = _booking_question(kb, lang, invocations)
-            if (
-                question is None
-                and "?" not in split_agreement(text)[0]
-                and not intents
-                and not await _already_booked(db, conv)
-            ):
-                # Клиент ничего не спросил, а отвечал на вопрос записи — и ответ модели
-                # сняли. Диалог 10.10.2026: на «В каком районе вы живёте?» клиент написал
-                # «Да все верно», модель повторила его же «понедельник 17:00» без данных
-                # инструмента — и разговор ушёл администратору. Вопрос записи задаётся снова.
-                question = _funnel_reask(kb, lang, _last_model_text(stored))
+            if question is None and not await _already_booked(db, conv):
+                # Последнее, что клиент видел до этого хода: список залов уходит
+                # инструментом и в историю модели не попадает.
+                last_bot = await _last_sent_before_turn(db, conv, services) or _last_model_text(stored)
+                if _has_gyms_card(last_bot, kb) and set(intents) <= _PICK_GYM_INTENTS:
+                    # Перед клиентом список залов, а он спросил «когда можно?» или «где?»:
+                    # ответ на это — выбрать зал. Живой прогон 13.10.2026: модель назвала
+                    # дни без расписания, фильтр снял ответ — и вопрос ушёл администратору.
+                    question = _kb_text(kb, "card.pick_gym", lang) or None
+                elif "?" not in split_agreement(text)[0] and not intents:
+                    # Клиент ничего не спросил, а отвечал на вопрос записи — и ответ модели
+                    # сняли. Диалог 10.10.2026: на «В каком районе вы живёте?» клиент написал
+                    # «Да все верно», модель повторила его же «понедельник 17:00» без данных
+                    # инструмента — и разговор ушёл администратору. Вопрос записи задаётся снова.
+                    question = _funnel_reask(kb, lang, last_bot)
             if question is not None:
                 # Посреди записи снятый фильтром ответ — не повод звать администратора.
                 # Владелец 12.09.2026: «при запросе записи не должен передавать менеджеру».
@@ -1429,6 +1448,16 @@ async def _run_turn(
             if not asked or funnel.is_handover(asked):
                 asked = _kb_text(kb, funnel.next_step_key(draft), lang)
             reply = asked
+        elif (_asks_which_gym(reply) or _lists_gyms(reply, kb)) and not await _gyms_list_seen(
+            db, conv, kb, services
+        ):
+            # «В каком из наших залов вам удобнее?» — а залов клиент ещё не видел (диалог
+            # 12.10.2026: следующим сообщением он спросил «Где находится»). Вместо вопроса
+            # вслепую — сам список с номерами, он и заканчивается этим вопросом.
+            gyms_question = _gyms_question(kb, lang)
+            if gyms_question:
+                lead_in = _lead_in(reply)
+                reply = f"{lead_in}\n\n{gyms_question}" if lead_in else gyms_question
         elif (options_question := _booking_question(kb, lang, invocations, options_only=True)) is not None:
             # Варианты времени и секции из расписания задаёт код, под номерами и с
             # прямой просьбой «напишите только цифру». Скриншот владельца 01.10.2026:
@@ -1451,7 +1480,10 @@ async def _run_turn(
             _log.warning("false_booking_claim", conv_key=conv.conv_key, replaced=bool(question))
             reply = question or ""
         # Список, который модель написала сама, — тоже под номерами и с цифрами в конце.
-        reply = numbered_choices(reply, _kb_text(kb, "funnel.pick_number", lang))
+        # Список залов из кода уже пронумерован и со своей просьбой: переделка срезала
+        # «Напишите номер зала — пришлю расписание» (живой прогон 13.10.2026).
+        if not _has_gyms_card(reply, kb):
+            reply = numbered_choices(reply, _kb_text(kb, "funnel.pick_number", lang))
         if not reply.strip():
             # От ответа ничего не осталось: карточка и была ответом.
             _log.info("reply_was_all_repeat", conv_key=conv.conv_key)
@@ -1469,6 +1501,11 @@ async def _run_turn(
             and services.lead_id is None
             # Клиент сам написал «хочу записать» — спрашивать «записать?» нелепо.
             and IntentHint.SIGNUP not in intents
+            # Запись уже идёт: инструмент вернул следующий шаг (время, зал, «записать
+            # на 18:00?»), и его вопрос задаёт код. Общее «Записать ребёнка?» поверх
+            # вытесняло его (живой прогон 13.10.2026: на «Нет в центре» ушла карточка
+            # зала и «Записать ребёнка на первую пробную?» вместо вопроса о времени).
+            and not any(invocation.name == "create_trial_lead" for invocation in invocations)
             and funnel.turn_showed_a_gym(services.messages)
             and not await _already_booked(db, conv)
         ):
@@ -1921,6 +1958,49 @@ async def _escalate_turn(
     )
 
 
+#: Текст «вопрос уже у администратора»: его клиент слышит один раз на передачу.
+TEXT_PENDING: Final[str] = "escalation.pending"
+
+
+async def _pending_turn(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    now: datetime,
+    correlation_id: str,
+    guard_flags: Sequence[GuardFlag] = (),
+) -> PipelineDecision:
+    """Ответ, пока вопрос диалога уже у администратора: без второй карточки и повтора."""
+    try:
+        last = (await repo_message.sent_texts(db, conv.id, limit=1) or [""])[0]
+    except Exception as exc:  # noqa: BLE001 - лучше сказать лишний раз, чем упасть
+        _log.warning("pending_lookup_failed", error=type(exc).__name__)
+        last = ""
+    # После «передаю администратору» клиент слышит один раз «вопрос уже у него»;
+    # после этого — тишина, пока человек не ответит.
+    pending = _kb_text(kb, TEXT_PENDING, lang)
+    repeated = bool(pending) and pending in last
+    if not repeated:
+        await _say(deps, services, conv, inbound, kb=kb, lang=lang, key=TEXT_PENDING, now=now)
+    _log.info("escalation_already_open", conv_key=conv.conv_key, silent=repeated)
+    return _decision(
+        DecisionAction.SILENT if repeated else DecisionAction.REPLY,
+        "escalation_open",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        guard_flags=tuple(guard_flags),
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+
+
 async def _degraded_context(
     deps: PipelineDeps, db: AsyncSession, conv: Conversation, *, text: str, kb: KBSnapshot
 ) -> tuple[Scope | None, tuple[str, ...]]:
@@ -2019,23 +2099,33 @@ async def _degrade(
                 conv_key=conv.conv_key,
             )
 
-    decision = await _escalate_turn(
-        deps,
-        db,
-        services,
-        conv,
-        inbound,
-        kb=kb,
-        lang=lang,
-        text=text,
-        key=key,
-        reason=escalation,
-        pause_reason=pause_reason,
-        correlation_id=correlation_id,
-        now=now,
-        guard_flags=guard_flags,
-        body=body,
-    )
+    window = int(getattr(kb.policies, "escalation_pause_minutes", 0) or 0)
+    if body is None and await pause.escalation_open(db, conv.id, now=now, within_minutes=window):
+        # Вопрос уже у администратора, а он ещё не ответил. Вторая карточка и второе
+        # «Здесь лучше ответит администратор…» подряд (диалог 13.10.2026) — шум: клиент
+        # слышит один раз «вопрос уже у администратора», дальше бот молчит.
+        decision = await _pending_turn(
+            deps, db, services, conv, inbound, kb=kb, lang=lang, now=now,
+            correlation_id=correlation_id, guard_flags=guard_flags,
+        )
+    else:
+        decision = await _escalate_turn(
+            deps,
+            db,
+            services,
+            conv,
+            inbound,
+            kb=kb,
+            lang=lang,
+            text=text,
+            key=key,
+            reason=escalation,
+            pause_reason=pause_reason,
+            correlation_id=correlation_id,
+            now=now,
+            guard_flags=guard_flags,
+            body=body,
+        )
     return decision.model_copy(
         update={
             "reason": reason_code,
@@ -2913,9 +3003,32 @@ async def _stored_contents(db: AsyncSession, conv: Conversation) -> list[dict[st
         return []
 
 
+_CHOICE_NOTE_HEAD: Final[str] = "[служебная заметка системы] Клиент ответил «"
+_CHOICE_NOTE_SEP: Final[str] = "» — это выбор из списка: "
+
+
 def _choice_note(raw: str, expanded: str) -> str:
     """Выбор из списка для истории: модель помнит смысл, проверки не считают его словами."""
-    return f"[служебная заметка системы] Клиент ответил «{raw.strip()}» — это выбор из списка: {expanded}"
+    return f"{_CHOICE_NOTE_HEAD}{raw.strip()}{_CHOICE_NOTE_SEP}{expanded}"
+
+
+def _list_choices(contents: Sequence[dict[str, Any]], current: str | None) -> tuple[str, ...]:
+    """Что клиент выбирал цифрой из списков бота за диалог — развёрнутым текстом.
+
+    Номер зала из списка — выбор родителя, хотя в его словах только «2»: инструмент
+    записи сверяет по этому зал, который предлагает модель.
+    """
+    found: list[str] = []
+    for item in contents:
+        if item.get("role") != "user":
+            continue
+        for part in item.get("parts") or []:
+            piece = str(part.get("text") or "") if isinstance(part, dict) else ""
+            if piece.lstrip().startswith(_CHOICE_NOTE_HEAD) and _CHOICE_NOTE_SEP in piece:
+                found.append(piece.split(_CHOICE_NOTE_SEP, 1)[1].strip())
+    if current:
+        found.append(current)
+    return tuple(found)
 
 
 def _client_content(text: str) -> dict[str, Any]:
@@ -2944,6 +3057,8 @@ async def _saved_lead(db: AsyncSession, conv: Conversation) -> SavedLead | None:
 _NAME_NEEDS: Final[frozenset[str]] = frozenset({"need_name", "need_age"})
 _SECTION_NEEDS: Final[frozenset[str]] = frozenset({"need_discipline", "unknown_discipline"})
 _TIME_NEEDS: Final[frozenset[str]] = frozenset({"need_time", "unknown_time", "unknown_day"})
+#: Шаги записи, вопрос по которым задаёт код всегда: варианты, список залов, перенос.
+_CODE_ASKS: Final[frozenset[str]] = _SECTION_NEEDS | _TIME_NEEDS | {"need_gym", "need_time_confirm"}
 
 
 def _booking_question(
@@ -2966,8 +3081,21 @@ def _booking_question(
         if data.get("booked") is not False or not needs:
             return None
         first = needs[0]
-        if options_only and first not in _SECTION_NEEDS | _TIME_NEEDS:
+        if options_only and first not in _CODE_ASKS:
             return None
+        if first == "need_gym":
+            # Модель выбрала зал сама — родитель его не называл. Вопрос — список залов
+            # с номерами: цифру в ответ код разворачивает в зал (см. ``_gym_choice``).
+            return _gyms_question(kb, lang)
+        if first == "need_time_confirm":
+            gym = kb.gym(str(data.get("gym_id") or ""))
+            when = str(data.get("confirm_when") or "")
+            if gym is None or not when:
+                return None
+            title = gym.title.get(lang) or gym.title.ru or gym.id
+            key = "funnel.move_confirm" if data.get("confirm_kind") == "move" else "funnel.book_confirm"
+            question = _kb_text(kb, key, lang)
+            return question.format(gym=title, when=when[:1].lower() + when[1:]) if question else None
         if first in _NAME_NEEDS:
             both = _NAME_NEEDS <= set(needs)
             key = "funnel.name_age" if both else ("funnel.name" if first == "need_name" else "funnel.age")
@@ -2984,6 +3112,79 @@ def _booking_question(
         footer = _kb_text(kb, "funnel.pick_number", lang).format(numbers=numbers)
         return f"{head}\n\n{options}\n\n{footer}"
     return None
+
+
+#: Вопрос «какой зал?»: «В каком из наших залов вам удобнее?», «Какой зал вам ближе?».
+_WHICH_GYM_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])(?:в\s+)?как(?:ой|ом|ая|ую)\s+(?:из\s+(?:наших\s+|ваших\s+|этих\s+)?)?зал",
+    re.IGNORECASE,
+)
+
+
+def _lists_gyms(reply: str, kb: KBSnapshot) -> bool:
+    """Перечислила ли модель залы списком сама — двумя и больше строками-вариантами.
+
+    Живой прогон 13.10.2026: на «хочу записать» модель написала свой список залов —
+    «Кайырбекова» вместо «Каирбекова», Тобыл без номера. Список собирает код.
+    """
+    named: set[str] = set()
+    for line in (reply or "").splitlines():
+        if is_option_line(line):
+            named |= gyms_named_in(kb, line)
+    return len(named) >= 2
+
+
+def _asks_which_gym(reply: str) -> bool:
+    """Спрашивает ли ответ модели, какой зал выбрать."""
+    return bool(_WHICH_GYM_RE.search(question_sentence(reply)))
+
+
+async def _gyms_list_seen(db: AsyncSession, conv: Conversation, kb: KBSnapshot, services: _Services) -> bool:
+    """Видел ли клиент список залов — в этом ходу или раньше в диалоге."""
+    heading = (kb.text("card.gyms_city_title", Language.RU) or "").strip()
+    if not heading:
+        return True  # не по чему проверить — список не подставляем
+    if any(heading in (message.text or "") for message in services.messages):
+        return True
+    try:
+        sent = await repo_message.sent_texts(db, conv.id, limit=200)
+    except Exception as exc:  # noqa: BLE001 - не знаем — не подставляем
+        _log.warning("gyms_list_lookup_failed", error=type(exc).__name__)
+        return True
+    return any(heading in text for text in sent)
+
+
+async def _last_sent_before_turn(db: AsyncSession, conv: Conversation, services: _Services) -> str:
+    """Последнее сообщение бота, которое клиент получил до этого хода."""
+    this_turn = {message.text or "" for message in services.messages}
+    try:
+        recent = await repo_message.sent_texts(db, conv.id, limit=len(this_turn) + 3)
+    except Exception as exc:  # noqa: BLE001 - не знаем — значит, не знаем
+        _log.warning("last_sent_lookup_failed", error=type(exc).__name__)
+        return ""
+    return next((text for text in recent if text and text not in this_turn), "")
+
+
+def _has_gyms_card(text: str, kb: KBSnapshot) -> bool:
+    """Есть ли в тексте список залов, собранный кодом."""
+    headings = (kb.text("card.gyms_city_title", lang) for lang in (Language.RU, Language.KK))
+    return any(heading and heading.strip() in (text or "") for heading in headings)
+
+
+def _gyms_question(kb: KBSnapshot, lang: Language) -> str | None:
+    """Список залов города с номерами и просьбой выбрать — вопрос «в какой зал записать»."""
+    try:
+        card = render.render_gyms_list_card(kb, scope=Scope.CITY, lang=lang).strip()
+    except Exception as exc:  # noqa: BLE001 - без списка вопрос задаёт модель
+        _log.warning("gyms_question_failed", error=type(exc).__name__)
+        return None
+    return card if card and "?" in card else None
+
+
+#: Вопросы, ответ на которые после списка залов один — выбрать зал.
+_PICK_GYM_INTENTS: Final[frozenset[IntentHint]] = frozenset(
+    {IntentHint.SCHEDULE, IntentHint.LOCATION, IntentHint.SIGNUP, IntentHint.AGE}
+)
 
 
 #: Вопросы записи, которые можно задать повторно слово в слово: без вариантов из расписания.
@@ -3008,12 +3209,8 @@ def _funnel_reask(kb: KBSnapshot, lang: Language, last_bot_text: str) -> str | N
         if not question or " ".join(question.split()) not in said:
             continue
         if key == "funnel.district":
-            try:
-                card = render.render_gyms_list_card(kb, scope=Scope.CITY, lang=lang).strip()
-            except Exception as exc:  # noqa: BLE001 - без списка остаётся сам вопрос
-                _log.warning("reask_gyms_list_failed", error=type(exc).__name__)
-                card = ""
-            if card and "?" in card:
+            card = _gyms_question(kb, lang)
+            if card:
                 return card
         return question
     return None
@@ -3091,6 +3288,9 @@ def _lead_in(reply: str) -> str:
                 # «Али записан… Ждём вас!» перед вопросом о времени — ложь: записи
                 # ещё нет, раз код спрашивает время (живой прогон 01.10.2026).
                 or _BOOKING_CLAIM_RE.search(sentence)
+                # «Ждём вас на первой тренировке!» и следом «На какую секцию записать?»
+                # (диалог 12.10.2026): приглашение как от записанного — та же ложь.
+                or _WELCOME_RE.search(sentence)
             ):
                 continue
             kept.append(sentence)
@@ -3098,15 +3298,22 @@ def _lead_in(reply: str) -> str:
 
 
 #: Просьба выбрать: в вводных словах ей не место — её задаёт сам вопрос с вариантами.
+#: «выбрали» — переспрос того же выбора: «Какую секцию вы выбрали — бокс или кикбоксинг?».
 _CHOICE_ASK_RE: Final[re.Pattern[str]] = re.compile(
-    r"выбер\w*|напишите\s+(?:цифру|номер)|санын\s+жазыңыз|таңдаңыз", re.IGNORECASE
+    r"выбер\w*|выбра\w*|напишите\s+(?:только\s+)?(?:цифру|номер)|санын\s+жазыңыз|таңдаңыз",
+    re.IGNORECASE,
+)
+
+#: Слова, которыми встречают уже записанного: «Ждём вас!», «До встречи на тренировке».
+_WELCOME_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])(?:ждём|ждем|будем\s+ждать|до\s+встречи|увидимся)(?![а-яё])", re.IGNORECASE
 )
 
 
 def _owner_text_sent(services: _Services) -> bool:
     """Ушёл ли в этом ходу текст владельца, который нельзя пересказывать."""
     return any(
-        (getattr(message, "artifact_id", None) or "").startswith(OWNER_TEXT_ARTIFACT_PREFIX)
+        any(artifact.startswith(OWNER_TEXT_ARTIFACT_PREFIX) for artifact in message.artifacts())
         for message in services.messages
     )
 
@@ -3114,7 +3321,7 @@ def _owner_text_sent(services: _Services) -> bool:
 def _trial_confirmed(services: _Services) -> bool:
     """Ушло ли в этом ходу готовое подтверждение записи на пробное."""
     return any(
-        getattr(message, "artifact_id", None) == TRIAL_CONFIRMATION_ARTIFACT
+        TRIAL_CONFIRMATION_ARTIFACT in message.artifacts()
         for message in services.messages
     )
 
@@ -3149,18 +3356,101 @@ async def _already_booked(db: AsyncSession, conv: Conversation) -> bool:
     return lead is not None and lead.status in _BOOKED_STATUSES
 
 
-async def _client_stage(db: AsyncSession, conv: Conversation) -> str | None:
+async def _client_stage(
+    db: AsyncSession,
+    conv: Conversation,
+    *,
+    kb: KBSnapshot | None = None,
+    now: datetime | None = None,
+    settings: Settings | None = None,
+) -> str | None:
     """Строка о стадии клиента для служебной заметки. ``None`` — заявки ещё нет.
 
     Стадия берётся из сохранённой заявки, а не из текущего сообщения: именно там
-    лежит то, что бот с клиентом уже прошёл.
+    лежит то, что бот с клиентом уже прошёл. Записанному — и сама запись: живой
+    прогон диалога 12–13.10.2026, утром в день занятия модель спросила «Как прошла
+    тренировка?», а на «Вчера на 9.00 договорились» не знала, что запись переносили.
     """
     try:
         lead = await repo_lead.get_by_conversation(db, conv.id)
     except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
         _log.warning("stage_lookup_failed", error=type(exc).__name__)
         return None
-    return _STAGE_NOTES.get(lead.status) if lead is not None else None
+    note = _STAGE_NOTES.get(lead.status) if lead is not None else None
+    if (
+        note
+        and lead.status == LeadStatus.TRIAL_BOOKED.value
+        and kb is not None
+        and now is not None
+        and settings is not None
+    ):
+        try:
+            details = await _booking_details(db, conv, lead, kb=kb, now=now, settings=settings)
+        except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
+            _log.warning("booking_details_failed", error=type(exc).__name__)
+            details = ""
+        if details:
+            note = f"{note} {details}"
+    return note
+
+
+_WEEKDAY_NAMES: Final[tuple[str, ...]] = (
+    "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+)
+
+
+async def _booking_details(
+    db: AsyncSession, conv: Conversation, lead: Any, *, kb: KBSnapshot, now: datetime, settings: Settings
+) -> str:
+    """Действующая запись словами — относительно сегодняшнего дня — и её переносы."""
+    gym = kb.gym(lead.gym_id or "")
+    title = (gym.title.ru or gym.id) if gym is not None else (lead.district or "зал не указан")
+    parts: list[str] = []
+    if lead.trial_slot is not None:
+        aware = lead.trial_slot if lead.trial_slot.tzinfo else lead.trial_slot.replace(tzinfo=timezone.utc)
+        local = _school_time(aware, settings)
+        today = _school_time(now, settings).date()
+        moment = f"{local:%d.%m} ({_WEEKDAY_NAMES[local.weekday()]}) в {local:%H:%M}"
+        if aware <= now:
+            when = f"занятие уже прошло — было {moment}"
+        elif local.date() == today:
+            when = f"занятие сегодня в {local:%H:%M}"
+        elif local.date() == today + timedelta(days=1):
+            when = f"занятие завтра, {moment}"
+        else:
+            when = f"занятие {moment}"
+        parts.append(f"Действующая запись: {title}, {when}.")
+    elif lead.trial_slot_text:
+        parts.append(f"Действующая запись: {title}, {lead.trial_slot_text}.")
+    history = [
+        summary
+        for summary in (
+            _confirmation_summary(text, kb)
+            for text in await repo_message.artifact_texts(db, conv.id, TRIAL_CONFIRMATION_ARTIFACT)
+        )
+        if summary
+    ]
+    if len(history) > 1:
+        parts.append(
+            "Запись в этом диалоге переносили: " + " → ".join(history) + ". Действует последняя. "
+            "Если клиент вспоминает прежние время или зал, прямо объясни, что запись перенесли, "
+            "и предложи вернуть прежний вариант, если он ему удобнее."
+        )
+    return " ".join(parts)
+
+
+def _confirmation_summary(text: str, kb: KBSnapshot) -> str | None:
+    """«КСК — школа №9, …, Во вторник, 13.10 в 09:00» из отправленного подтверждения записи."""
+    header = (kb.text("system.trial_confirmed", Language.RU) or "").strip()
+    body = text.split(header, 1)[1] if header and header in text else text
+    place = when = None
+    for line in body.splitlines():
+        line = line.strip()
+        if place is None and line.startswith(render.ICON_PIN):
+            place = line[len(render.ICON_PIN):].strip()
+        elif when is None and line.startswith(render.ICON_SCHEDULE):
+            when = line[len(render.ICON_SCHEDULE):].strip()
+    return f"{when}, {place}" if place and when else None
 
 
 #: Начало приветствия: «Здравствуйте!», «Добрый день», «Сәлеметсіз бе», «Hello».
@@ -3496,9 +3786,35 @@ def _choice_context(history: Sequence[dict[str, Any]]) -> str:
     ][:_CHOICE_LOOKBACK]
     if not said:
         return ""
-    if offers_choice(said[0]) or not _CHOICE_ASK_RE.search(said[0]):
+    if offers_choice(said[0]):
         return said[0]
-    return next((text for text in said[1:] if offers_choice(text)), said[0])
+    earlier = next((text for text in said[1:] if offers_choice(text)), None)
+    if earlier is not None and (
+        _CHOICE_ASK_RE.search(said[0]) or _names_options_of(said[0], earlier)
+    ):
+        return earlier
+    return said[0]
+
+
+def _names_options_of(question: str, listing: str) -> bool:
+    """Переспрашивает ли бот тот же выбор: называет в вопросе два варианта из списка.
+
+    Диалог 12.10.2026: после списка «1. Бокс 2. Кикбоксинг» бот уточнил «Какую именно
+    секцию вы выбрали — бокс или кикбоксинг?», клиент ответил «1» — и цифра ушла модели
+    голой: последнее сообщение бота списка не содержало.
+    """
+    asked = question_sentence(question).casefold()
+    if not asked:
+        return False
+    labels = {
+        re.split(r"\s+[—–-]\s+|[,·(]", option, maxsplit=1)[0].strip().casefold()
+        for option in offered_options(listing)
+    }
+    named = [
+        label for label in labels
+        if label and re.search(rf"(?<![а-яёa-z]){re.escape(label)}(?![а-яёa-z])", asked)
+    ]
+    return len(named) >= 2
 
 
 def _last_model_text(history: Sequence[dict[str, Any]]) -> str:
@@ -3712,6 +4028,15 @@ def _decision(
         kb_hash=kb_hash,
         correlation_id=correlation_id,
     )
+
+
+def _school_time(now: datetime, settings: Settings) -> datetime:
+    """Момент по часам школы; битая зона в настройках откатывается на Алматы."""
+    try:
+        zone = ZoneInfo(settings.timezone)
+    except Exception:  # noqa: BLE001 - зона чинится в настройках, ход не падает
+        zone = ZoneInfo("Asia/Almaty")
+    return now.astimezone(zone)
 
 
 def _utcnow() -> datetime:

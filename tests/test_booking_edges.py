@@ -32,7 +32,7 @@ async def test_confirmation_is_not_spoiled_by_the_filter(kb, state, sessionmaker
     Раньше фильтр снимал этот текст (который и так не отправляется), к
     подтверждению приклеивалось «ответит администратор», а диалог вставал на паузу.
     """
-    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558101", "Сериков Ержан, 8 лет — давайте на 19:00", [
+    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558101", "Сериков Ержан, 8 лет — давайте на 19:00 в КСК", [
         FakeTurn.tool(FakeCall("create_trial_lead", {
             "child_name": "Сериков Ержан", "child_age": 8, "gym_id": KSK,
             "parent_agreed": True, "session_time": "19:00",
@@ -130,7 +130,7 @@ async def test_time_invented_by_the_model_is_not_booked(kb, state, sessionmaker,
     Живой прогон 10.09.2026: ребёнка записали на время, которое никто не выбирал,
     а через ход — ещё раз, уже на 19:00. Время спрашивается у родителя.
     """
-    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558104", "Сериков Ержан, 8 лет", [
+    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558104", "Сериков Ержан, 8 лет, в КСК", [
         FakeTurn.tool(FakeCall("create_trial_lead", {
             "child_name": "Сериков Ержан", "child_age": 8, "gym_id": KSK, "parent_agreed": True,
             "session_time": "17:00", "session_day": "sat", "discipline": "boxing",
@@ -170,7 +170,7 @@ async def test_price_follows_the_clients_settlement_without_an_argument(kb) -> N
 
 async def test_section_invented_by_the_model_is_asked(kb, state, sessionmaker, settings) -> None:
     """Время клиент назвал, секцию — нет: в 17:00 в КСК идут и бокс, и кикбоксинг."""
-    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558105", "Иванов Али, 9 лет, в 17:00", [
+    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558105", "Иванов Али, 9 лет, в 17:00, в КСК", [
         FakeTurn.tool(FakeCall("create_trial_lead", {
             "child_name": "Иванов Али", "child_age": 9, "gym_id": KSK, "parent_agreed": True,
             "session_time": "17:00", "discipline": "boxing",
@@ -188,8 +188,8 @@ async def test_section_invented_by_the_model_is_asked(kb, state, sessionmaker, s
     ("client_text", "model_day", "expected_weekday"),
     [
         # Четверг 10.09, 17:00 по Алматы: сегодняшнее занятие уже не успеть — ближайшее в субботу.
-        ("Иванов Али, 9 лет, в 17:00 на бокс", "tue", 5),
-        ("Иванов Али, 9 лет, во вторник в 17:00 на бокс", "tue", 1),
+        ("Иванов Али, 9 лет, в 17:00 на бокс в КСК", "tue", 5),
+        ("Иванов Али, 9 лет, во вторник в 17:00 на бокс в КСК", "tue", 1),
     ],
 )
 async def test_day_is_taken_only_from_the_client(kb, client_text, model_day, expected_weekday) -> None:
@@ -212,7 +212,7 @@ async def test_name_invented_by_the_model_is_asked_in_full(kb, state, sessionmak
     """«На бокс, в 17:00» — ребёнка ещё не называли, а модель спрашивает «фамилию сына»."""
     from app.types import Language
 
-    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558106", "На бокс, в 17:00", [
+    decisions, client = await _turn(kb, state, sessionmaker, settings, "77015558106", "На бокс в КСК, в 17:00", [
         FakeTurn.tool(FakeCall("create_trial_lead", {
             "child_name": "Сына", "child_age": 9, "gym_id": KSK, "parent_agreed": True,
             "session_time": "17:00", "discipline": "boxing",
@@ -240,7 +240,7 @@ async def test_clients_time_outside_the_schedule_is_not_blocked(kb, state, sessi
     и поставил диалог на паузу.
     """
     decisions, client = await _turn(
-        kb, state, sessionmaker, settings, "77015558107", "Сериков Ержан, 8 лет, в 17:30 на кикбоксинг", [
+        kb, state, sessionmaker, settings, "77015558107", "Сериков Ержан, 8 лет, в 17:30 на кикбоксинг в КСК", [
             FakeTurn.tool(FakeCall("create_trial_lead", {
                 "child_name": "Сериков Ержан", "child_age": 8, "gym_id": KSK, "parent_agreed": True,
                 "session_time": "17:30", "discipline": "kickboxing",
@@ -263,7 +263,7 @@ async def test_child_named_earlier_counts_from_the_lead(kb) -> None:
     from app.types import LeadDraft
 
     ctx = replace(
-        _price_ctx(kb, client_texts=("в 17:00 на бокс",)),
+        _price_ctx(kb, client_texts=("в 17:00 на бокс в КСК",)),
         lead_draft=LeadDraft(child_name="Иванов Али", child_age=9),
     )
     result = await create_trial_lead(

@@ -217,6 +217,26 @@ async def operator_last_seen(session: AsyncSession, conv_id: UUID) -> datetime |
     return _aware(row.operator_last_seen_at) if row is not None else None
 
 
+async def escalation_open(
+    session: AsyncSession, conv_id: UUID, *, now: datetime, within_minutes: int
+) -> bool:
+    """Передан ли вопрос этого диалога человеку недавно — и человек ещё не ответил.
+
+    Пока это так, второй раз звать администратора незачем: живой диалог 13.10.2026 —
+    на «Можно по раньше» и «К 15.00» клиент получил одно и то же «Здесь лучше ответит
+    администратор…» дважды за минуту. ``within_minutes`` ≤ 0 — сутки.
+    """
+    row = await _row(session, conv_id)
+    started = _aware(row.last_escalated_at) if row is not None else None
+    if started is None:
+        return False
+    window = timedelta(minutes=within_minutes if within_minutes > 0 else 24 * 60)
+    if now - started > window:
+        return False
+    seen = _aware(row.operator_last_seen_at)
+    return not (seen is not None and seen >= started)
+
+
 async def escalation_pause_lifted(
     state: StateStore, session: AsyncSession, conv_id: UUID, conv_key: str
 ) -> bool:

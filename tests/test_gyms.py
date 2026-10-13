@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.tools.gyms import (
@@ -25,6 +27,8 @@ from app.tools.gyms import (
     translit_to_cyrillic,
 )
 from app.types import Scope, ToolStatus
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def ids_of(result) -> list[str]:
@@ -103,46 +107,87 @@ async def test_typos_are_forgiven(ctx, query, expected) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Закрытые залы: владелец 12.10.2026 убрал Каирбекова 24 и Полевую
+# Закрытые залы: владелец 12.10.2026 закрыл Каирбекова 24 и Полевую, 13.10.2026 — убрать
+# совсем («Каирбекова 24 вы так и не убрали»: записи были видны в CRM как выключенные).
 # --------------------------------------------------------------------------- #
 CLOSED = "больше не работает"
 NEAR_RAKHAT = ["center_kasymkhanova_10", "ksk_kairbekova_334"]
 
 
-@pytest.mark.parametrize("query", ["рахат", "возле рахата", "у магазина рахат", "каирбекова 24"])
-async def test_closed_rakhat_gym_is_named_closed_and_the_nearest_are_offered(ctx, query) -> None:
+def test_removed_gyms_are_gone_from_the_base(kb) -> None:
+    """Ни записи зала, ни его видео, ни самого адреса — нигде в базе."""
+    ids = {gym.id for gym in kb.gyms.gyms}
+    assert not ids & {"center_kairbekova_24", "polevaya_7_3"}
+    for artifact in ("gym_location_center_kairbekova_24", "gym_location_polevaya_7_3", "route_center_kairbekova_24"):
+        assert kb.artifact(artifact) is None, artifact
+    text = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "kb").glob("*.yaml")).lower()
+    assert "каирбекова 24" not in text and "полевая 7/3" not in text
+
+
+@pytest.mark.parametrize("query", ["рахат", "возле рахата", "у магазина рахат"])
+async def test_rakhat_area_goes_to_the_nearest_gyms(ctx, query) -> None:
+    """Районы Рахата закрывают Касымханова и КСК (выбор владельца 12.10.2026)."""
     result = await find_gym_by_district(ctx, district_text=query)
 
     assert ids_of(result) == NEAR_RAKHAT, result.data
     assert result.data["nearby_only"] is True, "зала по этому адресу нет — только рядом"
-    assert any(CLOSED in caveat for caveat in result.caveats), "сказать прямо, что зал закрыт"
+
+
+async def test_old_address_leads_to_the_gym_on_the_same_street(ctx) -> None:
+    result = await find_gym_by_district(ctx, district_text="мы на каирбекова 24")
+
+    assert ids_of(result)[0] == "ksk_kairbekova_334", result.data
 
 
 @pytest.mark.parametrize("query", ["западный микрорайон", "полевая", "бц кеме"])
-async def test_closed_polevaya_gym_leads_to_the_full_list(ctx, query) -> None:
+async def test_western_microdistrict_leads_to_the_full_list(ctx, query) -> None:
     """Владелец выбрал для Западного честное «зала нет» и список, а не Плазу по слову «западный»."""
     result = await find_gym_by_district(ctx, district_text=query)
 
     assert result.data["gyms"] == [], result.data
     assert result.data["offer_full_list"] is True
+    assert result.data["known_district_without_gym"] is True
+
+
+async def test_north_western_is_still_plaza(ctx) -> None:
+    """Контроль: «Северо-Западный» — это Плаза, правило выше её не отбирает."""
+    result = await find_gym_by_district(ctx, district_text="северо-западный микрорайон")
+
+    assert ids_of(result)[0] == "plaza_szm_70", result.data
+
+
+@pytest.mark.parametrize("query", ["рахат", "возле рахата", "у магазина рахат"])
+async def test_closed_gym_is_named_closed_and_the_nearest_are_offered(ctx, kb_with_closed_gym_records, query) -> None:
+    """Закрытая, но не удалённая запись зала: бот прямо говорит, что зала больше нет."""
+    from dataclasses import replace
+
+    result = await find_gym_by_district(replace(ctx, kb=kb_with_closed_gym_records), district_text=query)
+
+    assert ids_of(result) == NEAR_RAKHAT, result.data
+    assert any(CLOSED in caveat for caveat in result.caveats), "сказать прямо, что зал закрыт"
+
+
+@pytest.mark.parametrize("query", ["полевая", "бц кеме"])
+async def test_closed_gym_without_a_nearby_one_leads_to_the_full_list(ctx, kb_with_closed_gym_records, query) -> None:
+    from dataclasses import replace
+
+    result = await find_gym_by_district(replace(ctx, kb=kb_with_closed_gym_records), district_text=query)
+
+    assert result.data["gyms"] == [], result.data
     assert any(CLOSED in caveat for caveat in result.caveats)
 
 
 @pytest.mark.parametrize("query", ["цум", "центр"])
-async def test_districts_the_closed_gym_served_go_to_the_nearest_without_the_closed_story(ctx, query) -> None:
+async def test_districts_the_closed_gym_served_go_to_the_nearest_without_the_closed_story(
+    ctx, kb_with_closed_gym_records, query
+) -> None:
     """ЦУМ и Центр закрывают действующие залы рядом — «зал у Рахата закрыт» тут ни к чему."""
-    result = await find_gym_by_district(ctx, district_text=query)
+    from dataclasses import replace
+
+    result = await find_gym_by_district(replace(ctx, kb=kb_with_closed_gym_records), district_text=query)
 
     assert ids_of(result)[0] == "center_kasymkhanova_10", result.data
     assert not any(CLOSED in caveat for caveat in result.caveats)
-
-
-def test_closed_gyms_are_out_of_every_list(kb) -> None:
-    active = {gym.id for gym in kb.active_gyms(Scope.ALL)}
-
-    assert not active & {"center_kairbekova_24", "polevaya_7_3"}
-    for artifact in ("gym_location_center_kairbekova_24", "gym_location_polevaya_7_3", "route_center_kairbekova_24"):
-        assert kb.artifact(artifact).enabled is False, f"{artifact} уходил бы клиентам"
 
 
 async def test_landmark_finds_the_central_gym(ctx) -> None:

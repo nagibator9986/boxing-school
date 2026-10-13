@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final, Sequence
 
 from app.types import IntentHint, Language, LeadDraft
@@ -36,13 +36,22 @@ def build_dynamic_note(
     child_at_keyboard: bool = False,
     cards_sent: Sequence[str] = (),
 ) -> str:
-    """Служебная заметка ПОСЛЕДНИМ элементом ``contents``.
+    """Служебная заметка ПОСЛЕДНИМ элементом ``contents``. ``now`` — по часам школы.
 
     Любая динамика в начале запроса убивает кэш, поэтому здесь и только здесь
     живут дата, накопленные поля лида и подсказки намерений.
     """
     lines: list[str] = ["[служебная заметка системы, клиенту её не показывать]"]
-    lines.append(f"Сейчас: {now.strftime('%Y-%m-%d %H:%M')}, {_WEEKDAYS[now.weekday()]}.")
+    # ``now`` — время школы, а не UTC: в 14:05 по Костанаю модель видела «09:05», а
+    # после полуночи — ещё вчерашний день. И «завтра» называется прямо: 12.10.2026, в
+    # понедельник, модель написала «завтра как раз понедельник» и предложила записать
+    # «на понедельник, 12 октября» (живой прогон диалога 12–13.10.2026).
+    tomorrow = now + timedelta(days=1)
+    lines.append(
+        f"Сейчас по времени школы: {now:%d.%m.%Y %H:%M}. Сегодня — {_WEEKDAYS[now.weekday()]}, "
+        f"{now:%d.%m}; завтра — {_WEEKDAYS[tomorrow.weekday()]}, {tomorrow:%d.%m}. "
+        "«Сегодня», «завтра» и дни недели в словах клиента считай только от этой даты."
+    )
     lines.append(f"Язык клиента: {_LANG_LABEL.get(lang, 'русский')} — отвечай на нём.")
 
     known: list[str] = []

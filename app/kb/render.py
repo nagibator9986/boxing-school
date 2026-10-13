@@ -423,6 +423,14 @@ def days_label(days: Sequence[str], lang: Language) -> str:
     return _days_line(days, lang)
 
 
+def trial_when(snapshot: KBSnapshot, session: "TrialSession", lang: Language) -> str:
+    """День и время пробного словами: «Во вторник, 13.10 в 18:00» — как в подтверждении."""
+    day = _lang_text(snapshot, _ON_DAY_KEYS[session.weekday], lang)
+    return snapshot.text(
+        "card.trial_when", lang, day=day, date=f"{session.starts_at:%d.%m}", time=session.time_start
+    )
+
+
 def render_trial_confirmation(
     snapshot: KBSnapshot,
     *,
@@ -439,10 +447,7 @@ def render_trial_confirmation(
     ``bring`` — что взять с собой, из ответа базы знаний.
     """
     discipline = _lang_text(snapshot, f"card.{session.discipline}", lang)
-    day = _lang_text(snapshot, _ON_DAY_KEYS[session.weekday], lang)
-    when = snapshot.text(
-        "card.trial_when", lang, day=day, date=f"{session.starts_at:%d.%m}", time=session.time_start
-    )
+    when = trial_when(snapshot, session, lang)
     title = gym.title.get(lang) or gym.title.ru or gym.id
     address = _clean_address(gym, lang)
     place = f"{title}, {address}" if address else title
@@ -841,6 +846,7 @@ def render_artifact_body(
 
 
 __all__ = [
+    "trial_when",
     "render_artifact_body",
     "schedule_heading",
     "render_schedule_overview",

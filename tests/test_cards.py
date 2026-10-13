@@ -377,17 +377,20 @@ async def test_schedule_not_repeated_after_route_video(kb: KBSnapshot) -> None:
     )
 
 
-async def test_schedule_is_sent_again_in_a_later_turn(kb: KBSnapshot) -> None:
-    """Спросили про время позже — расписание приходит снова.
+async def test_schedule_after_an_earlier_route_video_comes_in_words(kb: KBSnapshot) -> None:
+    """Спросили про время позже, а видео дороги с расписанием уже уходило — ответ словами.
 
-    Подавление действует ровно один ход. Молчание в ответ на прямой вопрос
-    «а во сколько занятия?» хуже любого повтора: клиент решит, что бот сломался.
+    Молчать на прямой вопрос «а во сколько занятия?» нельзя: данные уходят модели, и
+    она называет дни и часы. Но вторым блоком то же расписание не идёт — правило
+    владельца 03.09.2026 («перегруз»), и для своей карточки расписания оно уже
+    действовало. Живой прогон 12.10.2026: видео с подписью на «Нет в центре», карточка
+    того же расписания на «Надо» — одно и то же два раза подряд.
     """
     from datetime import UTC, datetime
     from uuid import uuid4
 
     from app.tools.schedule import get_schedule
-    from app.types import ChannelKind, ToolContext
+    from app.types import ChannelKind, RenderHint, ToolContext
     from tests.conftest import RecordingServices
 
     services = RecordingServices()
@@ -408,9 +411,10 @@ async def test_schedule_is_sent_again_in_a_later_turn(kb: KBSnapshot) -> None:
     )
     result = await get_schedule(ctx, gym_id="ksk_kairbekova_334")
 
-    assert result.ok and not result.data.get("already_shown")
-    sent = [message for message in services.outbound if message.text]
-    assert sent and "🗓" in sent[0].text, "на прямой вопрос о времени бот промолчал"
+    assert result.ok and result.data["already_shown"] is True
+    assert result.render_hint is RenderHint.SUMMARIZE, "на вопрос отвечают словами, а не молчат"
+    assert result.data["slots"], "модели есть чем ответить"
+    assert not [message for message in services.outbound if message.text], "второй блок расписания"
 
 
 def test_city_card_mentions_the_rest_of_the_region(kb: KBSnapshot) -> None:

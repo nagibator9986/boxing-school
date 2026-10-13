@@ -19,11 +19,15 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Final
+from zoneinfo import ZoneInfo
 
+from app.config import get_settings
 from app.kb.gaps import say_no_data
 from app.kb.models import Gym, ScheduleSlot
 from app.kb.render import render_schedule_card
+from app.kb.sessions import client_times, normalize_time, weekday_code
 from app.types import (
     EscalationReason,
     GapRef,
@@ -32,6 +36,7 @@ from app.types import (
     OutboundKind,
     OutboundMessage,
     RenderHint,
+    Scope,
     ToolContext,
     ToolResult,
 )
@@ -59,7 +64,7 @@ def _route_sent_this_turn(ctx: ToolContext, gym_id: str) -> bool:
     collected = getattr(ctx.services, "messages", None)
     if collected is None:
         collected = getattr(ctx.services, "outbound", ())
-    return any(getattr(message, "artifact_id", None) == f"route_{gym_id}" for message in collected)
+    return any(f"route_{gym_id}" in message.artifacts() for message in collected)
 
 
 def _slot_payload(slot: ScheduleSlot, lang: Language) -> dict[str, Any]:
@@ -194,9 +199,12 @@ async def get_schedule(
     # жаловался 03.09.2026: клиент получает простыню, которую уже читал, и
     # замолкает. Но и промолчать в ответ на прямой вопрос нельзя, поэтому во
     # второй раз расписание идёт словами модели, а не блоком.
+    # Подпись к видео дороги несёт то же расписание. Живой прогон диалога 12.10.2026:
+    # на «Нет в центре» ушло видео с подписью, на «Надо» — карточка расписания того же
+    # зала, и клиент получил одно и то же два раза подряд.
     sent_before = await ctx.services.count_artifact_sends(
         ctx.conversation_id, _SCHEDULE_ARTIFACT.format(gym_id=gym.id)
-    )
+    ) + await ctx.services.count_artifact_sends(ctx.conversation_id, f"route_{gym.id}")
     if sent_before:
         caveats.append(
             "Эту карточку расписания клиент в диалоге уже получал. Второй раз блоком "
@@ -276,4 +284,114 @@ async def get_schedule(
     )
 
 
-__all__ = ["get_schedule"]
+_WEEKDAY_CODES: Final[tuple[str, ...]] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_DISCIPLINES: Final[tuple[str, ...]] = ("boxing", "kickboxing")
+_SCOPES: Final[dict[str, Scope]] = {"city": Scope.CITY, "region": Scope.REGION, "all": Scope.ALL}
+
+
+async def find_sessions(
+    ctx: ToolContext,
+    *,
+    discipline: str | None = None,
+    day: str | None = None,
+    time_from: str | None = None,
+    time_to: str | None = None,
+    scope: str = "city",
+) -> ToolResult:
+    """Занятия во всех залах: секция, день и промежуток времени начала. Только данные.
+
+    Живой диалог 13.10.2026: «Можно по раньше», «К 15.00» — в зале клиента бокс только
+    в 18:00, а ближайшее раньше было в КСК в 17:00. Чтобы его назвать, модели пришлось
+    бы перебрать расписания всех залов по одному, и она звала администратора. Карточку
+    этот инструмент не шлёт: ответ — короткий список вариантов словами.
+    """
+    kb = ctx.kb
+    lang = ctx.lang
+    wanted = (discipline or "").strip().lower() or None
+    if wanted is not None and wanted not in _DISCIPLINES:
+        return ToolResult.invalid_input(f"discipline: '{discipline}' — только boxing или kickboxing")
+    starts_from = normalize_time(time_from) if time_from else None
+    starts_before = normalize_time(time_to) if time_to else None
+    if (time_from and starts_from is None) or (time_to and starts_before is None):
+        return ToolResult.invalid_input("time_from и time_to — время в виде HH:MM")
+
+    try:
+        zone = ZoneInfo(get_settings().timezone)
+    except Exception:  # noqa: BLE001 - кривая зона: считаем по Алматы
+        zone = ZoneInfo("Asia/Almaty")
+    local_now = ctx.now.astimezone(zone)
+    raw_day = (day or "").strip().lower()
+    date_label: str | None = None
+    if raw_day in ("today", "сегодня"):
+        code, date_label = _WEEKDAY_CODES[local_now.weekday()], f"{local_now:%d.%m}"
+    elif raw_day in ("tomorrow", "завтра"):
+        tomorrow = local_now + timedelta(days=1)
+        code, date_label = _WEEKDAY_CODES[tomorrow.weekday()], f"{tomorrow:%d.%m}"
+    else:
+        code = weekday_code(raw_day) if raw_day else None
+        if raw_day and code is None:
+            return ToolResult.invalid_input("day: mon…sun, today или tomorrow")
+    # «Сегодня» — и когда модель передала сегодняшний день недели кодом: живой прогон
+    # 13.10.2026, во вторник в 09:34 бот предложил «утреннее в 09:00» на «можно пораньше».
+    is_today = raw_day in ("today", "сегодня") or code == _WEEKDAY_CODES[local_now.weekday()]
+    if is_today and date_label is None:
+        date_label = f"{local_now:%d.%m}"
+
+    sessions: list[dict[str, Any]] = []
+    started: list[dict[str, Any]] = []
+    for gym in kb.active_gyms(_SCOPES.get(scope, Scope.CITY)):
+        for slot in sorted(gym.schedule, key=_sort_key):
+            if wanted is not None and slot.discipline != wanted:
+                continue
+            if code is not None and code not in slot.days:
+                continue
+            if starts_from is not None and slot.time_start < starts_from:
+                continue
+            if starts_before is not None and slot.time_start >= starts_before:
+                continue
+            item = {
+                **_slot_payload(slot, lang),
+                "gym_id": gym.id,
+                "gym_title": gym.title.get(lang) or gym.title.ru,
+                "address": gym.address.get(lang),
+            }
+            if is_today and slot.time_start <= f"{local_now:%H:%M}":
+                started.append(item)  # сегодня уже началось — только на другой день
+                continue
+            sessions.append(item)
+    sessions.sort(key=lambda item: (item["time_start"], item["gym_id"]))
+
+    caveats = [
+        "Это все занятия по запросу — называй только их: зал, дни и время начала. Предложи "
+        "клиенту выбрать. Перенос записи делает create_trial_lead: код сам спросит подтверждение."
+    ]
+    if started:
+        caveats.append(
+            "already_started_today — эти занятия сегодня уже начались: на сегодня их не "
+            "предлагай, только на следующий такой же день."
+        )
+    if not sessions:
+        caveats = [
+            "Таких занятий нет ни в одном зале. Скажи это прямо одной фразой и предложи "
+            "ближайшее из расписания его зала — без выдуманного времени."
+        ]
+    return ToolResult.success(
+        data={
+            "discipline": wanted,
+            "day": code,
+            "date": date_label,
+            "time_from": starts_from,
+            "time_to": starts_before,
+            # Время, которое назвал сам клиент: «в 15:00 занятий нет» — не выдумка, и
+            # фильтр не должен снимать такой ответ (диалог 13.10.2026, «К 15.00»).
+            "requested_times": sorted(client_times(ctx.client_texts[-2:])),
+            "sessions": sessions,
+            "total": len(sessions),
+            "already_started_today": started,
+        },
+        render_hint=RenderHint.SUMMARIZE,
+        caveats=caveats,
+    )
+
+
+__all__ = ["find_sessions", "get_schedule"]

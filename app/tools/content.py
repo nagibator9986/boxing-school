@@ -223,6 +223,19 @@ def _schedule_sent_this_turn(ctx: ToolContext, gym_id: str | None) -> bool:
     return any(heading in (getattr(message, "text", None) or "") for message in collected)
 
 
+async def _schedule_already_shown(ctx: ToolContext, gym_id: str | None) -> bool:
+    """Видел ли клиент расписание этого зала — в этом ходу или карточкой раньше в диалоге.
+
+    Живой прогон диалога 12.10.2026: карточка расписания центра ушла на «Касымханова 10»,
+    а на «Да» — видео дороги с тем же расписанием в подписи.
+    """
+    if _schedule_sent_this_turn(ctx, gym_id):
+        return True
+    if not gym_id:
+        return False
+    return await ctx.services.count_artifact_sends(ctx.conversation_id, f"schedule_{gym_id}") > 0
+
+
 async def _prefer_route_video(ctx: ToolContext, artifact: Artifact) -> Artifact:
     """Подменяет карточку адреса видео дороги, если канал его принимает.
 
@@ -398,7 +411,7 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
             kb,
             artifact_id=artifact.id,
             lang=lang,
-            with_schedule=not _schedule_sent_this_turn(ctx, artifact.gym_id),
+            with_schedule=not await _schedule_already_shown(ctx, artifact.gym_id),
         )
         if raw_caption and raw_caption.strip():
             caption_text = _clip(

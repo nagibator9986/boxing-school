@@ -157,14 +157,25 @@ async def escalate_to_manager(
     if not summary:
         return ToolResult.invalid_input("question_summary пуст: администратору нечего передать")
 
+    pause_minutes = int(getattr(kb.policies, "escalation_pause_minutes", _DEFAULT_PAUSE_MINUTES) or _DEFAULT_PAUSE_MINUTES)
+    # Администратор уже получил вопрос этого диалога и ещё не ответил: вторая карточка
+    # и второе «Здесь лучше ответит администратор…» ничего не ускоряют. Живой диалог
+    # 13.10.2026: «Вчера на 9.00 договорились», «Или 18.00», «Не понятно» — три передачи
+    # подряд. Жалоба и здоровье уходят всегда: это новая, срочная причина.
+    if reason_key not in _ALWAYS_HIGH and await ctx.services.escalation_open(within_minutes=pause_minutes):
+        return ToolResult.invalid_input(
+            "администратор уже получил вопрос из этого диалога и ещё не ответил — повторно не "
+            "передавай. Ответь клиенту сам по данным инструментов (расписание, залы, цены, запись). "
+            "Если ответа в данных нет — одной фразой скажи, что администратор уже в курсе и "
+            "ответит здесь, без обещания сроков"
+        )
+
     try:
         level = Urgency(str(urgency or "normal").strip().lower())
     except ValueError:
         level = Urgency.NORMAL
     if reason_key in _ALWAYS_HIGH:
         level = Urgency.HIGH
-
-    pause_minutes = int(getattr(kb.policies, "escalation_pause_minutes", _DEFAULT_PAUSE_MINUTES) or _DEFAULT_PAUSE_MINUTES)
 
     # 1. Пауза. Ставится первой: если следом упадёт уведомление, бот всё равно
     #    замолчит и не будет отвечать поверх человека.

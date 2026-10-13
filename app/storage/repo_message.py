@@ -289,39 +289,62 @@ async def sent_texts(session: AsyncSession, conv_id: UUID, *, limit: int = 20) -
     return [str((row or {}).get("text") or "") for row in rows]
 
 
-async def last_artifact_with_prefix(
-    session: AsyncSession, conv_id: UUID, prefixes: tuple[str, ...]
-) -> str | None:
-    """Последний артефакт диалога с одним из префиксов — его ``artifact_id`` целиком."""
-    if not prefixes:
-        return None
+def _payload_artifacts(payload: Any) -> list[str]:
+    """Материалы строки очереди: свой и дописанные к ней склейкой."""
+    data = payload or {}
+    own = data.get("artifact_id")
+    merged = [str(item) for item in (data.get("merged_artifact_ids") or []) if item]
+    return ([str(own)] if own else []) + merged
+
+
+async def _recent_payloads(session: AsyncSession, conv_id: UUID, limit: int) -> list[Any]:
+    """Последние строки очереди диалога, от новых к старым."""
     stmt = (
-        sa.select(OutboxMessage.payload["artifact_id"].as_string())
+        sa.select(OutboxMessage.payload)
         .where(
             OutboxMessage.conversation_id == conv_id,
             OutboxMessage.state.in_(("pending", "sending", "sent")),
-            sa.or_(*(OutboxMessage.payload["artifact_id"].as_string().like(f"{prefix}%") for prefix in prefixes)),
         )
         .order_by(OutboxMessage.created_at.desc())
-        .limit(1)
+        .limit(max(1, limit))
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    return list((await session.execute(stmt)).scalars().all())
+
+
+#: Сколько последних исходящих смотреть, когда ищется материал по префиксу.
+_ARTIFACT_LOOKBACK: Final[int] = 200
+
+
+async def last_artifact_with_prefix(
+    session: AsyncSession, conv_id: UUID, prefixes: tuple[str, ...]
+) -> str | None:
+    """Последний артефакт диалога с одним из префиксов — его ``artifact_id`` целиком.
+
+    Учитываются и материалы, дописанные склейкой к соседнему сообщению: карточка
+    расписания после текста модели уходит одним сообщением, но показана она.
+    """
+    if not prefixes:
+        return None
+    for payload in await _recent_payloads(session, conv_id, _ARTIFACT_LOOKBACK):
+        for artifact in reversed(_payload_artifacts(payload)):
+            if artifact.startswith(prefixes):
+                return artifact
+    return None
 
 
 async def any_artifact_sent(session: AsyncSession, conv_id: UUID, prefixes: tuple[str, ...]) -> bool:
     """Уходил ли в этот диалог артефакт с одним из префиксов: ``schedule_``, ``route_``…"""
-    if not prefixes:
-        return False
-    stmt = (
-        sa.select(sa.func.count())
-        .select_from(OutboxMessage)
-        .where(
-            OutboxMessage.conversation_id == conv_id,
-            OutboxMessage.state.in_(("pending", "sending", "sent")),
-            sa.or_(*(OutboxMessage.payload["artifact_id"].as_string().like(f"{prefix}%") for prefix in prefixes)),
-        )
-    )
-    return int((await session.execute(stmt)).scalar_one() or 0) > 0
+    return await last_artifact_with_prefix(session, conv_id, prefixes) is not None
+
+
+async def artifact_texts(session: AsyncSession, conv_id: UUID, artifact_id: str, *, limit: int = 10) -> list[str]:
+    """Тексты сообщений, в которых уходил этот материал, — от старых к новым."""
+    found = [
+        str((payload or {}).get("text") or "")
+        for payload in await _recent_payloads(session, conv_id, _ARTIFACT_LOOKBACK)
+        if artifact_id in _payload_artifacts(payload)
+    ]
+    return list(reversed(found[:limit]))
 
 
 async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id: str) -> int:
@@ -337,7 +360,11 @@ async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id
         .where(
             OutboxMessage.conversation_id == conv_id,
             OutboxMessage.state.in_(("pending", "sending", "sent")),
-            OutboxMessage.payload["artifact_id"].as_string() == artifact_id,
+            sa.or_(
+                OutboxMessage.payload["artifact_id"].as_string() == artifact_id,
+                # Дописанный к соседнему сообщению склейкой — тоже отправлен.
+                OutboxMessage.payload["merged_artifact_ids"].as_string().like(f'%"{artifact_id}"%'),
+            ),
         )
     )
     return int((await session.execute(stmt)).scalar_one() or 0)

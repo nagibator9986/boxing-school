@@ -85,7 +85,7 @@ async def test_booking_card_reaches_every_administrator(kb, state, sessionmaker,
     runtime = RuntimeSettings.from_values({"lead_notify_target": "+7 700 000 00 77, +7 700 000 00 78"})
     deps = await _deps(kb, state, sessionmaker, settings, _booking_llm(), runtime)
 
-    await process_inbound(deps, webhook_payload("ln-1", "Айназаров Али, 8 лет, на бокс в 19:00", chat_id="77015559201"))
+    await process_inbound(deps, webhook_payload("ln-1", "Айназаров Али, 8 лет, на бокс в 19:00, в 6 микрорайоне", chat_id="77015559201"))
 
     sent = await _sent(sessionmaker)
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), sent
@@ -120,7 +120,7 @@ async def test_work_chat_gets_one_line_without_the_clients_phone(kb, state, sess
     deps = await _deps(kb, state, sessionmaker, settings, _booking_llm(), runtime)
     chat = "77015559202"
 
-    await process_inbound(deps, webhook_payload("ln-2", "Айназаров Али, 8 лет, на бокс в 19:00", chat_id=chat))
+    await process_inbound(deps, webhook_payload("ln-2", "Айназаров Али, 8 лет, на бокс в 19:00, в 6 микрорайоне", chat_id=chat))
 
     sent = await _sent(sessionmaker)
     short = "".join(sent.get(GROUP, []))

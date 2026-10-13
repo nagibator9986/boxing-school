@@ -87,7 +87,7 @@ def test_chosen_option_counts_for_section_and_time_but_not_for_age() -> None:
 async def test_digit_choice_books_the_chosen_section(kb) -> None:
     from app.tools.booking import create_trial_lead
 
-    ctx = _ctx(kb, "Айназаров Али, 8 лет", with_choice("2", SECTION_LIST))
+    ctx = _ctx(kb, "Айназаров Али, 8 лет, мы в 6 микрорайоне", with_choice("2", SECTION_LIST))
 
     result = await create_trial_lead(
         ctx, child_name="Айназаров Али", child_age=8, gym_id=MKR6, parent_agreed=True, discipline="boxing"
@@ -102,7 +102,7 @@ async def test_digit_choice_gives_the_time_when_the_section_has_two(kb) -> None:
     from app.tools.booking import create_trial_lead
 
     offer = "Какое время удобнее?\n1. Бокс — Вт, Чт, Сб 09:00\n2. Бокс — Вт, Чт, Сб 18:45"
-    ctx = _ctx(kb, "Айназаров Али, 8 лет, на бокс", with_choice("2", offer))
+    ctx = _ctx(kb, "Айназаров Али, 8 лет, на бокс, у 15 магазина", with_choice("2", offer))
 
     result = await create_trial_lead(
         ctx, child_name="Айназаров Али", child_age=8, gym_id=VOINOV, parent_agreed=True,
@@ -230,7 +230,7 @@ async def test_digit_after_a_request_to_choose_without_a_question_mark(kb) -> No
     assert chosen_option(chosen) == "Кикбоксинг — Пн, Ср, Пт · 17:00", chosen
     assert with_choice("2", "Вот расписание:\n— Бокс\n— Кикбоксинг") == "2", "без вопроса и просьбы выбрать — не выбор"
 
-    ctx = _ctx(kb, "Сериков Ержан, 8 лет", chosen)
+    ctx = _ctx(kb, "Сериков Ержан, 8 лет, в КСК", chosen)
     result = await create_trial_lead(
         ctx, child_name="Сериков Ержан", child_age=8, gym_id="ksk_kairbekova_334", parent_agreed=True,
         discipline="kickboxing", session_time="17:00",

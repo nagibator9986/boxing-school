@@ -61,9 +61,16 @@ def _slot(ctx: ToolContext) -> tuple[int, int]:
     return slot.weekday(), slot.hour
 
 
+#: Как родитель назвал зал. С 13.10.2026 зал, которого клиент не называл, не записывается.
+GYM_SAID: dict[str, str] = {RAHAT: "Нам удобнее зал у Рахата", KEME: "Нам удобнее в Кеме"}
+
+
 async def _book(ctx: ToolContext, gym: str, **args):
+    from dataclasses import replace
+
     from app.tools.booking import create_trial_lead
 
+    ctx = replace(ctx, client_texts=(GYM_SAID[gym], *ctx.client_texts))
     return await create_trial_lead(
         ctx, child_name="Айназаров Али", child_age=8, gym_id=gym, parent_agreed=True, **args
     )
@@ -248,7 +255,7 @@ async def test_booked_lead_card_goes_to_the_number_for_leads(kb, state, sessionm
     ])
     deps = await _deps(kb, state, sessionmaker, channel, llm, runtime)
 
-    await process_inbound(deps, webhook_payload("lead-2", "Айназаров Али, 8 лет, на бокс в 19:00", chat_id="77015557002"))
+    await process_inbound(deps, webhook_payload("lead-2", "Айназаров Али, 8 лет, на бокс в 19:00, зал у Рахата", chat_id="77015557002"))
 
     cards = await _cards_to(sessionmaker, LEADS_NUMBER)
     assert any("Айназаров Али" in card and "Бокс" in card for card in cards), cards
@@ -266,7 +273,7 @@ async def test_lead_cards_can_be_switched_off_in_crm(kb, state, sessionmaker, se
     ])
     deps = await _deps(kb, state, sessionmaker, channel, llm, runtime)
 
-    await process_inbound(deps, webhook_payload("lead-3", "Айназаров Али, 8 лет, на бокс в 19:00", chat_id="77015557003"))
+    await process_inbound(deps, webhook_payload("lead-3", "Айназаров Али, 8 лет, на бокс в 19:00, зал у Рахата", chat_id="77015557003"))
 
     assert not await _cards_to(sessionmaker, LEADS_NUMBER)
 
@@ -305,7 +312,7 @@ async def test_age_is_optional_and_asked_first(kb) -> None:
     """Возраст неизвестен — модель его не выдумывает, а спрашивает, и только его."""
     from app.tools.booking import create_trial_lead
 
-    ctx = _ctx(kb, "Айназаров Али, на бокс")
+    ctx = _ctx(kb, GYM_SAID[RAHAT], "Айназаров Али, на бокс")
 
     result = await create_trial_lead(ctx, child_name="Айназаров Али", gym_id=RAHAT, parent_agreed=True, discipline="boxing")
 
@@ -339,7 +346,7 @@ async def test_empty_answer_after_the_confirmation_is_not_a_failure(kb, state, s
     ])
     deps = await _deps(kb, state, sessionmaker, settings, llm)
 
-    decisions = await process_inbound(deps, webhook_payload("empty-1", "Айназаров Али, 8 лет, на бокс", chat_id="77015557021"))
+    decisions = await process_inbound(deps, webhook_payload("empty-1", "Айназаров Али, 8 лет, на бокс, в Кеме", chat_id="77015557021"))
 
     assert [d.action.value for d in decisions] == ["reply"], [d.reason for d in decisions]
     client = "\n".join(out.text or "" for d in decisions for out in d.outbound)
@@ -527,7 +534,7 @@ async def test_name_said_before_the_history_was_trimmed_still_counts(kb, state, 
     chat = "77015557034"
 
     llm.reset([FakeTurn.answer("На какую секцию записать?")])
-    await process_inbound(deps, webhook_payload(f"{chat}-1", "Айназаров Али, 8 лет", chat_id=chat))
+    await process_inbound(deps, webhook_payload(f"{chat}-1", "Айназаров Али, 8 лет, зал у Рахата", chat_id=chat))
     llm.reset([FakeTurn.answer("Во сколько удобнее: в 09:00 или в 19:00?")])
     await process_inbound(deps, webhook_payload(f"{chat}-2", "Бокс", chat_id=chat))
     llm.reset([
@@ -556,7 +563,7 @@ async def test_one_card_per_booking_and_a_change_card_on_reschedule(kb, state, s
     booking = {"child_name": "Айназаров Али", "child_age": 8, "gym_id": RAHAT, "parent_agreed": True, "discipline": "boxing"}
 
     turns = (
-        ("Айназаров Али, 8 лет, на бокс в 19:00", "19:00"),
+        ("Айназаров Али, 8 лет, на бокс в 19:00, зал у Рахата", "19:00"),
         ("Да, всё верно, на бокс в 19:00", "19:00"),
         ("Давайте лучше в 09:00", "09:00"),
     )
@@ -663,7 +670,7 @@ async def test_age_written_in_this_message_is_not_asked_again(kb) -> None:
     from app.tools.booking import create_trial_lead
     from app.types import LeadDraft
 
-    ctx = replace(_ctx(kb, "Айназаров Али, 8 лет, на бокс"), lead_draft=LeadDraft(child_age=8))
+    ctx = replace(_ctx(kb, GYM_SAID[KEME], "Айназаров Али, 8 лет, на бокс"), lead_draft=LeadDraft(child_age=8))
 
     result = await create_trial_lead(ctx, child_name="Айназаров Али", gym_id=KEME, parent_agreed=True, discipline="boxing")
 
@@ -674,7 +681,7 @@ async def test_second_booking_in_one_turn_is_a_change_not_a_second_new_card(kb) 
     """Две записи с разным временем за один ход: «новая», затем «изменение»."""
     from app.tools.booking import create_trial_lead
 
-    ctx = _ctx(kb, "Айназаров Али, 8 лет, на бокс в 19:00, а лучше в 09:00")
+    ctx = _ctx(kb, GYM_SAID[RAHAT], "Айназаров Али, 8 лет, на бокс в 19:00, а лучше в 09:00")
     args = dict(child_name="Айназаров Али", child_age=8, gym_id=RAHAT, parent_agreed=True, discipline="boxing")
 
     await create_trial_lead(ctx, session_time="19:00", **args)
