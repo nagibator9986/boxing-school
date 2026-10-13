@@ -440,6 +440,16 @@ def test_gym_form_roundtrip_keeps_data(client: Any, editor: KBEditor) -> None:
     ]
 
 
+def test_gym_form_keeps_the_opening_date(client: Any, editor: KBEditor) -> None:
+    """Зал на КЖБИ работает с 01.11.2026: сохранение в CRM эту дату не стирает."""
+    page = client.get("/kb/gyms/kzhbi_gasheka_9_3").data.decode()
+    assert 'name="opens_on" value="2026-11-01"' in page, "даты нет в форме"
+    client.post("/kb/gyms/kzhbi_gasheka_9_3", data=form_fields(page), follow_redirects=True)
+
+    gym = next(item for item in editor.load("gyms.yaml")["gyms"] if item["id"] == "kzhbi_gasheka_9_3")
+    assert str(gym.get("opens_on")) == "2026-11-01"
+
+
 def test_gym_edit_reaches_bot(client: Any, editor: KBEditor, sandbox: CrmConfig) -> None:
     """Правка зала попадает к боту без перезапуска — через наблюдателя каталога."""
     snapshot, _ = kb_loader.load_sync(

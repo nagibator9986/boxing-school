@@ -47,7 +47,7 @@ def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
     """
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
 
-    assert "6. Тобыл" in text, text
+    assert "7. Тобыл" in text, text
     assert "цены" not in text.lower()
     # Райцентры в нумерованный список не попадают — они одной строкой ниже.
     assert "Житикара" not in text

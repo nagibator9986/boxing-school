@@ -517,6 +517,30 @@ def extract_times(text: str) -> tuple[str, ...]:
     return values
 
 
+#: Раньше этого часа тренировок не бывает: «01.11» — дата, а не 01:11.
+_EARLIEST_CLASS_HOUR: Final[int] = 6
+
+#: Год сразу после «ДД.ММ»: «01.11.2026», «01.11.26».
+_YEAR_AFTER_RE: Final[re.Pattern[str]] = re.compile(r"\.\d{2}(?:\d{2})?(?!\d)")
+
+
+def _is_date(match: re.Match[str], text: str, *, colon_times: bool) -> bool:
+    """«ДД.ММ» — дата, а не время: с годом после неё или рядом со временем через двоеточие.
+
+    Бот пишет время через двоеточие, а дату через точку: «во вторник, 13.10 в 18:00».
+    Без этого правила фильтр считал «13.10» выдуманным временем 13:10 и снимал ответ,
+    а «зал открывается 01.11.2026» — временем 01:11 (13.10.2026). «18.30» датой не
+    бывает: месяцев всего двенадцать.
+    """
+    if ":" in match.group(0):
+        return False
+    day, month = int(match.group(1)), int(match.group(2))
+    if not (1 <= day <= 31 and 1 <= month <= 12):
+        return False
+    # «с 01.11» — 01:11 ночи временем занятия не бывает.
+    return bool(_YEAR_AFTER_RE.match(text, match.end())) or colon_times or day < _EARLIEST_CLASS_HOUR
+
+
 def _time_hits(text: str) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...]]:
     """``(участки текста с временем, канонические значения)``.
 
@@ -532,11 +556,14 @@ def _time_hits(text: str) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...]]
         if value not in values:
             values.append(value)
 
+    colon_times = any(":" in match.group(0) for match in _TIME_RE.finditer(text))
     for match in _TIME_RE.finditer(text):
         hours, minutes = int(match.group(1)), int(match.group(2))
         if hours > 23 or minutes > 59:
             continue
         spans.append(match.span())
+        if _is_date(match, text, colon_times=colon_times):
+            continue  # «13.10», «01.11.2026» — дата, а не 13:10 и 01:11
         remember(f"{hours:02d}:{minutes:02d}")
 
     canonical = list(spans)

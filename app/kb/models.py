@@ -364,6 +364,14 @@ class Gym(_Base):
     media: list[str] = Field(default_factory=list)
     gap_refs: list[GapRef] = Field(default_factory=list)
     internal_note: str | None = None
+    #: С какого дня зал работает. До этого дня он виден клиентам с пометкой «занятия
+    #: с …», а запись на пробное — только на занятия с этого дня. Пусто — уже работает.
+    #: Владелец 13.10.2026: зал на КЖБИ (Гашека 9/3) — с 01.11.2026.
+    opens_on: date | None = None
+
+    def opens_after(self, day: date) -> bool:
+        """Начнёт ли зал работать позже этого дня."""
+        return self.opens_on is not None and self.opens_on > day
 
     @field_validator("id")
     @classmethod

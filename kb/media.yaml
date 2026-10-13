@@ -222,6 +222,26 @@ artifacts:
   max_send_per_dialog: 1
   gap_ref: G-15
   render_from: gyms
+- id: gym_location_kzhbi_gasheka_9_3
+  kind: location_text
+  enabled: true
+  scope: city
+  gym_id: kzhbi_gasheka_9_3
+  title:
+    ru: Как найти зал на КЖБИ
+    kk: КЖБИ-дегі залды қалай табуға болады
+  when_to_send_ru: когда просят локацию зала на КЖБИ, Гашека 9/3
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 1
+  gap_ref: G-15
+  render_from: gyms
 - id: gym_location_mkr6_arystanbekova_6
   kind: location_text
   enabled: true

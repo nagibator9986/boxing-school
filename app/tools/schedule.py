@@ -28,6 +28,7 @@ from app.kb.gaps import say_no_data
 from app.kb.models import Gym, ScheduleSlot
 from app.kb.render import render_schedule_card
 from app.kb.sessions import client_times, normalize_time, weekday_code
+from app.tools.gyms import opening_caveats
 from app.types import (
     EscalationReason,
     GapRef,
@@ -182,6 +183,7 @@ async def get_schedule(
             "соседнюю: назови существующие варианты из alternatives или передай администратору."
         )
     caveats.append("Дни и время бери только из этих данных, ничего не добавляя от себя.")
+    caveats.extend(opening_caveats(kb, (gym,)))
     # Готовый блок расписания: собран кодом, отформатирован по-человечески.
     # Модель пересказывает расписание прозой («по вторникам, четвергам и
     # субботам с 17:30 до 19:00»), и такую строку читают трижды, прежде чем
@@ -272,6 +274,7 @@ async def get_schedule(
             "address": gym.address.get(lang),
             "landmark": gym.landmark.get(lang),
             "child_age": age,
+            "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
             "shift": normalized_shift,
             "slots": [_slot_payload(slot, lang) for slot in matched],
             "alternatives": [_slot_payload(slot, lang) for slot in all_slots] if not matched else [],
@@ -337,9 +340,18 @@ async def find_sessions(
     if is_today and date_label is None:
         date_label = f"{local_now:%d.%m}"
 
+    target_date = None
+    if raw_day in ("tomorrow", "завтра"):
+        target_date = (local_now + timedelta(days=1)).date()
+    elif is_today:
+        target_date = local_now.date()
+
     sessions: list[dict[str, Any]] = []
     started: list[dict[str, Any]] = []
-    for gym in kb.active_gyms(_SCOPES.get(scope, Scope.CITY)):
+    gyms = kb.active_gyms(_SCOPES.get(scope, Scope.CITY))
+    for gym in gyms:
+        if target_date is not None and gym.opens_after(target_date):
+            continue  # зал в этот день ещё не работает
         for slot in sorted(gym.schedule, key=_sort_key):
             if wanted is not None and slot.discipline != wanted:
                 continue
@@ -354,6 +366,7 @@ async def find_sessions(
                 "gym_id": gym.id,
                 "gym_title": gym.title.get(lang) or gym.title.ru,
                 "address": gym.address.get(lang),
+                "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
             }
             if is_today and slot.time_start <= f"{local_now:%H:%M}":
                 started.append(item)  # сегодня уже началось — только на другой день
@@ -365,6 +378,7 @@ async def find_sessions(
         "Это все занятия по запросу — называй только их: зал, дни и время начала. Предложи "
         "клиенту выбрать. Перенос записи делает create_trial_lead: код сам спросит подтверждение."
     ]
+    caveats.extend(opening_caveats(kb, [gym for gym in gyms if any(i["gym_id"] == gym.id for i in sessions)]))
     if started:
         caveats.append(
             "already_started_today — эти занятия сегодня уже начались: на сегодня их не "

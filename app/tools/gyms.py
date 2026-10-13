@@ -22,6 +22,7 @@ from typing import Any, Final, Sequence
 
 from app.kb.gaps import say_no_data, say_no_data_lang
 from app.kb.models import Gym, KBSnapshot
+from app.kb.render import school_today
 from app.types import (
     EscalationReason,
     GapRef,
@@ -36,7 +37,8 @@ from app.types import (
 MAX_DISTRICT_MATCHES: Final[int] = 3
 
 #: Потолок выдачи ``get_gyms``.
-MAX_GYMS_LIMIT: Final[int] = 12
+#: С 13.10.2026 залов 13 (город, Тобыл и райцентры): «все залы» не должны обрезаться.
+MAX_GYMS_LIMIT: Final[int] = 20
 
 #: Ниже этого веса совпадение считается случайным и не показывается.
 MIN_MATCH_SCORE: Final[int] = 50
@@ -190,6 +192,18 @@ def _contains_phrase(haystack: str, needle: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Сериализация зала
 # --------------------------------------------------------------------------- #
+def opening_caveats(kb: KBSnapshot, gyms: Sequence[Gym]) -> list[str]:
+    """Подсказки модели о залах, которые ещё не открылись (``opens_on``)."""
+    today = school_today(kb)
+    return [
+        f"Зал «{gym.title.ru or gym.id}» начинает работать {gym.opens_on:%d.%m.%Y}: до этого дня "
+        "занятий там нет. Скажи об этом прямо; записать можно на первые занятия — дату посчитает "
+        "create_trial_lead. Если нужно раньше — предложи работающие залы рядом."
+        for gym in gyms
+        if gym.opens_after(today)
+    ]
+
+
 def _gym_payload(gym: Gym, lang: Language) -> dict[str, Any]:
     """Зал в том виде, в каком его увидит модель. Ничего сверх базы знаний."""
     return {
@@ -204,12 +218,13 @@ def _gym_payload(gym: Gym, lang: Language) -> dict[str, Any]:
         "has_schedule": gym.has_schedule,
         "phone": gym.phone,          # НП: проверить на проде — сегодня всегда null (G-2)
         "map_url": gym.map_url,      # сегодня всегда null (G-15)
+        "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
     }
 
 
 def _gap_caveats(kb: KBSnapshot, gyms: Sequence[Gym], lang: Language) -> list[str]:
     """Заглушки по пробелам, которые видны прямо в карточке зала."""
-    caveats: list[str] = []
+    caveats: list[str] = opening_caveats(kb, gyms)
     if any(gym.phone is None for gym in gyms):
         caveats.append(say_no_data_lang(kb, GapRef.G2, lang))
     if any(gym.map_url is None and gym.geo_lat is None for gym in gyms):

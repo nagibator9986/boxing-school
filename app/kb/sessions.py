@@ -435,11 +435,17 @@ def resolve_trial_session(
     tz = ZoneInfo(tz_name)
     local_now = now.astimezone(tz)
     earliest = local_now + timedelta(hours=max(0.0, min_lead_hours))
+    first_day = local_now.date()
+    if gym.opens_after(first_day):
+        # Зал ещё не открылся: пробное — на первые его занятия, и окно поиска считается
+        # от дня открытия, а не от сегодня (до открытия может быть больше двух недель).
+        first_day = gym.opens_on
+        earliest = max(earliest, datetime(first_day.year, first_day.month, first_day.day, tzinfo=tz))
     best: TrialSession | None = None
     for slot in timed:
         hours, minutes = (int(part) for part in slot.time_start.split(":"))
         for offset in range(horizon_days + 1):
-            date = (local_now + timedelta(days=offset)).date()
+            date = first_day + timedelta(days=offset)
             weekday = _WEEKDAYS[date.weekday()]
             if weekday not in slot.days or (wanted_day is not None and weekday != wanted_day):
                 continue

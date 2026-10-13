@@ -341,6 +341,10 @@ strings:
   card.special_price:
     ru: "{gym}: {discipline}, {days} в {times} — абонемент {price}"
     kk: "{gym}: {discipline}, {days} сағат {times} — абонемент {price}"
+  # Зал ещё не открылся (поле opens_on в gyms.yaml). Дата — с годом.
+  card.opens_on:
+    ru: "Занятия с {date}"
+    kk: "Сабақтар {date} бастап"
   card.head_gym:
     ru: основной зал — здесь занимается старший тренер
     kk: негізгі зал — мұнда аға жаттықтырушы сабақ береді

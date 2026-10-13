@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Final
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from app.kb.sessions import TrialSession
@@ -93,6 +95,25 @@ def _lang_text(snapshot: KBSnapshot, key: str, lang: Language) -> str:
     return snapshot.text(key, lang)
 
 
+def school_today(snapshot: KBSnapshot) -> date:
+    """Сегодняшний день по часам школы."""
+    try:
+        zone = ZoneInfo(snapshot.gyms.timezone)
+    except Exception:  # noqa: BLE001 - кривая зона: по Алматы
+        zone = ZoneInfo("Asia/Almaty")
+    return datetime.now(tz=zone).date()
+
+
+def opening_note(snapshot: KBSnapshot, gym: Gym, lang: Language, *, today: date | None = None) -> str | None:
+    """«Занятия с 01.11.2026» — пока зал не открылся. После дня открытия пусто.
+
+    Дата с годом: «01.11» без него фильтр ответа читал бы как время 01:11.
+    """
+    if not gym.opens_after(today or school_today(snapshot)):
+        return None
+    return snapshot.text("card.opens_on", lang, date=f"{gym.opens_on:%d.%m.%Y}")
+
+
 def _join(lines: Iterable[str]) -> str:
     return "\n".join(line for line in lines if line)
 
@@ -118,6 +139,9 @@ def render_gyms_block(snapshot: KBSnapshot) -> str:
                 parts.append(gym.landmark.ru)
             if gym.is_head:
                 parts.append("головной зал")
+            if gym.opens_on is not None:
+                # Без «сегодня»: промпт кэшируется, а дата открытия верна и после неё.
+                parts.append(f"занятия с {gym.opens_on:%d.%m.%Y}, раньше записывать нельзя")
             lines.append("- " + " | ".join(parts))
     for gym in snapshot.unresolved_gyms():
         lines.append(
@@ -518,6 +542,9 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
         if gym.is_head:
             # Владелец 01.10.2026: «основной зал у нас — КСК, там старший тренер».
             block = f"{block}\n{ICON_HEAD} {_lang_text(snapshot, 'card.head_gym', lang)}"
+        opening = opening_note(snapshot, gym, lang)
+        if opening:
+            block = f"{block}\n{ICON_SCHEDULE} {opening}"
         parts.append(block)
 
     if any(not gym.address.filled for gym in gyms):
@@ -644,7 +671,9 @@ def _plan_line(plan: PlanPrice, lang: Language) -> str:
     return f"{line} — {note}" if note else line
 
 
-def render_gym_location(snapshot: KBSnapshot, *, gym_id: str, lang: Language) -> str:
+def render_gym_location(
+    snapshot: KBSnapshot, *, gym_id: str, lang: Language, with_opening: bool = True
+) -> str:
     """Тело артефакта ``gym_location_<gym_id>``: адрес, ориентир и ссылка, если есть."""
     gym = snapshot.gym(gym_id)
     if gym is None:
@@ -677,6 +706,9 @@ def render_gym_location(snapshot: KBSnapshot, *, gym_id: str, lang: Language) ->
         lines.append(f"{label}: {landmark}")
 
     parts = ["\n".join(lines)]
+    opening = opening_note(snapshot, gym, lang) if with_opening else None
+    if opening:
+        parts.append(f"{ICON_SCHEDULE} {opening}")
     if gym.map_url:
         # Ссылку подписываем и выносим отдельным блоком: голый адрес с процентами
         # посреди сообщения читается как мусор.
@@ -769,6 +801,10 @@ def render_schedule_card(
         by_discipline.setdefault(slot.discipline, []).append(slot)
 
     parts: list[str] = [schedule_heading(snapshot, gym_id=gym_id, lang=lang)]
+    gym = snapshot.gym(gym_id)
+    opening = opening_note(snapshot, gym, lang) if gym is not None else None
+    if opening:
+        parts.append(opening)
     for discipline, group in by_discipline.items():
         name = _lang_text(snapshot, f"card.{discipline}", lang)
         lines = [f"{ICON_GYM} {name}"]
@@ -811,7 +847,11 @@ def render_route_caption(
             f"в kb/gyms.yaml нет зала '{gym_id}'",
             errors=(f"gyms.yaml: отсутствует зал '{gym_id}'",),
         )
-    parts: list[str] = [render_gym_location(snapshot, gym_id=gym_id, lang=lang)]
+    # Карточка расписания сама скажет «Занятия с …» — в адресе второй раз не нужно.
+    schedule_follows = bool(gym.schedule) and with_schedule
+    parts: list[str] = [
+        render_gym_location(snapshot, gym_id=gym_id, lang=lang, with_opening=not schedule_follows)
+    ]
     if gym.schedule and with_schedule:
         parts.append(render_schedule_card(snapshot, gym_id=gym_id, slots=gym.schedule, lang=lang))
     return _blocks(parts)
@@ -846,6 +886,8 @@ def render_artifact_body(
 
 
 __all__ = [
+    "opening_note",
+    "school_today",
     "trial_when",
     "render_artifact_body",
     "schedule_heading",

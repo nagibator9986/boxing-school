@@ -79,6 +79,13 @@
         <label class="checkbox"><input type="checkbox" name="is_head" value="1" {{ 'checked' if g.get('is_head') }}> главный зал</label>
       </div>
     </div>
+    <div class="row three">
+      <div class="field">
+        <label>Работает с</label>
+        <input type="date" name="opens_on" value="{{ g.get('opens_on') or '' }}">
+        <div class="hint">Для нового зала. До этого дня бот показывает его с пометкой «Занятия с …» и записывает на первые занятия. Пусто — зал уже работает.</div>
+      </div>
+    </div>
   </div>
 
   <div class="card">

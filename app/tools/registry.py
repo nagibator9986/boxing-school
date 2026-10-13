@@ -93,7 +93,7 @@ RAW_TOOL_SPECS: Final[tuple[ToolSpec, ...]] = (
                     "type": "string",
                     "description": "Название населённого пункта, если клиент назвал",
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 12},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
             },
             "required": ["scope"],
         },

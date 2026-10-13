@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-10-12"
+updated_at: "2026-10-13"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -353,7 +353,7 @@ gyms:
   - G-2
   - G-8
   - G-15
-  internal_note: "Конфликт C-3 закрыт владельцем 01.10.2026: отдельного зала на КЖБИ нет, район закрывают этот зал и зал в 6-м микрорайоне."
+  internal_note: "С 01.11.2026 на КЖБИ свой зал (Гашека 9/3); до открытия район закрывают этот зал и зал в 6-м микрорайоне."
   # Районы, которые закрывает зал (не его адрес): список владельца, 01.10.2026.
   serves_districts:
   - кжби
@@ -447,6 +447,72 @@ gyms:
   - магазин солнечный
   - школа 7
   - школа 16
+# Владелец 13.10.2026: «Добавьте новый адрес. Район КЖБИ, с 01.11.2026, Пн, Ср, Пт
+# 19:00–20:00, Гашека 9/3». Бокс и кикбоксинг. До открытия зал виден с пометкой
+# «Занятия с 01.11.2026», запись — на первые занятия; рядом работают 15-й магазин и
+# 6-й микрорайон (у них «кжби» в serves_districts).
+- id: kzhbi_gasheka_9_3
+  scope: city
+  settlement: Костанай
+  is_head: false
+  active: true
+  status: open
+  opens_on: "2026-11-01"
+  title:
+    ru: КЖБИ
+    kk: КЖБИ
+  address:
+    ru: Гашека 9/3
+    kk: Гашек көшесі 9/3
+  landmark:
+    ru: null
+    kk: null
+  district:
+    ru: район КЖБИ
+    kk: КЖБИ ауданы
+  district_aliases:
+  - кжби
+  - кжби район
+  - район кжби
+  - kzhbi
+  - жби
+  - железобетон
+  - завод жби
+  - гашека
+  - гашека 9/3
+  geo_lat: null
+  geo_lon: null
+  map_url: null
+  phone: null
+  coaches: []
+  schedule:
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:00"
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - mon
+    - wed
+    - fri
+    time_start: "19:00"
+    time_end: "20:00"
+  capacity_note: null
+  media:
+  - gym_location_kzhbi_gasheka_9_3
+  gap_refs:
+  - G-2
+  - G-8
+  - G-15
+  internal_note: "Новый зал, 13.10.2026. Нет ссылки 2ГИС и видео дороги — попросить у владельца."
+  serves_districts: []
 - id: region_tobyl
   scope: city
   settlement: Тобыл

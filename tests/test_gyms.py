@@ -232,22 +232,24 @@ async def test_known_district_without_gym_is_named_honestly(ctx, query) -> None:
     assert any("зала там нет" in caveat.lower() for caveat in result.caveats)
 
 
+KZHBI = "kzhbi_gasheka_9_3"
 NEAR_KZHBI = ["magazin15_voinov_8b", "mkr6_arystanbekova_6"]
 
 
 @pytest.mark.parametrize("query", ["кжби", "kzhbi", "КЖБИ", "на кжби"])
-async def test_kzhbi_offers_the_two_nearest_gyms(ctx, query) -> None:
+async def test_kzhbi_offers_its_own_gym_and_the_two_nearest(ctx, query) -> None:
     """Владелец 01.10.2026: «на КЖБИ зала нет, но есть на 15-м магазине и в 6-м
     микрорайоне — это шаговая доступность. Почему бот их не предлагает?»
 
     Раньше КЖБИ был нерешённым конфликтом C-3, и бот отвечал «уточню у
-    администратора и гадать не стану».
+    администратора и гадать не стану». С 13.10.2026 на КЖБИ свой зал (Гашека 9/3,
+    с 01.11.2026) — он первый, а два зала рядом остаются: до открытия ходят в них.
     """
     result = await find_gym_by_district(ctx, district_text=query)
 
     assert result.ok, result
-    assert ids_of(result) == NEAR_KZHBI
-    assert result.data["nearby_only"] is True, "зала на самом КЖБИ нет — сказать это прямо"
+    assert ids_of(result) == [KZHBI, *NEAR_KZHBI]
+    assert result.data["nearby_only"] is False, "зал на самом КЖБИ есть"
 
 
 @pytest.mark.parametrize(
@@ -312,8 +314,9 @@ async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     result = await get_gyms(ctx, scope="city")
 
     assert result.ok
-    # Пять залов Костаная и Тобыл: Каирбекова 24 и Полевую владелец закрыл 12.10.2026.
-    assert result.data["total_in_scope"] == 6
+    # Шесть залов Костаная и Тобыл: Каирбекова 24 и Полевую владелец закрыл 12.10.2026,
+    # зал на КЖБИ добавил 13.10.2026.
+    assert result.data["total_in_scope"] == 7
     assert all(gym["scope"] == Scope.CITY.value for gym in result.data["gyms"])
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
@@ -385,7 +388,8 @@ async def test_city_gyms_carry_map_links(ctx) -> None:
     """У городских залов есть ссылка на 2ГИС: адрес без карты родителю мало помогает."""
     result = await get_gyms(ctx, scope="city")
 
-    links = [gym["map_url"] for gym in result.data["gyms"]]
+    # Ссылку на зал на КЖБИ (Гашека 9/3) владелец ещё не прислал — выдумывать поисковую нельзя.
+    links = [gym["map_url"] for gym in result.data["gyms"] if gym["id"] != KZHBI]
     assert all(links), f"зал без ссылки на карту: {links}"
     # Настоящие геоточки 2ГИС от владельца — они ведут прямо на объект,
     # в отличие от поисковых ссылок, которые могут промахнуться.
@@ -436,7 +440,7 @@ async def test_get_gyms_respects_limit(ctx) -> None:
     result = await get_gyms(ctx, scope="all", limit=2)
 
     assert len(result.data["gyms"]) == 2
-    assert result.data["total_in_scope"] == 12
+    assert result.data["total_in_scope"] == 13
     assert any("не все" in caveat.lower() for caveat in result.caveats)
 
 

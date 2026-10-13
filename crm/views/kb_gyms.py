@@ -139,6 +139,8 @@ def _read_gym(form: Any, *, gym_id: str) -> dict[str, Any]:
         "media": [value for value in form.getlist("media") if value],
         "gap_refs": [value for value in form.getlist("gap_refs") if value],
         "internal_note": opt_text(form, "internal_note"),
+        # Дата открытия нового зала: без неё сохранение в CRM стирало бы её из файла.
+        "opens_on": opt_text(form, "opens_on"),
     }
 
 

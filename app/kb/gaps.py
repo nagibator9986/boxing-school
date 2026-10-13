@@ -93,6 +93,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     "funnel.pick_number",
     "funnel.pick_option",
     "card.head_gym",
+    "card.opens_on",
     "card.slot_price",
     "card.special_price",
     "lead_card.trial_short_changed",
