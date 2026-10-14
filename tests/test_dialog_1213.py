@@ -550,8 +550,10 @@ async def test_todays_weekday_code_is_today(make_ctx) -> None:
     assert [item["time_start"] for item in result.data["sessions"]] == ["17:00"], result.data
 
 
-async def test_client_time_without_classes_is_not_blocked(kb, state, sessionmaker, settings) -> None:
+async def test_client_time_without_classes_is_not_blocked(kb, state, sessionmaker, settings, monkeypatch) -> None:
     """«К 15.00» → «В 15:00 занятий нет…» — время клиента, а не выдумка модели."""
+    # Вторник 13.10 09:35, как в диалоге: бокс в КСК в 17:00 есть только по Вт, Чт, Сб.
+    monkeypatch.setattr(pipeline, "_utcnow", lambda: datetime(2026, 10, 13, 9, 35, tzinfo=ALMATY).astimezone(UTC))
     deps = _deps(kb, state, sessionmaker, settings, [
         FakeTurn.tool(FakeCall("find_sessions", {"discipline": "boxing", "day": "today"})),
         FakeTurn.answer("В 15:00 занятий по боксу нет. Ближайшее — в 17:00 в КСК."),

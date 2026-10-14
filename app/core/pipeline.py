@@ -64,7 +64,7 @@ from app.core import (
     postcheck,
 )
 from app.core import session as conv_session
-from app.kb.models import KBSnapshot, min_accepted_age
+from app.kb.models import FAQ_TOPICS, KBSnapshot, min_accepted_age
 from app.kb import render
 from app.kb.agreement import (
     is_option_line,
@@ -1180,13 +1180,14 @@ async def _run_turn(
         # Заметка собирается заново каждый ход и уходит ПОСЛЕДНИМ элементом
         # contents: любая динамика в начале запроса убивает implicit-кэш.
         child_talk = await _child_talk_continues(db, conv, text)
+        gym_in_view = await _gym_in_view(db, conv, kb)
         dynamic_note = build_dynamic_note(
             lang=lang,
             now=_school_time(now, settings),
             lead=draft,
             intents=intents,
             injection_suspected=injection,
-            gym_id=await _gym_in_view(db, conv, kb),
+            gym_id=gym_in_view,
             stage=await _client_stage(db, conv, kb=kb, now=now, settings=settings),
             just_said=_just_said(
                 text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
@@ -1269,6 +1270,11 @@ async def _run_turn(
             finish_reason=response.finish_reason,
         )
         reply_raw = (response.text or "").strip()
+        owner_answer = await _owner_answer_for_handover(
+            executor, kb, reply=reply_raw, intents=intents, invocations=invocations, text=text
+        )
+        if owner_answer is not None:
+            invocations = (*invocations, owner_answer)
 
         # Пустой ответ после того, как инструменты уже отправили клиенту подтверждение
         # или карточку, — не сбой: после записи инструмент сам велел модели молчать.
@@ -1433,6 +1439,11 @@ async def _run_turn(
             # Владелец 10.09.2026: «для записи спрашивать не только имя, а ФИ». Модель
             # всё равно пишет «Как зовут ребёнка?» — вопрос заменяется формулировкой базы.
             reply = funnel.ask_full_name(reply, kb=kb, lang=lang)
+        # Следующий шаг записи — по всему разговору, а не по одному этому сообщению.
+        next_step = await _next_booking_step(
+            db, conv, kb, lang, draft=draft, saved=ctx.saved_lead, gym_in_view=gym_in_view,
+            text=text, intents=intents, services=services,
+        )
         if _trial_confirmed(services):
             # Клиент уже получил готовое подтверждение записи от кода. Текст модели
             # следом — это «администратор свяжется» или пересказ того же самого.
@@ -1446,7 +1457,7 @@ async def _run_turn(
             # живой прогон 01.10.2026, модель приняла «отправлено» за «данных нет».
             asked = question_sentence(reply)
             if not asked or funnel.is_handover(asked):
-                asked = _kb_text(kb, funnel.next_step_key(draft), lang)
+                asked = next_step
             reply = asked
         elif (_asks_which_gym(reply) or _lists_gyms(reply, kb)) and not await _gyms_list_seen(
             db, conv, kb, services
@@ -1474,9 +1485,7 @@ async def _run_turn(
             # Айназарова Али… на вторник, 6 октября, в 17:00» — и тут же «сколько лет
             # ребёнку?». Ложное «вы записаны» хуже любого вопроса: родитель придёт, а
             # его не ждут. Вместо него уходит следующий шаг записи.
-            question = _booking_question(kb, lang, invocations) or _kb_text(
-                kb, funnel.next_step_key(draft), lang
-            )
+            question = _booking_question(kb, lang, invocations) or next_step
             _log.warning("false_booking_claim", conv_key=conv.conv_key, replaced=bool(question))
             reply = question or ""
         # Список, который модель написала сама, — тоже под номерами и с цифрами в конце.
@@ -1540,6 +1549,7 @@ async def _run_turn(
                 kb=kb,
                 lang=lang,
                 farewell=farewell,
+                question=next_step,
             )
         if lang_decision.needs_bridge:
             bridge = _kb_text(kb, TEXT_BRIDGE_KK, lang)
@@ -2454,7 +2464,13 @@ def _names_a_place(kb: KBSnapshot, said: str) -> bool:
             key = normalize_text(place or "")
             if key and re.search(rf"(?<![0-9a-zа-я]){re.escape(key)}(?![0-9a-zа-я])", said):
                 return True
-    return False
+    # Падежи: «мы из Тобыла», «в Тобыле» точным словом не находились — и на «Сыну 8 лет»
+    # бот спрашивал район у клиента, который его уже назвал (живой прогон 14.10.2026).
+    # Сам город и здесь не место: «мы в Костанае» подходит ко всем залам города сразу.
+    city = normalize_text(kb.gyms.city_settlement or "")
+    if len(city) > 4:
+        said = re.sub(rf"(?<![0-9a-zа-я]){re.escape(city[:-1])}[а-я]*", " ", said)
+    return bool(gyms_named_in(kb, said))
 
 
 #: Хвост последней части, в котором ищем вопрос перед тем, как дописать свой.
@@ -3163,6 +3179,92 @@ async def _last_sent_before_turn(db: AsyncSession, conv: Conversation, services:
         _log.warning("last_sent_lookup_failed", error=type(exc).__name__)
         return ""
     return next((text for text in recent if text and text not in this_turn), "")
+
+
+#: Вопрос записи в последнем сообщении бота: имя, возраст, район, зал, время, «записать?».
+_BOOKING_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"фамили|как зовут|имя ребёнка|имя ребенка|сколько лет|возраст|районе|какой зал|какое время"
+    r"|во сколько|записать|тегі|аты|неше жас|қай аудан|қай уақыт|жазайын",
+    re.IGNORECASE,
+)
+#: Встречный вопрос клиента: «скажите, как одеться», «а сколько стоит».
+_SIDE_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\W*(?:а\s+)?(?:скажите|подскажите|расскажите|как|сколько|где|когда|можно|что|какой|какая|какие|зачем)"
+    r"(?![а-яё])",
+    re.IGNORECASE,
+)
+
+
+async def _next_booking_step(
+    db: AsyncSession,
+    conv: Conversation,
+    kb: KBSnapshot,
+    lang: Language,
+    *,
+    draft: LeadDraft,
+    saved: SavedLead | None,
+    gym_in_view: str | None,
+    text: str,
+    intents: Sequence[IntentHint],
+    services: _Services,
+) -> str:
+    """Вопрос, которым бот возвращает разговор к записи после своего ответа.
+
+    Скриншот владельца 14.10.2026: клиент выбрал Тобыл, бот спросил фамилию и имя, а
+    клиент — «как одеться и что взять». Бот ответил текстом владельца и добавил «В каком
+    районе вы живёте?»: следующий шаг считался по одному этому сообщению, где нет ни
+    зала, ни имени. Теперь: если клиент ответил на вопрос записи своим вопросом — бот
+    после ответа повторяет свой; иначе шаг считается по всему разговору — по залу перед
+    глазами клиента и сохранённой заявке.
+    """
+    own = split_agreement(text)[0]
+    if "?" in own or intents or _SIDE_QUESTION_RE.match(own):
+        last = await _last_sent_before_turn(db, conv, services)
+        asked = question_sentence(last)
+        if asked and _BOOKING_STEP_RE.search(asked):
+            return asked
+    known: dict[str, Any] = {}
+    if draft.gym_id is None and (gym_in_view or (saved is not None and saved.gym_id)):
+        known["gym_id"] = gym_in_view or saved.gym_id
+    if saved is not None:
+        if draft.child_name is None and saved.child_name:
+            known["child_name"] = saved.child_name
+        if draft.child_age is None and saved.child_age is not None:
+            known["child_age"] = saved.child_age
+    return _kb_text(kb, funnel.next_step_key(draft.model_copy(update=known)), lang)
+
+
+async def _owner_answer_for_handover(
+    executor: ToolExecutor,
+    kb: KBSnapshot,
+    *,
+    reply: str,
+    intents: Sequence[IntentHint],
+    invocations: Sequence[ToolInvocation],
+    text: str,
+) -> ToolInvocation | None:
+    """Готовый ответ владельца вместо «уточнит администратор».
+
+    Живой прогон скриншота 14.10.2026: на «как одеться и что с собой взять» модель не
+    обратилась к базе и написала «уточнит администратор… Передать ваш вопрос?», хотя
+    текст владельца «что взять» в базе есть и в жизни ушёл. Если модель зовёт человека,
+    а на тему вопроса есть дословный ответ владельца, код отправляет его сам.
+    """
+    if not reply or not funnel.is_handover(reply):
+        return None
+    if any(invocation.name in ("get_kb_fact", "escalate_to_manager") for invocation in invocations):
+        return None
+    for intent in intents:
+        topic = intent.value
+        if topic not in FAQ_TOPICS:
+            continue
+        result = await executor("get_kb_fact", {"topic": topic, "question": split_agreement(text)[0]})
+        if not (result.meta or {}).get("sent_verbatim"):
+            continue
+        _log.info("owner_answer_instead_of_handover", topic=topic)
+        sent = getattr(executor, "invocations", ())
+        return sent[-1] if sent else None
+    return None
 
 
 def _has_gyms_card(text: str, kb: KBSnapshot) -> bool:

@@ -62,6 +62,7 @@ _HANDOVER_MARKERS: Final[tuple[str, ...]] = (
     "передать ваш вопрос",
     "передать вопрос",
     "передать администратор",
+    "уточнит администратор",
     "передаю менеджер",
     "әкімшіге",
     "әкімші жауап",
@@ -188,6 +189,7 @@ def pending_question(
     kb: KBSnapshot,
     lang: Language,
     farewell: bool = False,
+    question: str | None = None,
 ) -> str | None:
     """Какой вопрос дописать к ответу. ``None`` — дописывать не нужно.
 
@@ -198,7 +200,9 @@ def pending_question(
     body = (reply or "").strip()
     if not body or farewell or is_handover(body) or ends_with_question(body):
         return None
-    question = (kb.text(next_step_key(draft), lang) or "").strip()
+    # ``question`` — шаг, посчитанный по всему разговору (pipeline._next_booking_step);
+    # без него — по черновику этого сообщения.
+    question = (question or kb.text(next_step_key(draft), lang) or "").strip()
     if not question or question in body:
         return None
     return question
