@@ -158,22 +158,26 @@ async def test_screenshot_digit_after_the_section_list_books_the_child(kb, state
 async def test_filtered_answer_during_booking_asks_the_next_step_instead_of_handing_over(
     kb, state, sessionmaker, settings
 ) -> None:
-    """Фильтр снял ответ посреди записи — бот сам спрашивает секцию нумерованным списком."""
+    """Фильтр снял ответ посреди записи — бот сам спрашивает время нумерованным списком.
+
+    В КСК: в 6-м микрорайоне бокс и кикбоксинг идут вместе в одно время, и с 14.10.2026
+    запись там проходит сразу — без вопроса, которым проверяется этот путь.
+    """
     llm = FakeLLMClient([
         FakeTurn.tool(FakeCall("create_trial_lead", {
-            "child_name": "Айназаров Али", "child_age": 8, "gym_id": MKR6, "parent_agreed": True,
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": "ksk_kairbekova_334", "parent_agreed": True,
         })),
         FakeTurn.answer("Записал Али на вторник в 21:15."),
     ])
     deps = await _deps(kb, state, sessionmaker, settings, llm)
 
     decisions = await process_inbound(
-        deps, webhook_payload("fb-1", "Хочу записать Айназарова Али, 8 лет, в 6-й микрорайон", chat_id="77015558202")
+        deps, webhook_payload("fb-1", "Хочу записать Айназарова Али, 8 лет, в КСК", chat_id="77015558202")
     )
 
     assert [d.action.value for d in decisions] == ["reply"], [d.reason for d in decisions]
     client = "\n".join(out.text or "" for d in decisions for out in d.outbound)
-    assert kb.text("funnel.discipline", Language.RU) in client, client
+    assert kb.text("funnel.pick_time", Language.RU) in client, client
     assert "1. " in client and "2. " in client and "21:15" not in client
     assert not [card for d in decisions for card in d.manager_cards]
     assert kb.text("escalation.handoff", Language.RU) not in client

@@ -140,6 +140,7 @@ CORE_I18N_KEYS: Final[tuple[str, ...]] = (
     # Названия видов занятий подставляются по коду дисциплины: card.{discipline}.
     "card.boxing",
     "card.kickboxing",
+    "card.boxing_kickboxing",
 )
 
 

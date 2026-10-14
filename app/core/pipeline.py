@@ -78,7 +78,7 @@ from app.kb.agreement import (
     with_choice,
 )
 from app.kb.places import scope_by_texts
-from app.kb.sessions import age_answer
+from app.kb.sessions import COMBINED_DISCIPLINE, age_answer
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
 from app.llm.prompt import build_system_instruction, prompt_ngrams
@@ -3318,23 +3318,35 @@ def _funnel_reask(kb: KBSnapshot, lang: Language, last_bot_text: str) -> str | N
     return None
 
 
+def _option_key(option: dict) -> tuple:
+    """Вариант расписания без секции: дни и начало."""
+    return (tuple(sorted(option.get("days") or [])), str(option.get("time_start") or ""))
+
+
 def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) -> str:
     """«1. Бокс — Вт, Чт, Сб 19:00» — варианты из расписания зала, по одному в строке."""
     lines: list[str] = []
     # По секции, внутри — по времени: «1. Бокс 09:00, 2. Бокс 18:45, 3. Кикбоксинг 09:00».
     # Владелец 01.10.2026: «поочерёдность — первое время, второе, третье». Номер,
     # которым отвечает клиент, разбирается по отправленному тексту, а не по расписанию.
+    # Бокс и кикбоксинг в одни дни и час — один вариант «Бокс и кикбоксинг» (14.10.2026).
+    given = [option for option in options if isinstance(option, dict)]
+    shared: dict[tuple, set[str]] = {}
+    for option in given:
+        shared.setdefault(_option_key(option), set()).add(str(option.get("discipline")))
+
+    def discipline_of(option: dict) -> str:
+        return COMBINED_DISCIPLINE if len(shared[_option_key(option)]) > 1 else str(option.get("discipline"))
+
     ordered = sorted(
-        (option for option in options if isinstance(option, dict)),
+        given,
         key=lambda option: (
-            _kb_text(kb, f"card.{option.get('discipline')}", lang),
+            _kb_text(kb, f"card.{discipline_of(option)}", lang),
             str(option.get("time_start") or ""),
         ),
     )
     for option in ordered:
-        if not isinstance(option, dict):
-            continue
-        label = _kb_text(kb, f"card.{option.get('discipline')}", lang)
+        label = _kb_text(kb, f"card.{discipline_of(option)}", lang)
         days = render.days_label(list(option.get("days") or []), lang)
         line = f"{label} — {days} {option.get('time_start') or ''}".strip()
         if label and line not in lines:

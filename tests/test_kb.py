@@ -365,8 +365,8 @@ def test_no_unused_card_texts(kb) -> None:
     root = Path(__file__).resolve().parent.parent
     render = (root / "app" / "kb" / "render.py").read_text(encoding="utf-8")
     used = set(re.findall(r"['\"](card\.[a-z_]+)['\"]", render))
-    # Дисциплины подставляются по коду: card.{discipline}.
-    used.update({"card.boxing", "card.kickboxing"})
+    # Дисциплины подставляются по коду: card.{discipline}; вместе — COMBINED_DISCIPLINE.
+    used.update({"card.boxing", "card.kickboxing", "card.boxing_kickboxing"})
 
     declared = {key for key in kb.i18n.strings if key.startswith("card.")}
     assert not declared - used, f"ключи никем не читаются: {sorted(declared - used)}"

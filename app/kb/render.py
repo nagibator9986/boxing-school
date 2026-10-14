@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from app.kb import gaps as gaps_module
 from app.kb.models import min_accepted_age
 from app.kb.models import FaqEntry, Gym, KBSnapshot, PlanPrice, ScheduleSlot
+from app.kb.sessions import COMBINED_DISCIPLINE
 from app.types import KBValidationError, Language, Scope
 
 #: Разделитель блоков префикса.
@@ -474,7 +475,8 @@ def render_trial_confirmation(
     when = trial_when(snapshot, session, lang)
     title = gym.title.get(lang) or gym.title.ru or gym.id
     address = _clean_address(gym, lang)
-    place = f"{title}, {address}" if address else title
+    # «Тобыл, Тобыл, улица Тәуелсіздік, 51» — адрес уже называет зал (скриншот 14.10.2026).
+    place = (address if _already_said(title, address) else f"{title}, {address}") if address else title
     parts = [
         # Имя отдельной строкой: в «Записали Сериков Ержан» оно не склоняется.
         f"{ICON_OK} {snapshot.text('system.trial_confirmed', lang)}",
@@ -749,6 +751,11 @@ _GENERIC_PLACE_WORDS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _slot_identity(slot: ScheduleSlot) -> tuple:
+    """Что делает два слота одним занятием в карточке: дни, часы, возраст, цена."""
+    return (tuple(sorted(slot.days)), slot.time_start, slot.time_end, slot.age_from, slot.age_to, slot.price)
+
+
 def _already_said(candidate: str, existing: str) -> bool:
     """Повторяет ли строка то, что уже написано выше.
 
@@ -796,9 +803,21 @@ def render_schedule_card(
     if not slots:
         return _lang_text(snapshot, "gap.schedule", lang)
 
-    by_discipline: dict[str, list[ScheduleSlot]] = {}
+    # Одно и то же занятие у бокса и кикбоксинга — одной строкой «Бокс и кикбоксинг»:
+    # владелец 14.10.2026, «не делай разделения — пиши сразу вместе». Разные дни, час
+    # или цена (КСК: бокс Вт/Чт/Сб по 20 000) остаются отдельными строками своей секции.
+    shared: dict[tuple, set[str]] = {}
     for slot in slots:
-        by_discipline.setdefault(slot.discipline, []).append(slot)
+        shared.setdefault(_slot_identity(slot), set()).add(slot.discipline)
+    by_discipline: dict[str, list[ScheduleSlot]] = {}
+    listed: set[tuple] = set()
+    for slot in slots:
+        key = _slot_identity(slot)
+        if key in listed:
+            continue
+        listed.add(key)
+        label = COMBINED_DISCIPLINE if len(shared[key]) > 1 else slot.discipline
+        by_discipline.setdefault(label, []).append(slot)
 
     parts: list[str] = [schedule_heading(snapshot, gym_id=gym_id, lang=lang)]
     gym = snapshot.gym(gym_id)

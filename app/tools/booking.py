@@ -31,6 +31,7 @@ from app.kb.agreement import chosen_option, split_agreement
 from app.kb.gaps import say_no_data
 from app.kb.models import Gym, KBSnapshot, ScheduleSlot
 from app.kb.sessions import (
+    COMBINED_DISCIPLINE,
     SessionChoice,
     TrialSession,
     client_named_age,
@@ -143,10 +144,17 @@ def _ask_child_hint(kb: KBSnapshot, lang: Language, *, name: bool, age: bool) ->
 
 
 def _options_line(kb: KBSnapshot, slots: tuple[ScheduleSlot, ...]) -> str:
-    """Варианты для родителя: «Кикбоксинг — Пн, Ср, Пт 19:00; Бокс — Вт, Чт, Сб 09:00»."""
+    """Варианты для родителя: «Кикбоксинг — Пн, Ср, Пт 19:00; Бокс — Вт, Чт, Сб 09:00».
+
+    Бокс и кикбоксинг в одни дни и час — «Бокс и кикбоксинг» одним вариантом (14.10.2026).
+    """
+    shared: dict[tuple, set[str]] = {}
+    for slot in slots:
+        shared.setdefault((tuple(sorted(slot.days)), slot.time_start), set()).add(slot.discipline)
     by_discipline: dict[str, list[str]] = {}
     for slot in slots:
-        label = kb.text(f"card.{slot.discipline}", Language.RU)
+        both = len(shared[(tuple(sorted(slot.days)), slot.time_start)]) > 1
+        label = kb.text(f"card.{COMBINED_DISCIPLINE if both else slot.discipline}", Language.RU)
         entry = f"{render.days_label(slot.days, Language.RU)} {slot.time_start}"
         if entry not in by_discipline.setdefault(label, []):
             by_discipline[label].append(entry)

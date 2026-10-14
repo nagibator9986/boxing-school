@@ -72,13 +72,23 @@ def test_no_time_means_ask_the_parent(kb: KBSnapshot) -> None:
     assert choose(kb, time=None, now=local(8, 10)).problem == "need_time"
 
 
-def test_both_sections_at_that_time_means_ask_which(kb: KBSnapshot) -> None:
-    """На Касымханова по вторникам в 18:00 и бокс, и кикбоксинг — секцию выбирает родитель."""
+def test_both_sections_at_that_time_are_one_class(kb: KBSnapshot) -> None:
+    """На Касымханова по вторникам в 18:00 и бокс, и кикбоксинг — одна запись, без вопроса.
+
+    Владелец 14.10.2026: «не делай разделения на бокс и кикбоксинг — пиши сразу вместе».
+    Родитель назвал секцию сам — запись на неё.
+    """
     kasym = "center_kasymkhanova_10"
-    assert choose(kb, time="18:00", day="tue", now=local(8, 10), gym=kasym).problem == "need_discipline"
+    together = choose(kb, time="18:00", day="tue", now=local(8, 10), gym=kasym).session
+    assert together is not None and together.discipline == "boxing_kickboxing"
 
     session = choose(kb, time="18:00", day="tue", discipline="boxing", now=local(8, 10), gym=kasym).session
     assert (session.starts_at.day, session.discipline) == (8, "boxing")
+
+
+def test_sections_on_different_days_are_still_a_choice(kb: KBSnapshot) -> None:
+    """КСК в 09:00: кикбоксинг Пн/Ср/Пт, бокс Вт/Чт/Сб — это выбор дней, его задаёт код."""
+    assert choose(kb, time="09:00", now=local(8, 10), gym=KSK).problem == "need_discipline"
 
 
 def test_named_day_is_respected(kb: KBSnapshot) -> None:

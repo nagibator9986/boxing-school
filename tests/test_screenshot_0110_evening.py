@@ -153,15 +153,16 @@ async def test_owner_dialog_books_without_asking_the_name_twice(deps, kb) -> Non
     options = "\n".join(await say(deps, 8, "Да", FakeTurn.tool(FakeCall("create_trial_lead", {
         "child_name": "Айназаров Али", "child_age": 8, "gym_id": VOINOV, "parent_agreed": True,
     })), FakeTurn.answer(DASH_LIST)))
-    assert "1. Бокс — Вт, Чт, Сб 09:00" in options, options
+    # С 14.10.2026 бокс и кикбоксинг в одно время — один вариант (владелец: «пиши сразу вместе»).
+    assert "1. Бокс и кикбоксинг — Вт, Чт, Сб 09:00" in options, options
     assert "— Бокс" not in options
-    assert "Напишите только цифру: 1, 2, 3, 4" in options
+    assert "Напишите только цифру: 1, 2" in options
 
     booked = "\n".join(await say(deps, 9, "1", FakeTurn.tool(FakeCall("create_trial_lead", {
         "child_name": "Айназаров Али", "child_age": 8, "gym_id": VOINOV, "parent_agreed": True,
         "session_time": "09:00", "discipline": "boxing",
     })), FakeTurn.answer("Готово")))
-    assert "Мы записали вас" in booked, booked
+    assert "Мы записали вас" in booked and "🥊 Бокс и кикбоксинг" in booked, booked
     assert "фамилию и имя" not in booked, "имя назвали в начале — второй раз не спрашиваем"
 
 
@@ -182,8 +183,8 @@ async def test_time_options_come_from_the_code_even_without_a_list_from_the_mode
         })),
         FakeTurn.answer("Какое время вам удобнее?")))
 
-    assert "1. Бокс — Вт, Чт, Сб 09:00" in reply, reply
-    assert reply.rstrip().endswith("Напишите только цифру: 1, 2, 3, 4")
+    assert "1. Бокс и кикбоксинг — Вт, Чт, Сб 09:00" in reply, reply
+    assert reply.rstrip().endswith("Напишите только цифру: 1, 2")
 
 
 async def test_models_own_dash_list_is_numbered(deps) -> None:
@@ -215,28 +216,26 @@ async def _time_list(deps) -> None:
     ), FakeTurn.answer("Какое время вам удобнее?"))
 
 
-async def test_hour_shared_by_two_sections_narrows_the_list(deps, kb) -> None:
-    """«9» — это 09:00; в 09:00 и бокс, и кикбоксинг: код спрашивает секцию с номерами."""
+async def test_hour_of_a_shared_class_is_chosen_at_once(deps, kb) -> None:
+    """«9» — это 09:00; бокс и кикбоксинг в 09:00 — одно занятие, и вопроса о секции нет.
+
+    До 14.10.2026 код уточнял секцию («1. Бокс 2. Кикбоксинг»); владелец: «не делай
+    разделения на бокс и кикбоксинг — пиши сразу вместе».
+    """
     await _time_list(deps)
 
-    reply = await say(deps, 2, "9")   # модель не вызывается: её сценарий пуст
+    await say(deps, 2, "9", FakeTurn.answer("Отлично!"))
 
-    assert reply == [
-        f"{kb.text('funnel.discipline', Language.RU)}\n\n"
-        "1. Бокс — Вт, Чт, Сб 09:00\n2. Кикбоксинг — Вт, Чт, Сб 09:00\n\n"
-        "Напишите только цифру: 1, 2"
-    ], reply
-    await say(deps, 3, "1", FakeTurn.answer("Отлично!"))
-    assert "«Бокс — Вт, Чт, Сб 09:00»" in deps.llm.requests[-1].user_text, "«1» — бокс из сужённого списка"
+    assert "«Бокс и кикбоксинг — Вт, Чт, Сб 09:00»" in deps.llm.requests[-1].user_text
 
 
 async def test_digit_after_choose_from_the_list_above_counts_as_a_choice(deps) -> None:
     await _time_list(deps)
     await say(deps, 2, "не знаю", FakeTurn.answer("Выберите, пожалуйста, один из вариантов из списка выше."))
 
-    await say(deps, 3, "3", FakeTurn.answer("Отлично!"))
+    await say(deps, 3, "2", FakeTurn.answer("Отлично!"))
 
-    assert "«Кикбоксинг — Вт, Чт, Сб 09:00»" in deps.llm.requests[-1].user_text
+    assert "«Бокс и кикбоксинг — Вт, Чт, Сб 18:45»" in deps.llm.requests[-1].user_text
 
 
 def test_lead_in_never_carries_a_booking_claim() -> None:
@@ -313,7 +312,8 @@ async def test_hour_shared_by_different_days_asks_for_the_option_not_the_section
     reply = "\n".join(await say(deps, 2, "19"))
 
     assert reply.startswith(kb.text("funnel.pick_option", Language.RU)), reply
-    assert reply.count("19:00") == 4 and reply.rstrip().endswith("Напишите только цифру: 1, 2, 3, 4")
+    assert reply.count("19:00") == 2 and reply.rstrip().endswith("Напишите только цифру: 1, 2")
+    assert "Бокс и кикбоксинг — Пн, Ср, Пт 19:00" in reply
 
 
 

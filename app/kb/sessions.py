@@ -31,6 +31,8 @@ __all__ = [
     "client_named_name",
     "client_named_time",
     "client_times",
+    "COMBINED_DISCIPLINE",
+    "same_classes",
     "fold_name",
     "normalize_time",
     "resolve_trial_session",
@@ -56,6 +58,16 @@ class TrialSession:
     time_start: str
     time_end: str
     discipline: str
+
+
+#: Бокс и кикбоксинг одним занятием — когда они идут в одни дни и час. Подпись — ``card.boxing_kickboxing``.
+COMBINED_DISCIPLINE: Final[str] = "boxing_kickboxing"
+
+
+def same_classes(slots) -> bool:
+    """Одни ли это занятия по времени: все слоты в те же дни и с тем же началом и концом."""
+    keys = {(tuple(sorted(slot.days)), slot.time_start, slot.time_end) for slot in slots}
+    return len(keys) == 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +109,8 @@ _HHMM_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:.]([0-5
 #: «в 19», «к 7 вечера», «на 17» — но не «на 9 лет» и не «в 5 классе».
 _PREP_HOUR_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:^|[\s,])(?:в|к|на|с|до)\s+([01]?\d|2[0-3])(?![\d:.])"
-    r"(?!\s*(?:лет|год|класс|мес|раз|дет|реб|жас))"
+    # «в 6-й микрорайон», «в 7 мкр», «в 9 школе», «у 15-го магазина» — место, а не час.
+    r"(?!\s*(?:лет|год|класс|мес|раз|дет|реб|жас|мкр|микр|школ|мектеп|магазин|-\s*[а-яё]))"
     r"(?:\s*(утра|дня|вечера|ночи))?",
     re.IGNORECASE,
 )
@@ -429,8 +442,14 @@ def resolve_trial_session(
             return SessionChoice(problem="unknown_day", options=tuple(timed))
         timed = on_day
 
+    combined = False
     if len({slot.discipline for slot in timed}) > 1:
-        return SessionChoice(problem="need_discipline", options=tuple(timed))
+        # Бокс и кикбоксинг в одни дни и в один час — одна запись, а не выбор: владелец
+        # 14.10.2026, «не делай разделения на бокс и кикбоксинг — пиши сразу вместе».
+        # В разные дни (КСК: кикбоксинг Пн/Ср/Пт, бокс Вт/Чт/Сб) это выбор дней — он остаётся.
+        if not same_classes(timed):
+            return SessionChoice(problem="need_discipline", options=tuple(timed))
+        combined = True
 
     tz = ZoneInfo(tz_name)
     local_now = now.astimezone(tz)
@@ -457,4 +476,6 @@ def resolve_trial_session(
             break
     if best is None:
         return SessionChoice(problem="unknown_time", options=tuple(slots))
+    if combined:
+        best = TrialSession(best.starts_at, best.weekday, best.time_start, best.time_end, COMBINED_DISCIPLINE)
     return SessionChoice(session=best)
