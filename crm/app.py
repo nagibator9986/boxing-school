@@ -264,6 +264,11 @@ def create_app(cfg: CrmConfig | None = None) -> Flask:
                 payload["kb_hash"] = snapshot().kb_hash[:8]
             except Exception:  # noqa: BLE001 - база знаний сломана руками
                 payload["kb_hash"] = "ошибка"
+            # Выключенный бот должен быть виден на любой странице: иначе тишина в
+            # диалогах выглядит как поломка, а не как решение владельца.
+            from app.admin.runtime_settings import load_runtime_settings
+
+            payload["bot_switched_off"] = not load_runtime_settings(resolved.admin_db).bot_enabled
         return payload
 
     @app.errorhandler(404)

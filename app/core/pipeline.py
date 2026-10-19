@@ -771,6 +771,22 @@ async def _process_message(deps: PipelineDeps, inbound: InboundMessage) -> Pipel
         first_touch = int(conv.msg_in_count or 0) == 0
         await conv_session.record_inbound(db, conv, inbound, author=Author.CLIENT)
 
+        if not _bot_enabled(deps):
+            # Владелец выключил бота в CRM («пока что отключи бота», 19.10.2026). Как на
+            # паузе: реплика клиента сохраняется и видна в CRM, но ответа и модели нет.
+            if inbound.text:
+                await _save_paused_message(deps, db, conv, inbound.text, kb=kb)
+            await db.commit()
+            _log.info("bot_switched_off", conv_key=conv.conv_key)
+            return _decision(
+                DecisionAction.SILENT,
+                "bot_switched_off",
+                inbound=inbound,
+                conv_id=conv.id,
+                lang=Language.parse(conv.lang),
+                correlation_id=correlation_id,
+            )
+
         paused = await pause.is_paused(deps.state, db, conv.id, conv.conv_key, now)
         if paused and await pause.escalation_pause_lifted(
             deps.state, db, conv.id, conv.conv_key
@@ -3699,6 +3715,12 @@ def _silent_numbers(deps: PipelineDeps) -> frozenset[str]:
     должно превращаться в нового клиента с меню и вопросом о возрасте ребёнка.
     """
     return ignore_list.silent_numbers(_owner_settings(deps), _owner_runtime(deps))
+
+
+def _bot_enabled(deps: PipelineDeps) -> bool:
+    """Включён ли бот владельцем. Настроек нет или они не читаются — включён, как раньше."""
+    runtime = _owner_runtime(deps)
+    return runtime is None or bool(runtime.bot_enabled)
 
 
 def _owner_runtime(deps: PipelineDeps) -> "RuntimeSettings | None":

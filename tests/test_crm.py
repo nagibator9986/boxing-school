@@ -968,3 +968,43 @@ def test_zero_pause_means_silence_until_a_human_returns(client: Any, sandbox: Cr
     )
 
     assert load_runtime_settings(sandbox.admin_db).operator_pause_minutes == 0
+
+
+# --------------------------------------------------------------------------- #
+# Выключатель бота (владелец 19.10.2026: «пока что отключи бота»)
+# --------------------------------------------------------------------------- #
+def test_switched_off_bot_is_announced_on_every_page(client: Any, sandbox: CrmConfig) -> None:
+    for url in ("/", "/clients/", "/settings/"):
+        assert "Бот выключен" in client.get(url).get_data(as_text=True), url
+
+    store = AdminStore(sandbox.admin_db)
+    store.set("bot_enabled", "on")
+    store.close()
+    assert "Бот выключен" not in client.get("/").get_data(as_text=True)
+
+
+def test_the_bot_is_turned_on_from_the_settings_page(client: Any, sandbox: CrmConfig) -> None:
+    page = client.get("/settings/").get_data(as_text=True)
+    assert "Бот отвечает клиентам" in page
+
+    fields = form_fields(page)
+    fields["bot_enabled"] = "1"
+    response = client.post("/settings/", data=fields, follow_redirects=True).get_data(as_text=True)
+
+    assert load_runtime_settings(sandbox.admin_db).bot_enabled is True
+    assert "21:00-09:00, получено" not in response, "сохранение страницы не должно кончаться ошибкой"
+    assert "Настройки сохранены" in response
+
+
+def test_auto_reply_texts_are_saved_as_text(client: Any, sandbox: CrmConfig) -> None:
+    """Поле автоответов проверялось как время «21:00-09:00» и не сохранялось никогда."""
+    page = client.get("/settings/").get_data(as_text=True)
+    # Варианты — с новой строки, а однострочное поле браузер склеивает в одну строку.
+    assert '<textarea name="auto_greeting_texts"' in page
+    fields = form_fields(page)
+    fields["auto_greeting_texts"] = "ЖМИ ОТПРАВИТЬ\nМы скоро ответим"
+
+    response = client.post("/settings/", data=fields, follow_redirects=True).get_data(as_text=True)
+
+    assert "нужен формат" not in response
+    assert AdminStore(sandbox.admin_db).get("auto_greeting_texts") == "ЖМИ ОТПРАВИТЬ\nМы скоро ответим"

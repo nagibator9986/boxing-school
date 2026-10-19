@@ -275,6 +275,8 @@ class AdminConsole:
             if spec.kind == "minutes"
             else "Пришлите номера через запятую или с новой строки."
             if spec.kind == "phones"
+            else "Пришлите новый текст; варианты — с новой строки."
+            if spec.kind == "text"
             else "Пришлите новое значение в формате 21:00-09:00."
         )
         return f"{spec.title}\nСейчас: {current}\n{spec.hint}\n\n{hint} «отмена» — выйти."
@@ -288,6 +290,15 @@ class AdminConsole:
             return "Не понял, какую настройку меняем. Начните заново: /admin"
 
         spec = next((item for item in SETTING_SPECS if item.key == key), None)
+        if spec is not None and spec.kind == "text":
+            # Свободный текст (автоответы WhatsApp) хранится как прислан: проверка на
+            # «21:00-09:00» не давала сохранить его вовсе.
+            value = text.strip()
+            if not value:
+                return "Пришлите текст. Или «отмена»."
+            self._store.set(key, value)
+            self._sessions[chat_id] = AdminSession()
+            return f"Сохранил: {value}"
         value = text.strip().replace(" ", "").replace("—", "-").replace("–", "-")
 
         if spec is not None and spec.kind == "minutes":

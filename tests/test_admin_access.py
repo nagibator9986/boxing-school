@@ -204,3 +204,32 @@ def test_gaps_section_names_gyms_without_schedule(console) -> None:
     reply = console.handle("c", "4")
     assert "Нет расписания" in reply
     assert "Карабалык" in reply
+
+
+def _setting_number(key: str) -> str:
+    from app.admin.admin_store import SETTING_SPECS
+
+    return str(next(index for index, spec in enumerate(SETTING_SPECS, 1) if spec.key == key))
+
+
+def test_the_bot_is_switched_on_from_telegram(console, store) -> None:
+    """Выключатель бота (19.10.2026) — тот же переключатель и в Telegram-админке."""
+    assert store.get("bot_enabled") == "off", "выпуск гасит бота сам"
+    console.handle("c", "/admin")
+    console.handle("c", "2")
+    reply = console.handle("c", _setting_number("bot_enabled"))
+
+    assert store.get("bot_enabled") == "on"
+    assert "Бот отвечает клиентам: включено" in reply
+
+
+def test_auto_reply_texts_are_free_text(console, store) -> None:
+    """Автоответы WhatsApp проверялись как «21:00-09:00» и не сохранялись вовсе."""
+    console.handle("c", "/admin")
+    console.handle("c", "2")
+    console.handle("c", _setting_number("auto_greeting_texts"))
+
+    reply = console.handle("c", "ЖМИ ОТПРАВИТЬ\nМы скоро ответим")
+
+    assert "Сохранил" in reply
+    assert store.get("auto_greeting_texts") == "ЖМИ ОТПРАВИТЬ\nМы скоро ответим"

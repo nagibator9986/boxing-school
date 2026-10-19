@@ -127,6 +127,9 @@ def _as_bool(value: str, fallback: bool) -> bool:
 class RuntimeSettings:
     """Снимок настроек владельца на момент чтения."""
 
+    #: Выключатель бота целиком. В базе настроек по умолчанию выключен (см.
+    #: ``SETTING_SPECS``); здесь ``True`` — для настроек, собранных без него.
+    bot_enabled: bool = True
     followup_enabled: bool = True
     quiet_start: int = 21
     quiet_end: int = 9
@@ -163,6 +166,7 @@ class RuntimeSettings:
         work_start = f"{int(work_match.group(1)):02d}:{work_match.group(2)}" if work_match else "10:00"
         work_end = f"{int(work_match.group(3)):02d}:{work_match.group(4)}" if work_match else "20:00"
         return cls(
+            bot_enabled=_as_bool(values.get("bot_enabled", ""), True),
             followup_enabled=_as_bool(values.get("followup_enabled", ""), True),
             operator_pause_minutes=_as_minutes(values.get("operator_pause_minutes", ""), 0),
             quiet_start=quiet[0],
@@ -186,7 +190,9 @@ class RuntimeSettings:
         менять конфигурацию под ногами у соседних вызовов.
         """
         update: dict[str, object] = {
-            "followup_enabled": self.followup_enabled,
+            # Выключенный бот не пишет и первым: напоминание от молчащего бота читалось
+            # бы как его ответ.
+            "followup_enabled": self.followup_enabled and self.bot_enabled,
             "followup_quiet_hours_start": self.quiet_start,
             "followup_quiet_hours_end": self.quiet_end,
             "pause_operator_minutes": self.operator_pause_minutes,

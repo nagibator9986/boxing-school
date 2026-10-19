@@ -59,9 +59,12 @@ def index() -> Any:
                         )
                         continue
                     value = str(minutes)
-                elif spec.kind == "phones":
+                elif spec.kind in ("phones", "text"):
                     # Номера сохраняются как их ввёл владелец: пробелы, скобки и
                     # плюсы ему привычнее, а сравнение всё равно идёт по цифрам.
+                    # Свободный текст (автоответы WhatsApp) — тоже как есть: раньше он
+                    # проверялся как время «21:00-09:00», и любое сохранение страницы
+                    # заканчивалось ошибкой.
                     value = text(request.form, spec.key).strip()
                 else:
                     value = text(request.form, spec.key).replace(" ", "").replace("—", "-")
