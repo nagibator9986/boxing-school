@@ -32,6 +32,8 @@ __all__ = [
     "client_named_time",
     "client_day_parts",
     "client_times",
+    "day_part_of",
+    "latest_day_part",
     "COMBINED_DISCIPLINE",
     "same_classes",
     "fold_name",
@@ -166,6 +168,33 @@ def client_day_parts(texts) -> frozenset[str]:
     return frozenset(found)
 
 
+def day_part_of(time_text: str | None) -> str | None:
+    """Часть дня, в которую начинается занятие: «19:00» → ``evening``."""
+    value = normalize_time(time_text)
+    if value is None:
+        return None
+    hour = int(value.split(":")[0])
+    return next((part for part, hours in _DAY_PART_HOURS.items() if hour in hours), None)
+
+
+def latest_day_part(texts) -> str | None:
+    """Часть дня из последней реплики, где клиент её назвал. ``None`` — не назвал или назвал две.
+
+    Последняя, а не все сразу: записались «вечером», а потом «А можно в субботу утром?» —
+    выбор теперь утро. По всем репликам вышло бы «утро и вечер», то есть никакого выбора,
+    и перенос молча взял бы прежние 19:00.
+    """
+    for raw in reversed(list(texts)):
+        parts = client_day_parts((raw,))
+        if parts:
+            return next(iter(parts)) if len(parts) == 1 else None
+        if _client_times([raw]):
+            # «Где у вас утренний кикбоксинг?», а потом «среда, 17.00» — назван час, и
+            # «утро» из прежней реплики выбором уже не считается (живой прогон 19.10.2026).
+            return None
+    return None
+
+
 def time_by_day_part(gym: Gym, texts, *, discipline: str | None = None, day: str | None = None) -> str | None:
     """Время занятия по части дня из слов клиента — если в эту часть оно у зала одно.
 
@@ -173,10 +202,10 @@ def time_by_day_part(gym: Gym, texts, *, discipline: str | None = None, day: str
     19:00, — и бот всё равно спросил «Какое время вам удобнее? 1. 09:00 2. 19:00».
     Две части дня сразу («утром или вечером») — не выбор: решает вопрос с вариантами.
     """
-    parts = client_day_parts(texts)
-    if len(parts) != 1:
+    part = latest_day_part(texts)
+    if part is None:
         return None
-    hours = _DAY_PART_HOURS[next(iter(parts))]
+    hours = _DAY_PART_HOURS[part]
     wanted = _weekday(day)
     starts = {
         slot.time_start
@@ -480,6 +509,9 @@ def resolve_trial_session(
         # родителю нечего, и вопрос «во сколько удобно?» только тянет запись.
         wanted = _weekday(day)
         starts = {slot.time_start for slot in slots if wanted is None or wanted in slot.days}
+        if wanted is not None and not starts:
+            # «В понедельник», а занятий в понедельник нет — это не «уточните время».
+            return SessionChoice(problem="unknown_day", options=tuple(slots))
         if len(starts) != 1:
             return SessionChoice(problem="need_time", options=tuple(slots))
         time = next(iter(starts))

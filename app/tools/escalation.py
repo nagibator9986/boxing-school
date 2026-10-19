@@ -117,12 +117,22 @@ _QUESTION_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: Просьба, а не рассказ: «Отмените запись», «Перезвоните», «хочу перевестись», «нужна
+#: справка», «прошу вернуть». Её ведёт человек, если данных нет.
+_REQUEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])[а-яё]{2,}(?:ите|йте)(?![а-яё])"
+    r"|(?<![а-яё])(?:хочу|хотим|хотела?|хотели|надо|нужн[оаы]?|нужен|прошу|просим|можно|можете)(?![а-яё])"
+    r"|(?<![а-яәөүұқғңһі])(?:керек|өтінемін)(?![а-яәөүұқғңһі])",
+    re.IGNORECASE,
+)
+
+
 def _just_telling(ctx: ToolContext) -> bool:
-    """Клиент рассказывает о себе, а не спрашивает: «Он ходил в том году», «Вчера был у вас»."""
+    """Клиент рассказывает о себе, а не спрашивает и не просит: «Он ходил в том году»."""
     if not ctx.client_texts:
         return False
     own = split_agreement(ctx.client_texts[-1])[0].strip()
-    return bool(own) and "?" not in own and not _QUESTION_RE.search(own)
+    return bool(own) and "?" not in own and not _QUESTION_RE.search(own) and not _REQUEST_RE.search(own)
 
 
 def _reply_key(reason: str) -> str:

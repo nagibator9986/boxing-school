@@ -105,6 +105,11 @@ def _is_request(sentence: str) -> bool:
     return bool(_REQUEST_RU_RE.search(text) or _REQUEST_KK_RE.search(text))
 
 
+def is_request(sentence: str) -> bool:
+    """Просьба вместо вопроса: «Подскажите фамилию и имя ребёнка.» ждёт ответа так же, как «?»."""
+    return _is_request(sentence)
+
+
 def ask_full_name(reply: str, *, kb: KBSnapshot, lang: Language) -> str:
     """Вопрос «Как зовут ребёнка?» заменяется вопросом базы о фамилии и имени.
 

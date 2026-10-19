@@ -70,6 +70,7 @@ ALMATY = ZoneInfo("Asia/Almaty")
 KSK = "ksk_kairbekova_334"
 PLAZA = "plaza_szm_70"
 TOBYL = "region_tobyl"
+CENTER = "center_kasymkhanova_10"
 #: Четверг 15.10.2026, 10:18 по Алматы — как в диалоге с переносом.
 THURSDAY = datetime(2026, 10, 15, 10, 18, tzinfo=ALMATY)
 ACCOUNTANT = "+7 700 000 00 99"
@@ -788,8 +789,13 @@ def test_district_gym_only_for_a_district_of_one_gym(kb, text, gym) -> None:
     ("Вчера был у вас", False),
     ("Нужна ли справка для школы?", True),
     ("Справка нужна?", True),
+    ("Летом тоже?", True),   # вопрос только по знаку
     ("Есть ли летние сборы", True),
     ("Жазғы лагерь бар ма", True),
+    # Просьба — не рассказ: без данных её ведёт человек (перепроверка 19.10.2026).
+    ("Отмените запись", True),
+    ("Хочу перевести сына в другую группу", True),
+    ("Нужна справка для школы", True),
 ])
 async def test_no_data_handover_needs_a_question(make_ctx, said, escalated) -> None:
     """«Он ходил в том году» — рассказ, а не вопрос: администратор тут ни к чему."""
@@ -823,3 +829,328 @@ async def test_the_overview_does_not_need_the_media_record(tmp_path, state, sess
 
     assert [d.reason for d in decisions] == ["schedule_overview"], _client_text(decisions)
     assert "2. КСК — школа №9" in _client_text(decisions)
+
+
+# --------------------------------------------------------------------------- #
+# Перепроверка 19.10.2026: что нашлось в собственных правках
+# --------------------------------------------------------------------------- #
+async def test_a_new_day_part_wins_over_the_booked_hour(make_ctx) -> None:
+    """Записались «вечером», потом «А можно в субботу утром?» — суббота 09:00, а не 19:00."""
+    ctx = _ctx(
+        make_ctx, "Мы на Северо-Западе", "Иванова Айша, 7 лет, на вечернее время", "А можно в субботу утром?",
+        saved_lead=_booked_plaza(datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY)),
+    )
+
+    result = await create_trial_lead(
+        ctx, child_name="Иванова Айша", child_age=7, gym_id=PLAZA, parent_agreed=True, session_day="sat",
+    )
+
+    assert result.data["booked"] is True, result.data
+    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 17, 9, 0, tzinfo=ALMATY)
+
+
+async def test_a_day_part_the_day_lacks_is_asked_not_swapped(make_ctx) -> None:
+    """«В субботу утром», а в центре суббота только в 18:00 — вопрос, а не молчаливая запись на вечер."""
+    ctx = _ctx(make_ctx, "Мы в центре живём", "Сидоров Тимур, 9 лет", "В субботу утром можно?")
+
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=CENTER, parent_agreed=True, session_day="sat",
+    )
+
+    assert result.data["booked"] is False, result.data
+    assert result.data["needs"][0] == "unknown_time", result.data
+    assert not ctx.services.leads or ctx.services.leads[-1].trial_slot is None
+
+    # Без части дня суббота в центре одна — запись сразу, как раньше.
+    ctx = _ctx(make_ctx, "Мы в центре живём", "Сидоров Тимур, 9 лет", "В субботу можно?")
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=CENTER, parent_agreed=True, session_day="sat",
+    )
+    assert result.data["booked"] is True, result.data
+
+    # Время названо словами клиента — его выбор, и «утром не можем» рядом его не отменяет.
+    ctx = _ctx(make_ctx, "Мы в центре живём", "Сидоров Тимур, 9 лет", "В субботу в 18:00, утром не можем")
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=CENTER, parent_agreed=True,
+        session_day="sat", session_time="18:00",
+    )
+    assert result.data["booked"] is True, result.data
+
+
+def test_the_latest_day_part_is_the_choice() -> None:
+    from app.kb.sessions import latest_day_part
+
+    assert latest_day_part(("вечером удобнее", "А можно в субботу утром?")) == "morning"
+    assert latest_day_part(("вечером удобнее", "Иванова Айша")) == "evening"
+    assert latest_day_part(("утром или вечером?",)) is None
+    assert latest_day_part(("Добрый вечер",)) is None
+
+
+async def test_a_day_at_the_shown_gym_asks_the_time_not_the_gym(make_ctx) -> None:
+    """«В среду приедем» по расписанию КСК, а в среду кикбоксинг трижды — вопрос о времени."""
+    ctx = _ctx(make_ctx, "Хотим на кикбоксинг, сыну 9 лет", "в среду приедем", "Сидоров Тимур", gym_in_view=KSK)
+
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=KSK, parent_agreed=True,
+        session_day="wed", discipline="kickboxing",
+    )
+
+    assert result.data["needs"][0] == "need_time", result.data
+    assert "need_gym" not in result.data["needs"]
+    assert {option["time_start"] for option in result.data["options"]} == {"09:00", "17:00", "19:00"}
+
+
+async def test_a_pick_the_shown_gym_does_not_have_asks_the_gym(make_ctx) -> None:
+    """По Плазе «в понедельник» — у Плазы понедельника нет: клиент смотрит не туда, список залов."""
+    ctx = _ctx(make_ctx, "Сыну 9 лет", "в понедельник приедем", "Сидоров Тимур", gym_in_view=PLAZA)
+
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=PLAZA, parent_agreed=True, session_day="mon",
+    )
+
+    assert result.data["needs"][0] == "need_gym", result.data
+
+
+async def test_a_second_child_is_a_new_booking_not_a_move(make_ctx) -> None:
+    ctx = _ctx(
+        make_ctx, "Мы на Северо-Западе", "И сына запишите: Иванов Тимур, 8 лет, на субботу вечером",
+        saved_lead=_booked_plaza(datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY)),
+    )
+
+    result = await create_trial_lead(
+        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True, session_day="sat",
+    )
+
+    assert result.data["booked"] is True and result.data["moved"] is False, result.data
+    assert ctx.services.outbound[-1].text.startswith("✅ Мы записали вас"), ctx.services.outbound[-1].text
+
+
+def test_the_same_child_is_found_by_a_fuller_or_shorter_name() -> None:
+    """Записали «Айша», при переносе модель передала «Иванова Айша» — это она же, а не брат."""
+    from app.tools.booking import _same_child
+
+    booked = _booked_plaza(datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY))
+    assert _same_child(replace(booked, child_name="Айша"), LeadDraft(child_name="Иванова Айша"))
+    assert _same_child(booked, LeadDraft(child_name="Айша"))
+    assert not _same_child(booked, LeadDraft(child_name="Иванов Тимур"))
+    assert not _same_child(booked, LeadDraft())
+
+
+async def test_stop_words_beat_the_schedule_card(kb, state, sessionmaker, settings) -> None:
+    """«Стоп, не пишите больше. Во сколько работаете?» — прощание и тишина, не расписание."""
+    deps = _deps(kb, state, sessionmaker, settings)
+
+    decisions = await _say(deps, "77015551519", 1, "Стоп, не пишите мне больше. Во сколько вы работаете?")
+
+    assert decisions[0].reason != "schedule_overview", decisions[0].reason
+    async with sessionmaker() as db:
+        conv = await repo_conversation.get_by_id(db, decisions[0].conversation_id)
+        assert conv.followup_blocked, "стоп-слово выключает напоминания"
+
+
+async def test_a_manager_request_beats_the_invoice(kb, state, sessionmaker, settings) -> None:
+    owner = RuntimeSettings.from_values({"accountant_contact": ACCOUNTANT})
+    deps = _deps(kb, state, sessionmaker, settings, runtime=lambda: owner)
+
+    decisions = await _say(deps, "77015551520", 1, "Позовите менеджера, выставите счёт")
+
+    assert decisions[0].reason != "invoice_to_accountant"
+    assert decisions[0].action is DecisionAction.ESCALATE
+
+
+@pytest.mark.parametrize(("contact", "chat_type"), [
+    (ACCOUNTANT, "instagram"),                     # номера клиента нет — счёт не на что выставить
+    ("77000000077-1600000000@g.us", "whatsapp"),   # только групповой чат — номер клиенту не дать
+])
+async def test_invoice_falls_back_to_the_admin(kb, state, sessionmaker, settings, contact, chat_type) -> None:
+    owner = RuntimeSettings.from_values({"accountant_contact": contact})
+    deps = _deps(
+        kb, state, sessionmaker, settings.model_copy(update={"wazzup_channel_id_whatsapp": CHANNEL_ID}),
+        runtime=lambda: owner,
+    )
+
+    decisions = await process_inbound(deps, webhook_payload(
+        "inv-3", "Выставите счёт за абонемент", chat_id="77015551521", chat_type=chat_type,
+    ))
+
+    assert decisions[0].action is DecisionAction.ESCALATE, decisions[0].reason
+    text = _client_text(decisions)
+    assert "@g.us" not in text and "бухгалтер" not in text, text
+
+
+async def test_invoice_without_a_delivery_channel_goes_to_the_admin(kb, state, sessionmaker, settings) -> None:
+    """Карточку бухгалтеру некуда отправить — клиенту нельзя говорить «передал»."""
+    owner = RuntimeSettings.from_values({"accountant_contact": ACCOUNTANT})
+    deps = _deps(kb, state, sessionmaker, settings, runtime=lambda: owner)
+
+    decisions = await process_inbound(deps, webhook_payload("inv-4", "Скиньте счёт", chat_id="77015551522"))
+
+    assert decisions[0].action is DecisionAction.ESCALATE, decisions[0].reason
+
+
+async def test_schedules_are_not_sent_for_a_named_town(kb, state, sessionmaker, settings) -> None:
+    """«Цены и во сколько в Тобыле?» и «уточнит администратор» — городское расписание не ответ."""
+    deps = _deps(kb, state, sessionmaker, settings)
+
+    decisions = await _say(
+        deps, "77015551523", 1, "Сколько стоит и во сколько работаете в Тобыле?",
+        FakeTurn.answer("Здесь лучше ответит администратор, чтобы не сказать вам неточность."),
+    )
+
+    assert "Наши залы в Костанае" not in _client_text(decisions)
+
+
+def test_the_district_hint_reads_only_the_clients_words(kb) -> None:
+    text = with_agreement("Да", "Вы живёте в районе Береке? Записать ребёнка?", kb.lexicon.agreement)
+
+    assert not any("ближайший" in item for item in pipeline._just_said(text, kb=kb, now=THURSDAY))
+
+
+def test_unreadable_owner_settings_keep_the_bot_silent(kb, state, sessionmaker, settings) -> None:
+    def broken():
+        raise OSError("admin.db повреждена")
+
+    assert pipeline._bot_enabled(_deps(kb, state, sessionmaker, settings, runtime=broken)) is False
+    assert pipeline._bot_enabled(_deps(kb, state, sessionmaker, settings)) is True, "без настроек — как раньше"
+
+
+async def test_unreadable_owner_settings_hold_the_reminders(kb, state, sessionmaker, settings) -> None:
+    from app.workers import tasks_followup
+
+    def broken():
+        raise OSError("admin.db повреждена")
+
+    conv_id = await _booked_conv(sessionmaker, "77015551524", datetime.now(tz=ALMATY) + timedelta(hours=2))
+    async with sessionmaker() as db:
+        task = FollowupTask(
+            conversation_id=conv_id, kind=FollowupKind.TRIAL_REMINDER_2H.value,
+            run_at=datetime.now(tz=UTC), state="pending", attempt=0,
+        )
+        db.add(task)
+        await db.commit()
+        task_id = task.id
+
+    deps = _deps(kb, state, sessionmaker, settings, runtime=broken)
+    await tasks_followup.send_followup_job({"deps": deps, "correlation_id": "t"}, str(task_id))
+
+    async with sessionmaker() as db:
+        assert (await db.get(FollowupTask, task_id)).state == "pending", "ждёт, пока настройки прочитаются"
+
+
+def test_coach_rule_keeps_times_and_places(kb) -> None:
+    assert strip_invented_coaches("Ждём вас в 19.30 в зале. Тренер Марат Сапаров будет ждать.", kb) == (
+        "Ждём вас в 19.30 в зале.", ("Марат Сапаров",),
+    )
+    # «19.30» — не конец фразы: снимается фраза целиком, без огрызка «Ждём вас в 19.».
+    assert strip_invented_coaches("Ждём вас в 19.30, тренер Марат будет ждать. До встречи!", kb) == (
+        "До встречи!", ("Марат",),
+    )
+    assert strip_invented_coaches("Тренер Тобыла ждёт вас.", kb) == ("Тренер Тобыла ждёт вас.", ())
+
+
+def test_a_wrong_upper_age_is_caught(kb) -> None:
+    from app.core.postcheck import _wrong_age_limit
+
+    assert _wrong_age_limit("Принимаем детей с 5 до 14 лет.", kb)
+    assert not _wrong_age_limit("Принимаем детей с 5 до 17 лет.", kb)
+    # «до» перед нижней границей — час или число человек, а не возраст.
+    assert not _wrong_age_limit("Занимаемся до 20:00, берём с 5 лет.", kb)
+    assert not _wrong_age_limit("Занимаемся в группах до 12 человек с 5 лет.", kb)
+
+
+def test_a_day_without_classes_is_unknown_not_a_time_question(kb) -> None:
+    from app.kb.sessions import resolve_trial_session
+
+    choice = resolve_trial_session(
+        kb.gym(PLAZA), time_text=None, day="mon", discipline=None, now=THURSDAY.astimezone(UTC),
+        tz_name="Asia/Almaty", min_lead_hours=2,
+    )
+
+    assert choice.session is None and choice.problem == "unknown_day"
+
+
+
+async def test_another_day_part_is_not_the_booked_hour(make_ctx) -> None:
+    """Записан на утро, «А можно в среду вечером?», а вечером в КСК 17:00 и 19:00 — вопрос."""
+    saved = SavedLead(
+        lead_id=uuid4(), status=LeadStatus.TRIAL_BOOKED.value, gym_id=KSK,
+        trial_slot=datetime(2026, 10, 19, 9, 0, tzinfo=ALMATY).astimezone(UTC),
+        child_name="Сидоров Тимур", child_age=9,
+    )
+    ctx = _ctx(make_ctx, "Кикбоксинг, КСК, Сидоров Тимур, 9 лет", "А можно в среду вечером?", saved_lead=saved)
+
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=9, gym_id=KSK, parent_agreed=True,
+        session_day="wed", discipline="kickboxing",
+    )
+
+    assert result.data["booked"] is False and result.data["needs"][0] == "need_time", result.data
+    assert not ctx.services.leads, "утренний час в вечер не переносится"
+
+
+async def test_off_topic_messages_stay_with_the_model(kb, state, sessionmaker, settings) -> None:
+    deps = _deps(kb, state, sessionmaker, settings)
+
+    decisions = await _say(
+        deps, "77015551525", 1, "Расскажи анекдот, во сколько вы работаете?", FakeTurn.answer("Подскажу расписание."),
+    )
+
+    assert decisions[0].reason != "schedule_overview"
+
+
+
+async def test_an_invented_name_costs_one_sentence_not_the_reply(kb, state, sessionmaker, settings) -> None:
+    """Живой прогон 19.10.2026: «Записать <выдуманное имя>…?» снимало весь ответ — и клиент
+    получал расписания всех залов подряд и «администратор подключается»."""
+    deps = _deps(kb, state, sessionmaker, settings)
+
+    decisions = await _say(
+        deps, "77015551526", 1, "Здравствуйте, какое расписание в 6 микрорайоне? Сыну 8 лет",
+        FakeTurn.tool(FakeCall("get_schedule", {"gym_id": "mkr6_arystanbekova_6", "child_age": 8})),
+        FakeTurn.answer("Занятия по вторникам, четвергам и субботам. Записать Айсултана на пробное?"),
+    )
+
+    text = _client_text(decisions)
+    assert decisions[0].action is DecisionAction.REPLY, decisions[0].reason
+    assert "Айсултан" not in text and "Наши залы" not in text, text
+    assert "Расписание — 6-й микрорайон" in text and "Костанай Плаза" not in text, text
+
+
+def test_a_request_is_not_a_lead_in() -> None:
+    assert pipeline._lead_in("Хорошо. Подскажите, пожалуйста, фамилию и имя ребёнка.") == "Хорошо."
+
+
+
+def test_a_later_time_cancels_an_older_day_part() -> None:
+    """«Где у вас утренний кикбоксинг?», потом «среда, 17.00» — утро больше не выбор."""
+    from app.kb.sessions import latest_day_part
+
+    assert latest_day_part(("Где у вас утренний кикбоксинг?", "среда. Кикбоксингу 17.00 приедим", "Сидоров Тимур")) is None
+
+
+async def test_the_clients_own_day_is_not_an_invention(kb, state, sessionmaker, settings) -> None:
+    """«В среду на Плазе занятий нет» — день назвал клиент, ответ не снимается."""
+    deps = _deps(kb, state, sessionmaker, settings)
+    chat = "77015551527"
+    await _say(deps, chat, 1, "Мы на Северо-Западе, сыну 9 лет", FakeTurn.answer("Записать на пробное?"))
+
+    decisions = await _say(
+        deps, chat, 2, "Да, в среду можно?",
+        FakeTurn.tool(FakeCall("create_trial_lead", {
+            "child_name": "Сидоров Тимур", "child_age": 9, "gym_id": PLAZA, "parent_agreed": True, "session_day": "wed",
+        })),
+        FakeTurn.answer("В среду на Плазе занятий нет."),
+    )
+
+    assert decisions[0].postcheck_fail is None, decisions[0].reason
+    assert "В среду на Плазе занятий нет." in _client_text(decisions)
+
+
+
+def test_a_colon_inside_a_lead_in_keeps_the_sentence() -> None:
+    """«Да, на КЖБИ есть наш зал: Гашека 9/3.» — без начала ответ читался как «Гашека 9/3»."""
+    assert pipeline._lead_in(
+        "Да, на КЖБИ есть наш зал: Гашека 9/3. Занятия начнутся 01.11.2026. В каком из залов вам удобнее?"
+    ) == "Да, на КЖБИ есть наш зал: Гашека 9/3. Занятия начнутся 01.11.2026."
+    assert pipeline._lead_in("Варианты на эту неделю:\n1. 17:00\n2. 19:00") == ""
+    assert pipeline._lead_in("В 17:30 занятий нет. Какое время выбрать?") == "В 17:30 занятий нет."

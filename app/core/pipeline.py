@@ -98,6 +98,7 @@ from app.types import (
     TRIAL_CONFIRMATION_ARTIFACT,
     Author,
     BotError,
+    ChannelKind,
     ConversationState,
     DecisionAction,
     EscalationReason,
@@ -124,6 +125,7 @@ from app.types import (
     ToolResult,
     ToolServices,
     WebhookValidationError,
+    is_group_chat,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - только аннотации, рантайм-зависимости нет
@@ -1009,19 +1011,6 @@ async def _run_turn(
                 await _flush_queue(deps, services)
                 return decision
 
-        # --- 6b-счёт. Просьба выставить счёт — бухгалтеру ------------------------ #
-        # Владелец 15.10.2026: «бот не понимает, когда человек ходил и просит счёт на
-        # оплату. Пускай переадресовывает на бухгалтера — бухгалтер выставит счёт».
-        if chosen is None:
-            decision = await _answer_invoice(
-                deps, db, services, conv, inbound,
-                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
-            )
-            if decision is not None:
-                await db.commit()
-                await _flush_queue(deps, services)
-                return decision
-
         # --- 6b'. Час вместо номера: «9» на бокс и кикбоксинг в 09:00 -------- #
         if chosen is None:
             decision = await _answer_hour_with_sections(
@@ -1038,20 +1027,6 @@ async def _run_turn(
         # клиент написал наугад — «бот не предложил: напишите свой микрорайон».
         if chosen is None:
             decision = await _answer_age_with_district(
-                deps, db, services, conv, inbound,
-                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
-            )
-            if decision is not None:
-                await db.commit()
-                await _flush_queue(deps, services)
-                return decision
-
-        # --- 6d. «Во сколько вы работаете?», зал не выбран — расписание всех залов -- #
-        # Владелец 15.10.2026: на «Вы с 09:00 до пяти работаете?» бот позвал администратора —
-        # «мог бы просто скинуть наши расписания залов». В трёх живых прогонах модель ни разу
-        # их не прислала, а дважды выдумала «занятия только вечером».
-        if chosen is None:
-            decision = await _answer_schedule_overview(
                 deps, db, services, conv, inbound,
                 kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
             )
@@ -1158,6 +1133,25 @@ async def _run_turn(
             await db.commit()
             await _flush_queue(deps, services)
             return decision
+
+        # --- 7b. Ответы кодом: счёт бухгалтеру, расписание всех залов ---------- #
+        # Владелец 15.10.2026: «бот не понимает, когда человек ходил и просит счёт на
+        # оплату — пускай переадресовывает на бухгалтера»; на «Вы с 09:00 до пяти
+        # работаете?» бот позвал администратора — «мог бы просто скинуть наши расписания
+        # залов». Только после охраны и только на чистое сообщение: «стоп», жалоба, просьба
+        # позвать человека и ребёнок за клавиатурой важнее (перепроверка 19.10.2026: стоя
+        # раньше охраны, «Стоп, не пишите. Во сколько работаете?» получало расписание и
+        # напоминания).
+        if chosen is None and not verdict.flags:
+            for answer in (_answer_invoice, _answer_schedule_overview):
+                decision = await answer(
+                    deps, db, services, conv, inbound,
+                    kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
+                )
+                if decision is not None:
+                    await db.commit()
+                    await _flush_queue(deps, services)
+                    return decision
 
         # --- 8. LLM + tool-loop -------------------------------------------- #
         history = await conv_session.load_history(db, conv, max_turns=settings.llm_history_turns)
@@ -1365,6 +1359,10 @@ async def _run_turn(
         cleaned, invented_coaches = postcheck.strip_invented_coaches(cleaned, kb)
         if invented_coaches:
             _log.warning("invented_coach_stripped", names=list(invented_coaches))
+        known_names = _known_names(text, inbound=inbound, draft=draft, history=stored)
+        cleaned, invented_names = postcheck.strip_invented_names(cleaned, known_names, invocations)
+        if invented_names:
+            _log.warning("invented_name_stripped", names=list(invented_names))
         strict = injection or verdict.has(GuardFlag.OFF_TOPIC)
         sent_before = await _texts_already_sent(db, conv)
         pc = postcheck.check(
@@ -1375,7 +1373,7 @@ async def _run_turn(
             prompt_ngrams=ngrams,
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
-            known_names=_known_names(text, inbound=inbound, draft=draft, history=stored),
+            known_names=known_names,
             known_numbers=_numbers_in(sent_before),
             known_times=_times_in(sent_before),
             known_weekdays=_weekdays_in(sent_before),
@@ -2399,28 +2397,22 @@ async def _answer_invoice(
         return None
     runtime = _owner_runtime(deps)
     targets = notify_targets(runtime.accountant_contact) if runtime is not None else ()
-    if not targets:
-        return await _escalate_turn(
-            deps, db, services, conv, inbound,
-            kb=kb, lang=lang, text=text, key=TEXT_INVOICE_ADMIN,
-            reason=EscalationReason.USER_REQUEST, pause_reason=PauseReason.ESCALATION,
-            correlation_id=correlation_id, now=now,
-        )
-    reply = _kb_text(kb, TEXT_INVOICE, lang, phone=format_phone(targets[0]) or targets[0])
-    if not reply:
-        return None
-    parts = await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
-
+    # Клиенту — только телефон бухгалтера: идентификатор группового чата ему ни к чему.
+    accountant = next((target for target in targets if not is_group_chat(target)), None)
+    # Счёт выставляют на номер клиента. Из Instagram номера нет — бухгалтеру не на что
+    # выставлять, и «я передал ваш номер» было бы неправдой.
+    client_phone = (
+        conv.phone_e164 or inbound.phone_e164 or inbound.contact_phone
+        or (inbound.chat_id if inbound.channel is ChannelKind.WHATSAPP else None)
+    )
     saved = await _saved_lead(db, conv)
-    child = (saved.child_name if saved is not None else None) or "—"
     card_text = render_card_text(
         kb,
         "lead_card.invoice",
         {
-            "phone": format_phone(conv.phone_e164 or inbound.phone_e164 or inbound.contact_phone or inbound.chat_id)
-            or "—",
+            "phone": format_phone(client_phone) or "—",
             "question": " ".join(text.split())[:300],
-            "child": child,
+            "child": (saved.child_name if saved is not None else None) or "—",
             "channel": channel_title(inbound.channel.value),
             "dt": format_local_dt(now),
             "dialog": deps.settings.crm_dialog_url(conv.id) or "—",
@@ -2433,12 +2425,28 @@ async def _answer_invoice(
         conversation_id=conv.id,
         lang=lang,
     )
-    services.cards.append(card)
     owner = _owner_settings(deps)
-    for target in targets:
-        message = build_manager_message(card, settings=owner, to=target)
-        if message is not None:
-            await services._enqueue(message, to_client=False)
+    messages = [
+        message
+        for message in (build_manager_message(card, settings=owner, to=target) for target in targets)
+        if message is not None
+    ]
+    if accountant is None or not client_phone or not messages:
+        # Бухгалтера нет в настройках, номера клиента нет или карточку некуда отправить —
+        # счёт выставит администратор: обещать «передал бухгалтеру» нельзя.
+        return await _escalate_turn(
+            deps, db, services, conv, inbound,
+            kb=kb, lang=lang, text=text, key=TEXT_INVOICE_ADMIN,
+            reason=EscalationReason.USER_REQUEST, pause_reason=PauseReason.ESCALATION,
+            correlation_id=correlation_id, now=now,
+        )
+    reply = _kb_text(kb, TEXT_INVOICE, lang, phone=format_phone(accountant) or accountant)
+    if not reply:
+        return None
+    parts = await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
+    services.cards.append(card)
+    for message in messages:
+        await services._enqueue(message, to_client=False)
     await conv_session.save_turn(
         db, conv, [_client_content(text), {"role": "model", "parts": [{"text": "\n\n".join(parts) or reply}]}]
     )
@@ -3198,7 +3206,8 @@ def _just_said(
     # Место, которое по базе ведёт ровно к одному залу. Живой прогон 19.10.2026: на «Живу
     # Костанай 2 район, гостиница Остров» модель не стала искать по району и сама выбрала
     # центр, а владелец закрепил второй Костанай за Плазой («ближайшая — Плаза Аймед»).
-    gym = kb.gym(district_gym(kb, text) or "")
+    # Только слова клиента: в пометке согласия — вопрос бота, и район из него клиент не называл.
+    gym = kb.gym(district_gym(kb, split_agreement(text)[0]) or "")
     if gym is not None:
         said.append(f"район — ближайший к нему зал «{gym.title.ru}» ({gym.id}), другой зал не подбирай")
     return tuple(said)
@@ -3526,8 +3535,12 @@ async def _owner_answer_for_handover(
         return None
     if any(invocation.name in ("get_kb_fact", "escalate_to_manager") for invocation in invocations):
         return None
-    if IntentHint.SCHEDULE in intents and not gym_in_view and not any(
-        invocation.name in ("get_schedule", "find_sessions") for invocation in invocations
+    if (
+        IntentHint.SCHEDULE in intents
+        and not gym_in_view
+        # «Во сколько работаете в Тобыле?» — расписание городских залов тут не ответ.
+        and not _names_a_place(kb, normalize_text(split_agreement(text)[0]))
+        and not any(invocation.name in ("get_schedule", "find_sessions") for invocation in invocations)
     ):
         # «Вы с 09:00 до пяти работаете?» — и «здесь лучше ответит администратор». Владелец
         # 15.10.2026: «мог бы просто скинуть наши расписания залов».
@@ -3659,6 +3672,9 @@ def _booked_this_turn(invocations: Sequence[ToolInvocation]) -> bool:
 #: Двоеточие и точка между цифрами — часть времени («17:30», «17.00»), не конец фразы.
 _SENTENCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:[^.!?:\n]|(?<=\d)[:.](?=\d))+[.!?:]*")
 
+#: Предложение вводных слов: двоеточие внутри него — не конец («есть наш зал: Гашека 9/3»).
+_LEAD_SENTENCE_RE: Final[re.Pattern[str]] = re.compile(r"(?:[^.!?\n]|(?<=\d)\.(?=\d))+[.!?]*")
+
 #: Сколько вводных предложений модели остаётся перед вопросом с вариантами.
 _LEAD_IN_SENTENCES: Final[int] = 2
 
@@ -3675,11 +3691,19 @@ def _lead_in(reply: str) -> str:
     for line in (reply or "").splitlines():
         if is_option_line(line):
             break
-        for sentence in _SENTENCE_RE.findall(line):
+        if line.rstrip().endswith(":"):
+            # Заголовок списка: «Выберите время:». Двоеточие посреди строки — нет: «Да, на
+            # КЖБИ есть наш зал: Гашека 9/3» терял начало и превращался в «Гашека 9/3»
+            # (живой прогон 19.10.2026).
+            continue
+        for sentence in _LEAD_SENTENCE_RE.findall(line):
             sentence = sentence.strip()
             if (
                 not sentence
-                or sentence.endswith(("?", ":"))
+                or sentence.endswith("?")
+                # «Подскажите фамилию и имя ребёнка.» — тоже вопрос, хоть и с точкой. Рядом с
+                # вопросом кода это второй вопрос в сообщении (живой прогон 19.10.2026).
+                or funnel.is_request(sentence)
                 or _CHOICE_ASK_RE.search(sentence)
                 # «Али записан… Ждём вас!» перед вопросом о времени — ложь: записи
                 # ещё нет, раз код спрашивает время (живой прогон 01.10.2026).
@@ -4085,9 +4109,20 @@ def _silent_numbers(deps: PipelineDeps) -> frozenset[str]:
 
 
 def _bot_enabled(deps: PipelineDeps) -> bool:
-    """Включён ли бот владельцем. Настроек нет или они не читаются — включён, как раньше."""
-    runtime = _owner_runtime(deps)
-    return runtime is None or bool(runtime.bot_enabled)
+    """Включён ли бот владельцем.
+
+    Настроек владельца нет вовсе (тесты, локальный запуск) — включён, как раньше. Они есть,
+    но не читаются — выключен: так стоит выключатель по умолчанию, и бот, которого просили
+    выключить, не должен заговорить из-за сбоя чтения (перепроверка 19.10.2026).
+    """
+    factory = getattr(deps, "runtime", None)
+    if factory is None:
+        return True
+    try:
+        return bool(factory().bot_enabled)
+    except Exception as exc:  # noqa: BLE001 - базу настроек могли повредить руками
+        _log.warning("bot_switch_unreadable", error=type(exc).__name__)
+        return False
 
 
 def _owner_runtime(deps: PipelineDeps) -> "RuntimeSettings | None":

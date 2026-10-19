@@ -607,24 +607,33 @@ class BotData:
         return True
 
     def pause_bot(self, conv_id: str, conv_key: str, *, minutes: int = 60) -> bool:
-        """Ставит бота на паузу вручную: дальше в диалоге отвечает человек."""
+        """Ставит бота на паузу вручную: дальше в диалоге отвечает человек.
+
+        ``minutes`` ≤ 0 — до возврата вручную («Вернуть бота», ``#бот``). Так владелец задаёт
+        паузу после ответа человека (по умолчанию 0), а CRM превращала её в одну минуту:
+        через минуту после ответа из CRM бот снова отвечал поверх человека (найдено при
+        перепроверке 19.10.2026).
+        """
         if not self.exists:
             return False
-        until = datetime.now(tz=_UTC) + timedelta(minutes=max(1, int(minutes)))
-        stamp = until.strftime("%Y-%m-%d %H:%M:%S.%f")
+        forever = int(minutes) <= 0
+        now = datetime.now(tz=_UTC)
+        until = None if forever else now + timedelta(minutes=int(minutes))
+        stamp = until.strftime("%Y-%m-%d %H:%M:%S.%f") if until is not None else None
+        policy = "manual_only" if forever else "timeout"
         try:
             with self._connect(write=True) as conn:
                 changed = conn.execute(
                     "UPDATE escalation_state SET paused = 1, paused_until = ?,"
-                    " pause_reason = 'manual' WHERE conversation_id = ?",
-                    (stamp, conv_id),
+                    " pause_reason = 'manual', resume_policy = ? WHERE conversation_id = ?",
+                    (stamp, policy, conv_id),
                 ).rowcount
                 if not changed:
                     conn.execute(
                         "INSERT INTO escalation_state (conversation_id, paused, paused_until,"
                         " pause_reason, escalation_count, resume_policy)"
-                        " VALUES (?, 1, ?, 'manual', 0, 'manual')",
-                        (conv_id, stamp),
+                        " VALUES (?, 1, ?, 'manual', 0, ?)",
+                        (conv_id, stamp, policy),
                     )
                 # Состояние диалога — вторая половина паузы, и без неё бот
                 # замолкает лишь наполовину: напоминания смотрят именно сюда и
@@ -636,7 +645,9 @@ class BotData:
         except sqlite3.Error as exc:
             _log.error("crm_pause_failed", error=str(exc), conversation_id=conv_id)
             return False
-        self._set_state_key(f"pause:{conv_key}", until)
+        # Ключ быстрого пути живёт сутки и для бессрочной паузы: истечёт — бот прочитает
+        # строку в базе (там пауза без срока) и поставит его заново.
+        self._set_state_key(f"pause:{conv_key}", until or now + timedelta(days=1))
         return True
 
     def close_dialog(self, conv_id: str) -> bool:

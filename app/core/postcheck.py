@@ -84,7 +84,7 @@ from typing import Any, Final, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from app.kb.models import AGE_LIMIT_RE, KBSnapshot, age_value, min_accepted_age
+from app.kb.models import AGE_LIMIT_RE, KBSnapshot, age_value, max_accepted_age, min_accepted_age
 from app.kb.sessions import fold_name
 from app.types import (
     MAX_MESSAGE_CHARS,
@@ -148,9 +148,13 @@ _ADDRESS_INTRO_RE: Final[re.Pattern[str]] = re.compile(
 #: Двух признаков достаточно, чтобы отличить адрес от «Стоимость 3000»:
 #: запятая между названием и числом либо предлог места перед названием.
 _CAPITALIZED: Final[str] = r"[А-ЯЁӘҒҚҢӨҰҮҺІ][\w\-]{2,}"
+#: После номера дома не идёт слово: «15 магазин», «15а» и порядковое «15-й магазин»,
+#: «15-дүкен», «6-шағын аудан» — названия залов из базы, а не адрес (живой прогон
+#: 19.10.2026: «КСК-да, 15-дүкенде» снялось как выдуманный адрес). «Тәуелсіздік, 88 - это
+#: рядом» с отбитым дефисом остаётся адресом.
 _ADDRESS_COMMA_RE: Final[re.Pattern[str]] = re.compile(
     rf"({_CAPITALIZED}(?:\s+{_CAPITALIZED})?\s*,\s*(?<!\d)\d{{1,4}})(?!\d)"
-    r"(?!\s*[а-яёәғқңөұүһі])"
+    r"(?!\s*[а-яёәғқңөұүһі]|-[а-яёәғқңөұүһі])"
 )
 #: Слово, превращающее «Заглавное слово, число» в заявку об адресе. Шаблон с
 #: запятой — единственный без собственного контекста, и без этого условия он
@@ -165,7 +169,7 @@ _ADDRESS_CUE_RE: Final[re.Pattern[str]] = re.compile(
 _ADDRESS_PREP_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(?:[Нн]а|[Вв]|[Пп]о|около|возле|рядом с)\s+"
     rf"({_CAPITALIZED}(?:\s+{_CAPITALIZED})?\s*,?\s*(?<!\d)\d{{1,4}})(?!\d)"
-    r"(?!\s*[а-яёәғқңөұүһі])"
+    r"(?!\s*[а-яёәғқңөұүһі]|-[а-яёәғқңөұүһі])"
 )
 _GYM_NAME_RE: Final[re.Pattern[str]] = re.compile(
     # Заглавная буква в начале предложения: «Филиал в Алматы» шаблон пропускал,
@@ -346,6 +350,30 @@ class _Facts:
 # --------------------------------------------------------------------------- #
 # Публичное
 # --------------------------------------------------------------------------- #
+def strip_invented_names(
+    text: str, known_names: Sequence[str], invocations: Sequence[ToolInvocation]
+) -> tuple[str, tuple[str, ...]]:
+    """Ответ без фраз с именем, которого клиент не называл, и сами эти имена.
+
+    Живой прогон 19.10.2026: на «Какое расписание в 6 микрорайоне? Сыну 8 лет» модель
+    дописала к карточкам «Записать <выдуманное имя> на пробное?». Фильтр снимал весь ответ,
+    и клиент получил расписания всех залов подряд и «администратор подключается». Карточки
+    к тому моменту уже ушли, а вопрос о записи код задаёт сам — снимается только эта фраза.
+    """
+    if not _invented_name(text or "", known_names, invocations):
+        return text, ()
+    found: list[str] = []
+    kept: list[str] = []
+    for sentence in _SENTENCES_RE.findall(text or ""):
+        names = _invented_name(sentence, known_names, invocations)
+        if names:
+            found.extend(names)
+            continue
+        kept.append(sentence)
+    cleaned = re.sub(r"\n{3,}", "\n\n", "".join(kept)).strip()
+    return cleaned, tuple(dict.fromkeys(found))
+
+
 def check(
     text: str,
     *,
@@ -563,6 +591,11 @@ def _time_hits(text: str) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...]]
             continue
         spans.append(match.span())
         if _is_date(match, text, colon_times=colon_times):
+            # Год — часть даты: без него «01.11.2026» разбиралось на деньги «11.202», и
+            # «Зал на КЖБИ откроется 01.11.2026» снималось (перепроверка 19.10.2026).
+            year = _YEAR_AFTER_RE.match(text, match.end())
+            if year is not None:
+                spans[-1] = (match.start(), year.end())
             continue  # «13.10», «01.11.2026» — дата, а не 13:10 и 01:11
         remember(f"{hours:02d}:{minutes:02d}")
 
@@ -974,7 +1007,10 @@ def _unconfirmed_gyms(text: str, facts: _Facts, kb: KBSnapshot) -> tuple[str, ..
             continue
         if key in facts.places or key[:6] in facts.corpus.replace(" ", ""):
             continue
-        if key in known or any(other.startswith(key[:5]) for other in known):
+        # «Зал на Плазе» — падежное окончание: сверяется основа без последней буквы
+        # (найдено при перепроверке 19.10.2026: «Ближайший зал на Плазе» снималось).
+        stem = key[:-1] if len(key) > 4 else key
+        if key in known or any(other.startswith(stem[:5]) for other in known):
             continue
         bad.append(name)
     return tuple(dict.fromkeys(bad))
@@ -1066,7 +1102,8 @@ _COACH_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"(?!(?:Вас|Вам|Ваш\w*|Вами|Вы|Он|Она|Они|Его|Её|Ее|Сіз\w*)(?![а-яё]))"
     r"([А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]{2,}(?:\s+[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]{2,})?)"
 )
-_SENTENCES_RE: Final[re.Pattern[str]] = re.compile(r"[^.!?\n]+[.!?]*\s*|\n")
+#: Фраза ответа. Точка между цифрами — часть времени («19.30»), а не конец фразы.
+_SENTENCES_RE: Final[re.Pattern[str]] = re.compile(r"(?:[^.!?\n]|(?<=\d)\.(?=\d))+[.!?]*\s*|\n")
 
 
 def strip_invented_coaches(text: str, kb: KBSnapshot) -> tuple[str, tuple[str, ...]]:
@@ -1083,6 +1120,13 @@ def strip_invented_coaches(text: str, kb: KBSnapshot) -> tuple[str, tuple[str, .
         for coach in gym.coaches
         for word in re.findall(r"[^\W\d_]{3,}", coach.name or "")
     }
+    # «Тренер Тобыла», «тренера Плазы» — зал или посёлок, а не человек.
+    places = {
+        fold_name(word)[:4]
+        for gym in kb.gyms.gyms
+        for value in (gym.title.ru, gym.title.kk, gym.settlement, *gym.district_aliases)
+        for word in re.findall(r"[^\W\d_]{3,}", value or "")
+    }
     invented: list[str] = []
     kept: list[str] = []
     for sentence in _SENTENCES_RE.findall(text or ""):
@@ -1090,6 +1134,7 @@ def strip_invented_coaches(text: str, kb: KBSnapshot) -> tuple[str, tuple[str, .
             match.group(1)
             for match in _COACH_NAME_RE.finditer(sentence)
             if not all(fold_name(word)[:4] in known for word in match.group(1).split())
+            and not all(fold_name(word)[:4] in places for word in match.group(1).split())
         ]
         if names:
             invented.extend(names)
@@ -1116,12 +1161,22 @@ def _wrong_age_limit(text: str, kb: KBSnapshot) -> tuple[str, ...]:
     confirmed = min_accepted_age(kb)
     if confirmed is None:
         return ()
-    bad = [
-        match.group(0)
-        for match in AGE_LIMIT_RE.finditer(text)
-        if age_value(match.group(1)) not in (None, confirmed)
-    ]
+    upper = max_accepted_age(kb)
+    bad: list[str] = []
+    for match in AGE_LIMIT_RE.finditer(text):
+        if age_value(match.group(1)) not in (None, confirmed):
+            bad.append(match.group(0))
+            continue
+        # «с 5 до 14 лет» — верхняя граница тоже должна быть та, что назвал владелец. Сразу
+        # за нижней: «Занимаемся до 20:00, берём с 5 лет» — это час, а не возраст.
+        said_upper = _AGE_UPPER_IN_LIMIT_RE.match(text, match.end(1))
+        if upper is not None and said_upper is not None and int(said_upper.group(1)) != upper:
+            bad.append(match.group(0))
     return tuple(dict.fromkeys(bad))
+
+
+#: Верхняя граница сразу за нижней в найденной границе приёма: «с 5 до 17 лет».
+_AGE_UPPER_IN_LIMIT_RE: Final[re.Pattern[str]] = re.compile(r"\s*до\s+(\d{1,2})", re.IGNORECASE)
 
 
 def _has_morning_slots(kb: KBSnapshot) -> bool:

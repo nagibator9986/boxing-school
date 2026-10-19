@@ -1011,3 +1011,29 @@ def test_auto_reply_texts_are_saved_as_text(client: Any, sandbox: CrmConfig) -> 
 
     assert "нужен формат" not in response
     assert AdminStore(sandbox.admin_db).get("auto_greeting_texts") == "ЖМИ ОТПРАВИТЬ\nМы скоро ответим"
+
+
+def test_operator_reply_pause_zero_means_until_resumed(sandbox: CrmConfig) -> None:
+    """Пауза после ответа человека «0» — до «Вернуть бота», а не минута (перепроверка 19.10.2026)."""
+    import sqlite3
+
+    from crm.botdb import BotData
+    from crm.views.clients import _operator_pause_minutes
+
+    app = create_app(sandbox)
+    with app.app_context():
+        assert _operator_pause_minutes() == 0, "владелец по умолчанию просит молчать до возврата"
+
+    assert BotData(sandbox.bot_db).pause_bot("c1", "wa:c1", minutes=0)
+    with sqlite3.connect(sandbox.bot_db) as conn:
+        row = conn.execute(
+            "SELECT paused, paused_until, resume_policy FROM escalation_state WHERE conversation_id='c1'"
+        ).fetchone()
+    assert row == (1, None, "manual_only"), row
+
+    assert BotData(sandbox.bot_db).pause_bot("c1", "wa:c1", minutes=30)
+    with sqlite3.connect(sandbox.bot_db) as conn:
+        row = conn.execute(
+            "SELECT paused_until IS NOT NULL, resume_policy FROM escalation_state WHERE conversation_id='c1'"
+        ).fetchone()
+    assert row == (1, "timeout"), "пауза на срок снова снимается сама"

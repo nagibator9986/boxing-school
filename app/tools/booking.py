@@ -41,6 +41,8 @@ from app.kb.sessions import (
     client_named_time,
     client_times,
     normalize_time,
+    day_part_of,
+    latest_day_part,
     resolve_trial_session,
     time_by_day_part,
 )
@@ -62,6 +64,7 @@ from app.types import (
     OutboundMessage,
     PhoneSource,
     RenderHint,
+    SavedLead,
     ToolContext,
     ToolResult,
     Urgency,
@@ -436,6 +439,24 @@ async def _confirmation_sent(ctx: ToolContext) -> bool:
         return False
 
 
+#: Выбор по залу перед глазами не закончен, но и не противоречит залу: осталось уточнить
+#: время или секцию из его же расписания.
+_PICK_STILL_OPEN: Final[frozenset[str]] = frozenset({"need_time", "need_discipline"})
+
+
+def _same_child(saved: SavedLead | None, draft: LeadDraft) -> bool:
+    """Тот ли это ребёнок, что уже записан: перенос — только его записи.
+
+    Имя могло стать полнее: записали «Арман», а при переносе модель передала «Сапаров
+    Арман» — это он же. Брат с той же фамилией — нет: ни одно имя не входит в другое.
+    """
+    if saved is None or not saved.child_name or not draft.child_name:
+        return False
+    return client_named_name(draft.child_name, (saved.child_name,)) or client_named_name(
+        saved.child_name, (draft.child_name,)
+    )
+
+
 def _booked_time(ctx: ToolContext, gym: Gym) -> str | None:
     """Час уже сделанной записи в этот зал по времени школы — ``HH:MM``; ``None`` — записи нет."""
     from zoneinfo import ZoneInfo
@@ -570,6 +591,7 @@ async def create_trial_lead(
     session: TrialSession | None = None
     choice: SessionChoice | None = None
     said_time: str | None = None
+    said_day: str | None = None
     picked_in_view = False
     if gym.schedule and (gym_chosen or gym_in_view):
         # Время, день и секцию выбирает родитель, а не модель. Живой прогон
@@ -592,11 +614,15 @@ async def create_trial_lead(
                 gym, texts, discipline=discipline if said_discipline else None, day=said_day
             )
         picked_in_view = bool(said_time or said_day)
-        if said_time is None and said_day is not None:
+        booked_time = _booked_time(ctx, gym)
+        part = latest_day_part(texts)
+        if said_time is None and said_day is not None and (part is None or day_part_of(booked_time) == part):
             # «Со следующего вторника можно?» — перенос на другой день в то же время, что
             # родитель уже выбрал. Владелец 15.10.2026: «почему бот не может записать на
             # следующий вторник? Зачем ссылаться на администратора, мы же теряем клиента».
-            said_time = _booked_time(ctx, gym)
+            # Назвал другую часть дня («в среду вечером», а записан на утро) — прежний час
+            # уже не его выбор: вопрос о времени.
+            said_time = booked_time
         choice = resolve_trial_session(
             gym,
             time_text=said_time,
@@ -607,8 +633,24 @@ async def create_trial_lead(
             min_lead_hours=float(kb.policies.trial_min_lead_hours),
         )
         session = choice.session
-        if gym_in_view and not (picked_in_view and session is not None):
-            # Клиент по расписанию этого зала ничего не выбрал — значит, зал ещё не выбран.
+        if session is not None and said_time is None and part is not None and day_part_of(session.time_start) != part:
+            # Время подставило правило «занятие в этот день одно», а клиент просил другую часть
+            # дня: «в субботу утром», а в субботу только 17:00. Молча записать на вечер нельзя —
+            # вопрос с вариантами.
+            choice = SessionChoice(
+                problem="unknown_time",
+                options=tuple(
+                    slot for slot in gym.schedule if not said_discipline or slot.discipline == discipline
+                ),
+            )
+            session = None
+        if gym_in_view and not (
+            picked_in_view and (session is not None or choice.problem in _PICK_STILL_OPEN)
+        ):
+            # Клиент по расписанию этого зала ничего не выбрал — или выбрал то, чего здесь
+            # нет: зал ещё не выбран, и вопрос — список залов. Выбрал день, а время в этот
+            # день не одно («в среду», а в среду у КСК три занятия), — зал перед глазами
+            # остаётся, и код спросит время: список залов заново был бы шагом назад.
             choice, session, said_time = None, None, None
             gym_in_view = False
 
@@ -627,7 +669,7 @@ async def create_trial_lead(
             "Родитель выбрал время по расписанию этого зала, но сам зал не называл — код "
             "спросит, записать ли его сюда. Не записывай и не подтверждай сам."
         )
-    elif not gym_chosen:
+    elif not gym_chosen and not gym_in_view:
         # Зал спрашивается первым: от него зависят и секции, и время.
         needs.append("need_gym")
         hints.append(
@@ -714,6 +756,9 @@ async def create_trial_lead(
                 # Время, которое назвал сам клиент: «в 17:30 занятий нет» — не выдумка,
                 # и фильтр не должен снимать такой ответ.
                 "requested_time": said_time,
+                # То же с днём: «в среду в Плазе занятий нет» — день клиента, а не выдумка
+                # модели (живой прогон 19.10.2026: такой ответ сняли и позвали администратора).
+                "requested_day": said_day,
                 "options": [
                     {
                         "discipline": slot.discipline,
@@ -838,7 +883,9 @@ async def create_trial_lead(
     # Та же запись, подтверждение по которой клиент уже получил: второе такое же
     # подтверждение на «Спасибо, во вторник будем» читалось бы как новая запись.
     already_confirmed = same_booking and await _confirmation_sent(ctx)
-    moved = booked_before and not same_booking
+    # Перенос — та же запись того же ребёнка на другое время. Второй ребёнок в том же
+    # диалоге — новая запись, и «Перенесли вашу запись» ему не к месту.
+    moved = booked_before and not same_booking and _same_child(saved, draft)
     if session is not None and not missing and not already_confirmed:
         # Перенос — короче: что взять с собой, клиент уже читал в первом подтверждении.
         bring = None if moved else _what_to_bring(kb, ctx.lang)

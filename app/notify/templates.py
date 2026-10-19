@@ -165,7 +165,8 @@ def render_escalation_card(
     _add(lines, "Язык", _LANG_TITLE.get(lang, _LANG_TITLE[Language.RU]))
     _add(lines, "Причина", _REASON_TITLE.get(reason, reason.value))
     _add(lines, "Канал", f"{_CHANNEL_TITLE.get(channel, channel.value)}, {_format_dt(now)}")
-    _add(lines, "Диалог", dialog_url)
+    # «Переписка» — как в карточках записи: одно слово для одной и той же ссылки.
+    _add(lines, "Переписка", dialog_url)
     lines.append("Бот не отвечал по существу, ждут вас.")
 
     return _assemble(header, lines)

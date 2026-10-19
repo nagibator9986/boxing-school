@@ -620,6 +620,7 @@ def test_phone_other_than_the_clients_own_is_still_blocked(kb) -> None:
     [
         "Ждём вас на Гоголя, 15.",
         "Приходите на Абая, 42 — это рядом с базаром.",
+        "Наш зал: Тәуелсіздік, 88 - это рядом с рынком.",  # отбитый дефис — не «88-й»
         "Наш зал: Тәуелсіздік, 88.",
     ],
 )
@@ -645,6 +646,25 @@ def test_address_without_street_word_is_checked(kb, text) -> None:
 )
 def test_address_from_registry_without_street_word_passes(kb, text) -> None:
     """Тот же формат, но адрес настоящий — блокировать нечего."""
+    result = verdict(text, kb)
+
+    assert result.ok is True, f"ложное срабатывание {result.kind}: {result.offending}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Біздің залдарымыз Орталықта, КСК-да, 15-дүкенде және Плазада бар.",
+        "Наши залы: Центр, КСК, 15-й магазин и Плаза.",
+        "Зал на Плазе, 6-шағын ауданда да бар.",
+    ],
+)
+def test_an_ordinal_gym_name_is_not_a_house_number(kb, text) -> None:
+    """«15-дүкен», «15-й магазин» — название зала из базы, а не номер дома.
+
+    Живой прогон 19.10.2026: на «Балам 8 жаста, қай жерде сабақ бар?» фильтр принял
+    «КСК-да, 15» за выдуманный адрес, снял ответ и позвал администратора.
+    """
     result = verdict(text, kb)
 
     assert result.ok is True, f"ложное срабатывание {result.kind}: {result.offending}"
@@ -981,7 +1001,7 @@ def test_correct_age_in_words_and_time_pass(text: str, kb) -> None:
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "text",
-    ["Наш зал в Тобыле работает по будням.", "Зал на Арыстанбекова ждёт вас."],
+    ["Наш зал в Тобыле работает по будням.", "Зал на Арыстанбекова ждёт вас.", "Ближайший зал на Плазе."],
 )
 def test_place_from_the_knowledge_base_passes(text: str, kb) -> None:
     """Посёлок и улица из базы — правда, даже если инструмент их не возвращал.
@@ -1000,6 +1020,8 @@ def test_place_from_the_knowledge_base_passes(text: str, kb) -> None:
         "Наш зал в Астане ждёт вас.",
         "Филиал в Алматы работает круглый год.",
         "Есть зал в Затобольске, приходите туда.",
+        # Короткое название не урезается до трёх букв: «на Роме» — не «Романтик».
+        "Есть зал на Роме.",
     ],
 )
 def test_invented_place_is_still_blocked(text: str, kb) -> None:
@@ -1031,6 +1053,13 @@ def test_invented_price_is_still_blocked_after_a_card(kb) -> None:
     text = "Могу отдать за 12 345 ₸."
 
     assert not verdict(text, kb, known_numbers=("25000", "30000", "3200")).ok
+
+
+def test_a_date_with_a_year_is_not_money(kb) -> None:
+    """«01.11.2026» — дата открытия зала, а не сумма «11 202»; выдуманная цена рядом — выдумка."""
+    assert verdict("Зал на КЖБИ откроется 01.11.2026.", kb).ok
+    result = verdict("С 01.11.2026 абонемент стоит 27 000 ₸.", kb)
+    assert result.kind is PostcheckFailKind.MONEY and result.offending == ("27 000",), result
 
 
 def test_time_already_sent_by_the_bot_is_trusted(kb) -> None:

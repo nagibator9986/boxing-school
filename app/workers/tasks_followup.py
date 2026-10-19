@@ -126,6 +126,12 @@ async def send_followup_job(ctx: dict[str, Any], task_id: str) -> None:
     settings = runtime.apply_to(deps.settings) if runtime is not None else deps.settings
     bind_correlation(str(task_id), task=TASK_NAME)
     started = time.perf_counter()
+    if runtime is None and getattr(deps, "runtime", None) is not None:
+        # Настройки есть, но не прочитались: выключен ли бот, неизвестно. Задача остаётся
+        # в очереди — её подберёт следующая сметка, когда настройки снова читаются.
+        log.warning("followup_owner_settings_unreadable", task_id=str(task_id))
+        clear_correlation()
+        return
 
     try:
         try:

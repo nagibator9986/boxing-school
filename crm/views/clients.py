@@ -96,7 +96,14 @@ def reply(conv_id: str) -> Any:
     # он подхватит сам и заговорит поверх начатого разговора.
     minutes = _operator_pause_minutes()
     if bot.pause_bot(conv_id, client.conv_key, minutes=minutes):
-        flash(f"Сообщение отправлено. Бот молчит в этом диалоге {minutes} мин.", "ok")
+        if minutes > 0:
+            flash(f"Сообщение отправлено. Бот молчит в этом диалоге {minutes} мин.", "ok")
+        else:
+            flash(
+                "Сообщение отправлено. Бот молчит в этом диалоге, пока его не вернут "
+                "кнопкой «Вернуть бота в диалог».",
+                "ok",
+            )
     else:
         # Обещать тишину, которой не будет, нельзя: оператор начнёт разговор, а
         # бот ответит поверх него, и никто не поймёт, откуда второй голос.
@@ -109,16 +116,19 @@ def reply(conv_id: str) -> Any:
 
 
 def _operator_pause_minutes() -> int:
-    """Пауза бота после ответа человека — та же, что задана владельцем в настройках."""
+    """Пауза бота после ответа человека — та же, что задана владельцем в настройках.
+
+    0 — до возврата вручную: так описана настройка, и так же её понимает сам бот.
+    """
     try:
         from app.admin.runtime_settings import load_runtime_settings
 
         settings = load_runtime_settings(config().admin_db)
-        return max(1, int(settings.operator_pause_minutes))
+        return max(0, int(settings.operator_pause_minutes))
     except Exception:  # noqa: BLE001 - настройки недоступны: работает значение конфигурации
         from app.config import get_settings
 
-        return max(1, int(get_settings().pause_operator_minutes))
+        return max(0, int(get_settings().pause_operator_minutes))
 
 
 @bp.route("/<conv_id>/close", methods=["POST"])
@@ -145,7 +155,8 @@ def pause(conv_id: str) -> Any:
     if client is None:
         flash("Такого клиента нет.", "error")
         return redirect(url_for("clients.index"))
-    minutes = integer(request.form, "minutes", default=60)
+    # Кнопка «Пауза» — всегда на срок: бессрочно бот молчит только после ответа человека.
+    minutes = max(1, integer(request.form, "minutes", default=60))
     if bot.pause_bot(conv_id, client.conv_key, minutes=minutes):
         flash(f"Бот молчит в этом диалоге {minutes} мин — отвечайте сами.", "ok")
     else:

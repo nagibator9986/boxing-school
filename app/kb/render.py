@@ -718,10 +718,12 @@ def special_price_lines(snapshot: KBSnapshot, lang: Language) -> list[str]:
         if gym is None:
             continue
         discipline = _lang_text(snapshot, f"card.{item['discipline']}", lang)
+        section_key = _SECTION_KEYS.get(str(item["discipline"]))
         lines.append(snapshot.text(
             "card.special_price_block", lang,
             gym=gym.title.get(lang) or gym.title.ru or gym.id,
-            section=_lang_text(snapshot, _SECTION_KEYS.get(str(item["discipline"]), "card.section_boxing"), lang),
+            # Новая секция без своей подписи — её название, а не чужая «Секция бокса».
+            section=_lang_text(snapshot, section_key, lang) if section_key else discipline,
             discipline=discipline,
             days=_days_line(list(item["days"]), lang),
             times="\n".join(item["ranges"]),
