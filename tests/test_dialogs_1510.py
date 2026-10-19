@@ -798,3 +798,28 @@ async def test_no_data_handover_needs_a_question(make_ctx, said, escalated) -> N
     result = await escalate_to_manager(ctx, reason="no_data", question_summary="нет данных")
 
     assert (result.data.get("escalated") is True) is escalated, result
+
+
+
+async def test_the_overview_does_not_need_the_media_record(tmp_path, state, sessionmaker, settings) -> None:
+    """media.yaml, правленый владельцем в CRM, новую запись не получает — карточка всё равно уходит."""
+    import shutil
+    from pathlib import Path
+
+    from app.kb.loader import load_sync
+
+    root = Path(__file__).resolve().parent.parent
+    target = tmp_path / "kb"
+    shutil.copytree(root / "kb", target, ignore=shutil.ignore_patterns(".*"))
+    media = target / "media.yaml"
+    text = media.read_text(encoding="utf-8")
+    start = text.index("- id: schedules_city")
+    media.write_text(text[:start] + text[text.index("- id: gyms_list_all", start):], encoding="utf-8")
+    snapshot, _ = load_sync(target, media_dir=root / "media", schema_version=1)
+    assert snapshot.artifact("schedules_city") is None
+    deps = _deps(snapshot, state, sessionmaker, settings)
+
+    decisions = await _say(deps, "77015551518", 1, "Вы с 09:00 до пяти работаете")
+
+    assert [d.reason for d in decisions] == ["schedule_overview"], _client_text(decisions)
+    assert "2. КСК — школа №9" in _client_text(decisions)

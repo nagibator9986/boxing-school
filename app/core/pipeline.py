@@ -2461,6 +2461,8 @@ async def _answer_invoice(
 
 #: Карточка «расписание всех залов города» (kb/media.yaml).
 SCHEDULES_CARD: Final[str] = "schedules_city"
+#: Сколько раз за диалог её отправлять, если записи в media.yaml нет.
+_SCHEDULES_SENDS: Final[int] = 2
 #: «Сегодня», «завтра», «послезавтра» — вопрос про один день.
 _DAY_WORD_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![а-яё])(?:сегодня|завтра|послезавтра)(?![а-яё])|бүгін|ертең", re.IGNORECASE
@@ -2506,18 +2508,22 @@ async def _answer_schedule_overview(
     if scope_by_texts(kb, _recent_client_texts(own, stored)) is Scope.REGION:
         # Клиент из райцентра: там у залов почти нет расписания — разберётся модель.
         return None
+    # Карточку собирает код из gyms.yaml. Запись в media.yaml задаёт только «выключено» и
+    # предел отправок: правленый владельцем media.yaml новый выпуск не получает, и без
+    # записи карточка всё равно уходит.
     artifact = kb.artifact(SCHEDULES_CARD)
-    if artifact is None or not artifact.enabled:
+    if artifact is not None and not artifact.enabled:
         return None
+    limit = int(artifact.max_send_per_dialog or 1) if artifact is not None else _SCHEDULES_SENDS
     try:
         sent = await services.count_artifact_sends(conv.id, SCHEDULES_CARD)
     except Exception as exc:  # noqa: BLE001 - не знаем — пусть отвечает модель
         _log.warning("schedules_card_lookup_failed", error=type(exc).__name__)
         return None
-    if sent >= int(artifact.max_send_per_dialog or 1):
+    if sent >= limit:
         return None
     try:
-        card = render_artifact_body(kb, artifact_id=SCHEDULES_CARD, lang=lang)
+        card = render.render_gyms_list_card(kb, scope=Scope.CITY, lang=lang, with_schedule=True)
     except Exception as exc:  # noqa: BLE001 - молчание хуже ответа модели
         _log.warning("schedules_card_render_failed", error=type(exc).__name__)
         return None
