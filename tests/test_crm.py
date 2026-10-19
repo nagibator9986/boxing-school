@@ -403,9 +403,12 @@ def test_pause_and_resume(client: Any, sandbox: CrmConfig) -> None:
     client.post("/clients/c1/resume")
     with sqlite3.connect(sandbox.bot_db) as conn:
         row = conn.execute(
-            "SELECT paused, paused_until FROM escalation_state WHERE conversation_id='c1'"
+            "SELECT paused, paused_until, operator_last_seen_at FROM escalation_state WHERE conversation_id='c1'"
         ).fetchone()
     assert row[0] == 0 and row[1] is None
+    # Вернуть бота — действие человека: вопрос, переданный администратору, закрыт
+    # (диалог 15.10.2026: иначе бот писал «Администратор уже в курсе»).
+    assert row[2] is not None
 
 
 # --------------------------------------------------------------------------- #

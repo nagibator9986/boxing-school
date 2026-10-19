@@ -579,10 +579,14 @@ class BotData:
         now = datetime.now(tz=_UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
         try:
             with self._connect(write=True) as conn:
+                # Вернуть бота — тоже действие человека в диалоге: вопрос, переданный
+                # администратору, он видел и решил. Без отметки бот считал передачу
+                # открытой и писал «Администратор уже в курсе» (диалог 15.10.2026).
                 conn.execute(
                     "UPDATE escalation_state SET paused = 0, paused_until = NULL,"
-                    " pause_reason = NULL, resumed_at = ? WHERE conversation_id = ?",
-                    (now, conv_id),
+                    " pause_reason = NULL, resumed_at = ?, operator_last_seen_at = ?"
+                    " WHERE conversation_id = ?",
+                    (now, now, conv_id),
                 )
                 # Тот же путь, которым снимает паузу сам бот: строка и состояние
                 # диалога. Иначе напоминания остались бы выключенными навсегда.

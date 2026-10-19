@@ -88,7 +88,11 @@ def silent_numbers(settings: Any, runtime: Any | None = None) -> frozenset[str]:
     """
     sources = [getattr(settings, "ignored_numbers", ""), getattr(settings, "manager_notify_target", "")]
     if runtime is not None:
-        sources += [getattr(runtime, "lead_notify_target", ""), getattr(runtime, "lead_notify_chat", "")]
+        sources += [
+            getattr(runtime, "lead_notify_target", ""),
+            getattr(runtime, "lead_notify_chat", ""),
+            getattr(runtime, "accountant_contact", ""),
+        ]
     found: set[str] = set()
     for source in sources:
         found |= parse(source or "")

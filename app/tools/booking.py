@@ -42,6 +42,7 @@ from app.kb.sessions import (
     client_times,
     normalize_time,
     resolve_trial_session,
+    time_by_day_part,
 )
 from app.tools.gyms import gyms_named_in
 from app.types import (
@@ -74,7 +75,9 @@ from app.types import (
 __all__ = [
     "MAX_CHILD_AGE",
     "MIN_CHILD_AGE",
+    "channel_title",
     "create_trial_lead",
+    "dialog_link",
     "format_local_dt",
     "normalize_phone_kz",
     "render_card_text",
@@ -329,6 +332,11 @@ _LANG_TITLES: Final[dict[str, str]] = {"ru": "русский", "kk": "казах
 _CHANNEL_TITLES: Final[dict[str, str]] = {"whatsapp": "WhatsApp", "instagram": "Instagram", "telegram": "Telegram"}
 
 
+def channel_title(channel: str) -> str:
+    """«whatsapp» → «WhatsApp»: так канал пишется в карточках администратору."""
+    return _CHANNEL_TITLES.get(channel, channel)
+
+
 def _readable_phone(value: str | None) -> str | None:
     """«77019990013» → «+7 701 999 00 13»: так номер читается и набирается с экрана."""
     digits = re.sub(r"\D", "", value or "")
@@ -337,13 +345,12 @@ def _readable_phone(value: str | None) -> str | None:
     return value or None
 
 
-def _dialog_link(ctx: ToolContext) -> str | None:
+def dialog_link(ctx: ToolContext) -> str | None:
     """Ссылка на переписку в CRM — чтобы не искать клиента вручную."""
     try:
-        base = (get_settings().public_base_url or "").rstrip("/")
+        return get_settings().crm_dialog_url(ctx.conversation_id)
     except Exception:  # pragma: no cover - настройки чинятся на старте
         return None
-    return f"{base}/crm/clients/{ctx.conversation_id}" if base.startswith("https://") else None
 
 
 def _card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: bool = False) -> str:
@@ -369,7 +376,7 @@ def _card_text(ctx: ToolContext, draft: LeadDraft, gym: Gym, *, changed: bool = 
             "objection": draft.main_objection or _PLACEHOLDER,
             "channel": _CHANNEL_TITLES.get(ctx.channel.value, ctx.channel.value),
             "dt": format_local_dt(ctx.now),
-            "dialog": _dialog_link(ctx) or _PLACEHOLDER,
+            "dialog": dialog_link(ctx) or _PLACEHOLDER,
         },
     )
     return "\n".join(line for line in text.splitlines() if not line.rstrip().endswith(f": {_PLACEHOLDER}"))
@@ -419,6 +426,30 @@ def _client_chose_gym(ctx: ToolContext, gym: Gym) -> bool:
             if offered and gyms_named_in(kb, offered) == {gym.id}:
                 return True
     return any(gyms_named_in(kb, picked) == {gym.id} for picked in ctx.list_choices)
+
+
+async def _confirmation_sent(ctx: ToolContext) -> bool:
+    """Уходило ли в этом диалоге подтверждение записи. Не узнали — считаем, что нет."""
+    try:
+        return await ctx.services.count_artifact_sends(ctx.conversation_id, TRIAL_CONFIRMATION_ARTIFACT) > 0
+    except Exception:  # noqa: BLE001 - лишнее подтверждение лучше потерянного
+        return False
+
+
+def _booked_time(ctx: ToolContext, gym: Gym) -> str | None:
+    """Час уже сделанной записи в этот зал по времени школы — ``HH:MM``; ``None`` — записи нет."""
+    from zoneinfo import ZoneInfo
+
+    saved = ctx.saved_lead
+    if (
+        saved is None
+        or saved.status != LeadStatus.TRIAL_BOOKED.value
+        or saved.gym_id != gym.id
+        or saved.trial_slot is None
+    ):
+        return None
+    slot = saved.trial_slot if saved.trial_slot.tzinfo is not None else saved.trial_slot.replace(tzinfo=timezone.utc)
+    return f"{slot.astimezone(ZoneInfo(_school_tz())):%H:%M}"
 
 
 def _moves_booked_time(saved: Any, session: TrialSession) -> bool:
@@ -526,6 +557,12 @@ async def create_trial_lead(
     # расписание и записала туда, а клиенту был нужен центр. Зал решает, куда семья
     # поедет, поэтому он — тоже слова родителя, а не выбор модели.
     gym_chosen = _client_chose_gym(ctx, gym)
+    # Зал перед глазами клиента — его расписание бот показал последним. Выбрать там день
+    # или время ещё не значит выбрать зал (диалог 12.10.2026: клиенту был нужен центр),
+    # но и список залов заново ему ни к чему: Instagram 16.10.2026 — «среда, кикбоксинг
+    # 17.00 приедем», через четыре дня фамилия — и в ответ снова все залы города.
+    # Такую запись код подтверждает одним вопросом с названием зала.
+    gym_in_view = not gym_chosen and ctx.gym_in_view == gym.id
 
     # --- конкретное занятие -------------------------------------------------- #
     # Владелец 10.09.2026: «пускай бот полностью сам конвертирует — мы записали вас
@@ -533,7 +570,8 @@ async def create_trial_lead(
     session: TrialSession | None = None
     choice: SessionChoice | None = None
     said_time: str | None = None
-    if gym.schedule and gym_chosen:
+    picked_in_view = False
+    if gym.schedule and (gym_chosen or gym_in_view):
         # Время, день и секцию выбирает родитель, а не модель. Живой прогон
         # 10.09.2026: на «Сериков Ержан, 8 лет» модель сама подставила «бокс,
         # суббота 17:00» и отправила подтверждение — клиент ничего из этого не
@@ -547,23 +585,49 @@ async def create_trial_lead(
         said_discipline = client_named_discipline(discipline, texts) or client_named_discipline(
             discipline, ctx.dialog_client_texts, single_only=True
         )
+        said_day = session_day if client_named_day(session_day, texts) else None
+        if said_time is None:
+            # «На вечернее время», а вечером у зала одно занятие — это и есть выбор.
+            said_time = time_by_day_part(
+                gym, texts, discipline=discipline if said_discipline else None, day=said_day
+            )
+        picked_in_view = bool(said_time or said_day)
+        if said_time is None and said_day is not None:
+            # «Со следующего вторника можно?» — перенос на другой день в то же время, что
+            # родитель уже выбрал. Владелец 15.10.2026: «почему бот не может записать на
+            # следующий вторник? Зачем ссылаться на администратора, мы же теряем клиента».
+            said_time = _booked_time(ctx, gym)
         choice = resolve_trial_session(
             gym,
             time_text=said_time,
-            day=session_day if client_named_day(session_day, texts) else None,
+            day=said_day,
             discipline=discipline if said_discipline else None,
             now=ctx.now,
             tz_name=_school_tz(),
             min_lead_hours=float(kb.policies.trial_min_lead_hours),
         )
         session = choice.session
+        if gym_in_view and not (picked_in_view and session is not None):
+            # Клиент по расписанию этого зала ничего не выбрал — значит, зал ещё не выбран.
+            choice, session, said_time = None, None, None
+            gym_in_view = False
 
     # Чего не хватает для записи — спрашивается разом, одним сообщением. Не ошибка,
     # а следующий вопрос родителю. Варианты времени уходят данными, а не текстом
     # ошибки: иначе фильтр не признал бы время в «вам удобнее в 17:00 или 19:00?».
     needs: list[str] = []
     hints: list[str] = []
-    if not gym_chosen:
+    confirm_when: str | None = None
+    if not gym_chosen and gym_in_view and session is not None:
+        # Время выбрано по расписанию этого зала, а сам зал родитель не называл —
+        # код спросит «Записать в зал «…» — в среду, 21.10 в 17:00?».
+        needs.append("need_gym_confirm")
+        confirm_when = render.trial_when(kb, session, ctx.lang)
+        hints.append(
+            "Родитель выбрал время по расписанию этого зала, но сам зал не называл — код "
+            "спросит, записать ли его сюда. Не записывай и не подтверждай сам."
+        )
+    elif not gym_chosen:
         # Зал спрашивается первым: от него зависят и секции, и время.
         needs.append("need_gym")
         hints.append(
@@ -580,11 +644,20 @@ async def create_trial_lead(
         child_age = known.child_age
     # Скриншот владельца 01.10.2026: «Айназаров Али» в самом начале, через восемь
     # реплик — снова «подскажите фамилию и имя». Имя проверяется по всей переписке.
-    name_said = client_named_name(name, ctx.dialog_client_texts or ctx.client_texts) or (
-        bool(known.child_name) and client_named_name(name, (known.child_name or "",))
+    # Ребёнок уже записан — его имя и возраст родитель назвал при записи: перенос
+    # («со следующего вторника можно?») не повод переспрашивать их заново.
+    booked = ctx.saved_lead if ctx.saved_lead is not None and ctx.saved_lead.status == LeadStatus.TRIAL_BOOKED.value else None
+    if child_age is None and booked is not None and booked.child_age is not None:
+        child_age = booked.child_age
+    name_said = (
+        client_named_name(name, ctx.dialog_client_texts or ctx.client_texts)
+        or (bool(known.child_name) and client_named_name(name, (known.child_name or "",)))
+        or (booked is not None and bool(booked.child_name) and client_named_name(name, (booked.child_name or "",)))
     )
     age_said = child_age is not None and (
-        client_named_age(child_age, ctx.client_texts) or known.child_age == child_age
+        client_named_age(child_age, ctx.client_texts)
+        or known.child_age == child_age
+        or (booked is not None and booked.child_age == child_age)
     )
     if not name_said:
         needs.append("need_name")
@@ -602,7 +675,6 @@ async def create_trial_lead(
         needs.append(choice.problem or "need_time")
         if not hints:
             hints.append(_choice_hint(kb, choice))
-    confirm_when: str | None = None
     moving = session is not None and _moves_booked_time(ctx.saved_lead, session)
     asked_times = client_times(ctx.client_texts)
     other_time = session is not None and bool(asked_times) and session.time_start not in asked_times
@@ -636,6 +708,8 @@ async def create_trial_lead(
                 "discipline": session.discipline if session is not None else None,
                 "confirm_when": confirm_when,
                 "confirm_kind": ("move" if moving else "book") if confirm_when else None,
+                # Зал, о котором спрашивает код, — тот, что перед глазами клиента.
+                "confirm_gym_id": gym.id if confirm_when else None,
                 "child_name": name if name_said else None,
                 # Время, которое назвал сам клиент: «в 17:30 занятий нет» — не выдумка,
                 # и фильтр не должен снимать такой ответ.
@@ -761,8 +835,13 @@ async def create_trial_lead(
         caveats.append("Запись не изменилась — карточка администратору повторно не отправлялась.")
 
     confirmation_sent = False
-    if session is not None and not missing:
-        bring = _what_to_bring(kb, ctx.lang)
+    # Та же запись, подтверждение по которой клиент уже получил: второе такое же
+    # подтверждение на «Спасибо, во вторник будем» читалось бы как новая запись.
+    already_confirmed = same_booking and await _confirmation_sent(ctx)
+    moved = booked_before and not same_booking
+    if session is not None and not missing and not already_confirmed:
+        # Перенос — короче: что взять с собой, клиент уже читал в первом подтверждении.
+        bring = None if moved else _what_to_bring(kb, ctx.lang)
         await ctx.services.enqueue_outbound(
             OutboundMessage(
                 conversation_id=ctx.conversation_id,
@@ -772,7 +851,8 @@ async def create_trial_lead(
                 lang=ctx.lang,
                 kind=OutboundKind.LEAD_CONFIRMATION,
                 text=render.render_trial_confirmation(
-                    kb, child=draft.child_name, gym=gym, session=session, lang=ctx.lang, bring=bring
+                    kb, child=draft.child_name, gym=gym, session=session, lang=ctx.lang, bring=bring,
+                    moved=moved,
                 ),
                 artifact_id=TRIAL_CONFIRMATION_ARTIFACT,
             )
@@ -781,6 +861,11 @@ async def create_trial_lead(
         caveats.append(
             "Клиент уже получил готовое подтверждение записи: секция, адрес, день, время, "
             "когда прийти и что взять с собой. Ничего от себя не добавляй."
+        )
+    elif already_confirmed:
+        caveats.append(
+            "Запись та же, и подтверждение по ней у клиента уже есть — не повторяй его. "
+            "Ответь коротко на то, что написал клиент."
         )
     elif missing:
         caveats.append(
@@ -812,6 +897,9 @@ async def create_trial_lead(
             "booked": True,
             "missing_fields": list(missing),
             "confirmation_sent": confirmation_sent,
+            # Запись перенесли: к короткому подтверждению переноса пайплайн оставляет
+            # вежливую фразу модели («Выздоравливайте!»).
+            "moved": moved and confirmation_sent,
         },
         render_hint=RenderHint.SILENT if confirmation_sent else RenderHint.SUMMARIZE,
         caveats=caveats,

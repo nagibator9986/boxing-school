@@ -47,9 +47,11 @@ from app.types import (
 )
 
 __all__ = [
+    "bot_pause_over",
     "detect_operator",
     "is_paused",
     "is_resume_command",
+    "note_operator",
     "pause_minutes_for",
     "resume",
     "operator_last_seen",
@@ -200,7 +202,35 @@ async def resume(
     if row is None:
         await _forget(state, conv_key)
         return
-    await _clear(state, session, row, conv_key, by=by, now=datetime.now(tz=timezone.utc))
+    now = datetime.now(tz=timezone.utc)
+    if by in _HUMAN_RESUMES:
+        # Бота вернул человек — значит, вопрос, переданный ему, он видел и решил.
+        # Диалог 15.10.2026: администратор ответил и вернул бота, а бот на «Спасибо,
+        # в след вторник будем» написал «Администратор уже в курсе и ответит здесь».
+        row.operator_last_seen_at = now
+    await _clear(state, session, row, conv_key, by=by, now=now)
+
+
+#: Кто снимает паузу как человек: команда оператора в чате и админка. Таймаут и
+#: новый вопрос клиента — не ответ администратора.
+_HUMAN_RESUMES: Final[frozenset[str]] = frozenset({"operator_command", "admin"})
+
+
+async def note_operator(session: AsyncSession, conv_id: UUID, *, now: datetime) -> None:
+    """Отмечает, что человек написал в диалог, — не трогая паузу.
+
+    Ответ из CRM уходит очередью отправки, а не эхом с телефона, и раньше не
+    отмечался вовсе: вопрос, переданный администратору, считался открытым и после
+    его ответа. Пауза здесь не ставится — её ставит сама CRM, на срок из настроек.
+    """
+    row = await _row(session, conv_id)
+    if row is None:
+        row = EscalationState(conversation_id=conv_id)
+        session.add(row)
+    seen = _aware(row.operator_last_seen_at)
+    if seen is None or seen < now:
+        row.operator_last_seen_at = now
+    await session.flush()
 
 
 # --------------------------------------------------------------------------- #
@@ -215,6 +245,22 @@ async def operator_last_seen(session: AsyncSession, conv_id: UUID) -> datetime |
     """
     row = await _row(session, conv_id)
     return _aware(row.operator_last_seen_at) if row is not None else None
+
+
+async def bot_pause_over(session: AsyncSession, conv_id: UUID, *, now: datetime) -> bool:
+    """Кончилась ли пауза, которую бот поставил себе сам, передавая вопрос человеку.
+
+    Состояние диалога «передан администратору» снимается только следующим сообщением
+    клиента. Напоминание о записанном пробном не должно ждать этого сообщения: запись
+    передача не отменяет. Пауза человека (ответ оператора, кнопка в CRM) — не эта.
+    """
+    row = await _row(session, conv_id)
+    if row is None or not row.paused:
+        return True
+    if row.pause_reason not in _BOTS_OWN_PAUSES or row.resume_policy == ResumePolicy.MANUAL_ONLY.value:
+        return False
+    deadline = _aware(row.paused_until)
+    return deadline is not None and deadline <= now
 
 
 async def escalation_open(

@@ -319,7 +319,7 @@ async def test_hour_shared_by_different_days_asks_for_the_option_not_the_section
 
 async def test_model_is_told_which_gym_the_client_is_looking_at(deps) -> None:
     """После расписания КСК модель знает зал, даже когда выбор выпал из окна истории."""
-    await say(deps, 1, "Какое у вас расписание?", FakeTurn.tool(
+    await say(deps, 1, "Какое у вас расписание в КСК?", FakeTurn.tool(
         FakeCall("get_schedule", {"gym_id": KSK})
     ), FakeTurn.answer("Подходит вам такое время?"))
 

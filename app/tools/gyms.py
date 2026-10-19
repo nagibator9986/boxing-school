@@ -473,11 +473,14 @@ def _numbered_places(query: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(found))
 
 
-def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
+def _query_forms(
+    queries: Sequence[str], *, city_forms: frozenset[str] = frozenset()
+) -> tuple[tuple[str, int], ...]:
     """Формы запроса со штрафом: фраза целиком, пары слов, отдельные слова.
 
     Без разбора на слова «возле рахата» не найдёт зал с алиасом «рахат»: клиент
-    почти никогда не пишет ровно то, что записано в базе.
+    почти никогда не пишет ровно то, что записано в базе. ``city_forms`` — название
+    города в падежах: отдельным словом оно зал не называет (см. :func:`_city_forms`).
     """
     forms: dict[str, int] = {}
 
@@ -486,7 +489,8 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
             forms[value] = penalty
 
     for query in queries:
-        _add(query, 0)
+        if query not in city_forms:
+            _add(query, 0)
         for place in _numbered_places(query):
             _add(place, 0)
         tokens = [token for token in query.split() if len(token) >= 3]
@@ -495,7 +499,7 @@ def _query_forms(queries: Sequence[str]) -> tuple[tuple[str, int], ...]:
             # запроса «западный микрорайон» бот предлагал 6-й микрорайон — просто
             # потому, что это слово есть в обоих. Пара слов с ним разрешена:
             # «6 микрорайон» — уже адрес.
-            if token not in _GENERIC_PLACE_WORDS:
+            if token not in _GENERIC_PLACE_WORDS and token not in city_forms:
                 _add(token, 8)
             # Пара из двух служебных слов места не называет: «возле школы» из «возле
             # 9 школы» входило в ориентир «возле школы №10», и к КСК добавлялся
@@ -513,12 +517,14 @@ def _score_gym(
     *,
     sources: Sequence[str] | None = None,
     whole_keys_only: bool = False,
+    ignore_keys: frozenset[str] = frozenset(),
 ) -> tuple[int, str, str]:
     """Вес совпадения зала с запросом: ``(score, тип совпадения, что совпало)``.
 
     ``sources`` — искать только по этим источникам ключей (например, ``("nearby",)``).
     ``whole_keys_only`` — ключ засчитывается, только если он целиком есть в запросе:
     «центр» не совпадает с «центр рахат», а «у рахата» с «рахат» — совпадает.
+    ``ignore_keys`` — ключи, которые не различают залы (название города у городских).
     """
     best_score = 0
     best_kind = "fallback"
@@ -528,6 +534,8 @@ def _score_gym(
             continue
         exact_w, contains_w, fuzzy_w = _SOURCE_WEIGHTS[source]
         for key in keys:
+            if key in ignore_keys:
+                continue
             for query, penalty in forms:
                 score = 0
                 if key == query:
@@ -563,7 +571,9 @@ async def find_gym_by_district(
     queries = [query for query in dict.fromkeys(queries) if query]
     if not queries:
         return ToolResult.invalid_input("district_text не содержит слов для поиска")
-    forms = _query_forms(queries)
+    city_forms = _city_forms(kb)
+    forms = _query_forms(queries, city_forms=city_forms)
+    city_key = frozenset({normalize_text(kb.gyms.city_settlement or "")} - {""})
 
     # Конфликт C-3: запись-заглушка КЖБИ живёт в базе с status=unresolved.
     # Попадание в неё запрещает утверждать и «зал есть», и «зала нет».
@@ -573,11 +583,18 @@ async def find_gym_by_district(
         if score >= MIN_MATCH_SCORE and (unresolved_hit is None or score > unresolved_hit[1]):
             unresolved_hit = (gym, score)
 
+    # Название города совпадает со всеми городскими залами сразу и потому ни один из них
+    # не выделяет. Живой диалог 15.10.2026: «Живу Костанай 2 район, гостиница Остров» —
+    # «Костанай» перебил «2 Костанай» Плазы, и бот предложил КСК в часе езды. Город решает,
+    # только когда больше ничего не названо: «мы в Костанае» — все залы города.
     scored: list[tuple[int, str, str, Gym]] = []
-    for gym in kb.active_gyms(Scope.ALL):
-        score, kind, key = _score_gym(gym, forms)
-        if score >= MIN_MATCH_SCORE:
-            scored.append((score, kind, key, gym))
+    for ignore in (city_key, frozenset()):
+        for gym in kb.active_gyms(Scope.ALL):
+            score, kind, key = _score_gym(gym, forms if ignore else _query_forms(queries), ignore_keys=ignore)
+            if score >= MIN_MATCH_SCORE:
+                scored.append((score, kind, key, gym))
+        if scored:
+            break
     scored.sort(key=lambda row: (-row[0], row[3].id))
     if scored and _names_district_without_gym(kb, queries):
         # Клиент назвал район, где зала нет («Западный микрорайон»), а залы совпали
@@ -725,6 +742,48 @@ async def find_gym_by_district(
 _HOUSE_RE: Final[re.Pattern[str]] = re.compile(r"([^\W\d_]{4,})\s+(\d{1,4})")
 
 
+def _city_forms(kb: KBSnapshot) -> frozenset[str]:
+    """Название города в падежах: «костанай», «костанае», «костаная», «костанаем».
+
+    «Костанайский» — уже район области, а не город: длинные слова сюда не входят.
+    """
+    city = normalize_text(kb.gyms.city_settlement or "")
+    if len(city) < 4:
+        return frozenset({city} - {""})
+    stem = city[:-1]
+    return frozenset(
+        {city} | {f"{stem}{ending}" for ending in ("е", "я", "ю", "ем")}
+    )
+
+
+def district_gym(kb: KBSnapshot, text: str | None) -> str | None:
+    """Зал, за которым закреплён названный клиентом район, — если такой зал один.
+
+    Только район без зала: «Живу Костанай 2 район, гостиница Остров» — Плаза (владелец
+    15.10.2026). Назван сам зал («Нет, КСК далеко») — ``None``: это не выбор зала, и
+    подсказывать модели его как ближайший нельзя.
+    """
+    queries = [query for query in dict.fromkeys(_variants(text or "")) if query]
+    if not queries:
+        return None
+    forms = _query_forms(queries, city_forms=_city_forms(kb))
+    city_key = frozenset({normalize_text(kb.gyms.city_settlement or "")} - {""})
+    gyms = kb.active_gyms(Scope.ALL)
+    direct = ("alias", "settlement", "district", "text")
+    if any(
+        _score_gym(gym, forms, sources=direct, whole_keys_only=True, ignore_keys=city_key)[0] >= MIN_MATCH_SCORE
+        for gym in gyms
+    ):
+        return None
+    scores = {
+        gym.id: _score_gym(gym, forms, sources=("nearby",), whole_keys_only=True, ignore_keys=city_key)[0]
+        for gym in gyms
+    }
+    best = max(scores.values(), default=0)
+    winners = [gym_id for gym_id, score in scores.items() if score == best]
+    return winners[0] if best >= MIN_MATCH_SCORE and len(winners) == 1 else None
+
+
 def gyms_named_in(kb: KBSnapshot, text: str | None) -> frozenset[str]:
     """Какие действующие залы называет текст: лучшие совпадения, без модели.
 
@@ -735,11 +794,14 @@ def gyms_named_in(kb: KBSnapshot, text: str | None) -> frozenset[str]:
     queries = [query for query in dict.fromkeys(_variants(text or "")) if query]
     if not queries:
         return frozenset()
-    forms = _query_forms(queries)
+    forms = _query_forms(queries, city_forms=_city_forms(kb))
+    # Название города зала не называет: «мы в Костанае» — не выбор ни одного из залов.
+    city_key = frozenset({normalize_text(kb.gyms.city_settlement or "")} - {""})
     # Ключ зала должен целиком стоять в словах клиента: «9» в ответ на «сколько лет?» —
     # не «школа 9» у КСК, «возле магазина» — не «15 магазин», «2» — не «школа 2».
     scores = {
-        gym.id: _score_gym(gym, forms, whole_keys_only=True)[0] for gym in kb.active_gyms(Scope.ALL)
+        gym.id: _score_gym(gym, forms, whole_keys_only=True, ignore_keys=city_key)[0]
+        for gym in kb.active_gyms(Scope.ALL)
     }
     best = max(scores.values(), default=0)
     if best < MIN_MATCH_SCORE:
@@ -781,6 +843,7 @@ def _known_district_without_gym(kb: KBSnapshot, queries: Sequence[str]) -> bool:
 
 __all__ = [
     "MAX_DISTRICT_MATCHES",
+    "district_gym",
     "gyms_named_in",
     "MAX_GYMS_LIMIT",
     "find_gym_by_district",

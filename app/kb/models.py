@@ -75,8 +75,14 @@ AGE_WORDS: Final[dict[str, int]] = {
 
 AGE_LIMIT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:бер[её]м|принима\w+|записыва\w+|занима\w+|групп\w+|набира\w+|мектеб\w*|қабылда\w+)"
-    r"[^.!?\n]{0,40}?\bс\s+(\d{1,2}|" + "|".join(AGE_WORDS) + r")\s*(?:лет|года|годов|жас\w*)",
+    r"[^.!?\n]{0,40}?\bс\s+(\d{1,2}|" + "|".join(AGE_WORDS) + r")\s*"
+    # «с 5 до 17 лет» — нижняя граница та же, что в «с 5 лет» (Зарина 16.10.2026).
+    r"(?:до\s+\d{1,2}\s*)?(?:лет|года|годов|жас\w*)",
     re.IGNORECASE,
+)
+#: Верхняя граница приёма в ответе владельца: «с 5 до 17 лет».
+AGE_UPPER_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bс\s+(?:\d{1,2}|" + "|".join(AGE_WORDS) + r")\s*до\s+(\d{1,2})\s*(?:лет|года|годов)", re.IGNORECASE
 )
 
 
@@ -86,6 +92,19 @@ def age_value(token: str) -> int | None:
     if token.isdigit():
         return int(token)
     return AGE_WORDS.get(token)
+
+
+def max_accepted_age(snapshot: "KBSnapshot") -> int | None:
+    """До какого возраста школа принимает детей — из того же ответа владельца «с какого
+    возраста». ``None`` — граница не названа. Зарина 16.10.2026: «Бот не знает, до какого
+    возраста принимаем. Добавьте, что принимаем детей с 5 до 17 лет»."""
+    for entry in snapshot.faq:
+        if entry.id != "age_min":
+            continue
+        match = AGE_UPPER_RE.search(getattr(entry.answer, "ru", None) or "")
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def min_accepted_age(snapshot: "KBSnapshot") -> int | None:
@@ -766,7 +785,7 @@ class Artifact(_Base):
     channels: dict[ChannelKind, Literal["allow", "deny"]] = Field(default_factory=dict)
     max_send_per_dialog: int = 1
     gap_ref: GapRef | None = None
-    render_from: Literal["gyms", "pricing", "route"] | None = None
+    render_from: Literal["gyms", "schedules", "pricing", "route"] | None = None
 
     @field_validator("id")
     @classmethod

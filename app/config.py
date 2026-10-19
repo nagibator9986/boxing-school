@@ -332,6 +332,21 @@ class Settings(BaseSettings):
         """Полный публичный URL вебхука для ``PATCH /v3/webhooks``."""
         return f"{self.public_base_url.rstrip('/')}{self.webhook_path()}"
 
+    def crm_dialog_url(self, conversation_id: object) -> str | None:
+        """Ссылка на переписку в CRM — чтобы администратор открыл диалог одним нажатием.
+
+        Идентификатор — без дефисов: так он лежит в базе и так его строит сама CRM. Ссылка
+        с дефисами открывала «Такого клиента нет» (найдено 19.10.2026). Без https — ``None``.
+        """
+        from uuid import UUID
+
+        base = (self.public_base_url or "").rstrip("/")
+        try:
+            key = UUID(str(conversation_id)).hex
+        except (ValueError, TypeError, AttributeError):
+            return None
+        return f"{base}/crm/clients/{key}" if base.startswith("https://") else None
+
     def startup_blockers(self) -> list[str]:
         """Технические блокеры старта. Юридических блокеров в проекте нет.
 

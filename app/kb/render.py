@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 from app.kb import gaps as gaps_module
-from app.kb.models import min_accepted_age
+from app.kb.models import max_accepted_age, min_accepted_age
 from app.kb.models import FaqEntry, Gym, KBSnapshot, PlanPrice, ScheduleSlot
 from app.kb.sessions import COMBINED_DISCIPLINE
 from app.types import KBValidationError, Language, Scope
@@ -464,12 +464,14 @@ def render_trial_confirmation(
     session: "TrialSession",
     lang: Language,
     bring: str | None = None,
+    moved: bool = False,
 ) -> str:
     """Готовое подтверждение записи на пробное: секция, зал, день и время, что делать.
 
     Собирается кодом, а не моделью: владелец 10.09.2026 хочет «полностью готовое
     решение» без «администратор свяжется», а день недели и число модель путает.
-    ``bring`` — что взять с собой, из ответа базы знаний.
+    ``bring`` — что взять с собой, из ответа базы знаний. ``moved`` — запись перенесли:
+    заголовок говорит о переносе, а не о новой записи.
     """
     discipline = _lang_text(snapshot, f"card.{session.discipline}", lang)
     when = trial_when(snapshot, session, lang)
@@ -479,7 +481,7 @@ def render_trial_confirmation(
     place = (address if _already_said(title, address) else f"{title}, {address}") if address else title
     parts = [
         # Имя отдельной строкой: в «Записали Сериков Ержан» оно не склоняется.
-        f"{ICON_OK} {snapshot.text('system.trial_confirmed', lang)}",
+        f"{ICON_OK} {snapshot.text('system.trial_moved' if moved else 'system.trial_confirmed', lang)}",
         "\n".join(
             (f"{ICON_CHILD} {child}", f"{ICON_GYM} {discipline}", f"{ICON_PIN} {place}", f"{ICON_SCHEDULE} {when}")
         ),
@@ -516,12 +518,19 @@ def city_list_order(snapshot: KBSnapshot) -> list[Gym]:
     return list(snapshot.active_gyms(Scope.CITY))
 
 
-def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
+def render_gyms_list_card(
+    snapshot: KBSnapshot, *, scope: Scope, lang: Language, with_schedule: bool = False
+) -> str:
     """Тело артефакта ``gyms_list_*`` (``render_from: gyms``).
 
     Один зал — один блок из двух строк: номер с названием и адрес со значком.
     Нумерация не украшение: кнопок в WhatsApp и Instagram нет, и номер — это то,
     чем родитель отвечает («напишите номер зала»).
+
+    ``with_schedule`` — под каждым залом его расписание (артефакт ``schedules_*``).
+    Владелец 15.10.2026 про «Вы с 09:00 до пяти работаете?»: «бот не знал, что ответить,
+    — мог бы просто скинуть наши расписания залов». Номера те же, что у списка залов:
+    ответ цифрой разбирается тем же кодом.
     """
     gyms = snapshot.active_gyms(scope if scope in (Scope.CITY, Scope.REGION) else Scope.ALL)
     if not gyms:
@@ -540,6 +549,16 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
     for number, gym in enumerate(listed, start=1):
         name = gym.title.get(lang) or gym.title.ru or gym.id
         address = _clean_address(gym, lang)
+        if with_schedule:
+            # Расписание всех залов — одним сообщением: на два сообщения ответ номером
+            # уже не разобрать. Адрес придёт карточкой зала, когда клиент выберет номер.
+            opening = opening_note(snapshot, gym, lang)
+            lines = [f"{number}. {name}"]
+            if opening:
+                lines.append(f"{ICON_SCHEDULE} {opening}")
+            lines.extend(_schedule_lines(snapshot, gym, lang))
+            parts.append("\n".join(lines))
+            continue
         block = f"{number}. {name}\n{ICON_PIN} {address}" if address else f"{number}. {name}"
         if gym.is_head:
             # Владелец 01.10.2026: «основной зал у нас — КСК, там старший тренер».
@@ -549,14 +568,14 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
             block = f"{block}\n{ICON_SCHEDULE} {opening}"
         parts.append(block)
 
-    if any(not gym.address.filled for gym in gyms):
+    if any(not gym.address.filled for gym in gyms) and not with_schedule:
         parts.append(_lang_text(snapshot, "gap.region_address", lang))
 
     # Список по городу — не весь список школы. Владелец считает залы вместе с
     # Тобылом и райцентрами, и карточка «6 залов» выглядит так, будто часть
     # точек потеряли. Прайс при этом разный, поэтому смешивать их в один
     # нумерованный список нельзя: строка отдельная и без номеров.
-    if scope is Scope.CITY:
+    if scope is Scope.CITY and not with_schedule:
         elsewhere = {
             gym.settlement for gym in snapshot.active_gyms(Scope.REGION) if gym.settlement
         }
@@ -566,8 +585,46 @@ def render_gyms_list_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language)
             # области — вместе с районным прайсом, который отличается втрое.
             parts.append(snapshot.text("card.also_elsewhere", lang, count=len(elsewhere)))
 
-    parts.append(_lang_text(snapshot, "card.pick_gym", lang))
+    if with_schedule:
+        accepted = min_accepted_age(snapshot)
+        upper = max_accepted_age(snapshot)
+        if accepted is not None and upper is not None and upper > accepted:
+            parts.append(snapshot.text("card.age_range", lang, age=accepted, age_to=upper))
+        parts.append(_lang_text(snapshot, "card.pick_gym_scheduled", lang))
+    else:
+        parts.append(_lang_text(snapshot, "card.pick_gym", lang))
     return _blocks(parts)
+
+
+def _schedule_lines(snapshot: KBSnapshot, gym: Gym, lang: Language) -> list[str]:
+    """Расписание зала строками списка: «🕒 Бокс и кикбоксинг: Вт, Чт, Сб · 09:00–10:30, 19:00–20:30».
+
+    Одинаковые у бокса и кикбоксинга занятия — одной строкой «Бокс и кикбоксинг», как в
+    карточке расписания; занятия с особой ценой — своей строкой с ценой абонемента.
+    """
+    if not gym.schedule:
+        # Расписания нет (райцентры, G-1) — только адрес: время угадывать нельзя.
+        return []
+    shared: dict[tuple, set[str]] = {}
+    for slot in gym.schedule:
+        shared.setdefault(_slot_identity(slot), set()).add(slot.discipline)
+    rows: dict[tuple[str, tuple[str, ...], int | None], list[ScheduleSlot]] = {}
+    listed: set[tuple] = set()
+    for slot in sorted(gym.schedule, key=lambda item: (item.time_start, item.days[0])):
+        key = _slot_identity(slot)
+        if key in listed:
+            continue
+        listed.add(key)
+        label = COMBINED_DISCIPLINE if len(shared[key]) > 1 else slot.discipline
+        rows.setdefault((label, tuple(slot.days), slot.price), []).append(slot)
+    lines: list[str] = []
+    for (label, days, price), slots in rows.items():
+        ranges = ", ".join(f"{slot.time_start}–{slot.time_end}" for slot in slots)
+        line = f"{ICON_TIME} {_lang_text(snapshot, f'card.{label}', lang)}: {_days_line(list(days), lang)} · {ranges}"
+        if price is not None:
+            line += f" — {snapshot.text('card.slot_price', lang, price=_money(price))}"
+        lines.append(line)
+    return lines
 
 
 def render_price_card(snapshot: KBSnapshot, *, scope: Scope, lang: Language) -> str:
@@ -621,33 +678,53 @@ def special_prices(snapshot: KBSnapshot) -> list[dict[str, object]]:
     Слоты с одной ценой, секцией и днями сводятся в одну строку: «Вт, Чт, Сб в
     09:00, 17:00», а не две строки подряд.
     """
-    grouped: dict[tuple[str, str, tuple[str, ...], int], list[str]] = {}
+    grouped: dict[tuple[str, str, tuple[str, ...], int], list[ScheduleSlot]] = {}
     for gym in city_list_order(snapshot):
         for slot in gym.schedule:
             if slot.price is None:
                 continue
             key = (gym.id, slot.discipline, tuple(slot.days), slot.price)
-            grouped.setdefault(key, []).append(slot.time_start)
+            grouped.setdefault(key, []).append(slot)
     return [
         {"gym_id": gym_id, "discipline": discipline, "days": list(days),
-         "times": sorted(times), "price": price}
-        for (gym_id, discipline, days, price), times in grouped.items()
+         "times": sorted(slot.time_start for slot in slots),
+         # Начало и конец: «в 09:00, 17:00» родитель прочитал как «работаете с 9 до 5»
+         # (диалог 14.10.2026), а нужно «09:00–10:30» и «17:00–18:30».
+         "ranges": [f"{slot.time_start}–{slot.time_end}" for slot in sorted(slots, key=lambda item: item.time_start)],
+         "price": price}
+        for (gym_id, discipline, days, price), slots in grouped.items()
     ]
 
 
+#: «Секция бокса» — подпись секции в блоке особой цены, по коду дисциплины.
+_SECTION_KEYS: Final[dict[str, str]] = {
+    "boxing": "card.section_boxing",
+    "kickboxing": "card.section_kickboxing",
+    COMBINED_DISCIPLINE: "card.section_boxing_kickboxing",
+}
+
+
 def special_price_lines(snapshot: KBSnapshot, lang: Language) -> list[str]:
-    """Особые цены строками для прайса: «КСК — школа №9: Бокс, Вт, Чт, Сб в 09:00, 17:00 — …»."""
+    """Особые цены блоками для прайса — зал, секция, дни, каждое время с концом, абонемент.
+
+    Владелец 15.10.2026 (аудио): «для особо одарённых родителей — бокс, энтер, секция
+    бокса, энтер, вторник, четверг, суббота, энтер, с 9:00 до 10:30, второе время с 17:00
+    до 18:30, абонемент 20 000. Вот так вот прям, чтобы не было таких вопросов». Раньше
+    строка «КСК — школа №9: Бокс, Вт, Чт, Сб в 09:00, 17:00» читалась как часы работы.
+    """
     lines: list[str] = []
     for item in special_prices(snapshot):
         gym = snapshot.gym(str(item["gym_id"]))
         if gym is None:
             continue
+        discipline = _lang_text(snapshot, f"card.{item['discipline']}", lang)
         lines.append(snapshot.text(
-            "card.special_price", lang,
+            "card.special_price_block", lang,
             gym=gym.title.get(lang) or gym.title.ru or gym.id,
-            discipline=_lang_text(snapshot, f"card.{item['discipline']}", lang),
+            section=_lang_text(snapshot, _SECTION_KEYS.get(str(item["discipline"]), "card.section_boxing"), lang),
+            discipline=discipline,
             days=_days_line(list(item["days"]), lang),
-            times=", ".join(item["times"]),
+            times="\n".join(item["ranges"]),
             price=_money(int(item["price"])),
         ))
     return lines
@@ -843,7 +920,10 @@ def render_schedule_card(
         # «там нет у нас возрастных групп, мы всех принимаем с 5 лет» — значит
         # уточнять нечего, и правильный ответ уже есть в базе знаний.
         accepted = min_accepted_age(snapshot)
-        if accepted is not None:
+        upper = max_accepted_age(snapshot)
+        if accepted is not None and upper is not None and upper > accepted:
+            parts.append(snapshot.text("card.age_range", lang, age=accepted, age_to=upper))
+        elif accepted is not None:
             parts.append(snapshot.text("card.age_from", lang, age=accepted))
         else:
             parts.append(_lang_text(snapshot, "card.age_unknown", lang).capitalize() + ".")
@@ -896,6 +976,8 @@ def render_artifact_body(
         if artifact.gym_id is not None:
             return render_gym_location(snapshot, gym_id=artifact.gym_id, lang=lang)
         return render_gyms_list_card(snapshot, scope=artifact.scope, lang=lang)
+    if artifact.render_from == "schedules":
+        return render_gyms_list_card(snapshot, scope=artifact.scope, lang=lang, with_schedule=True)
     if artifact.render_from == "route" and artifact.gym_id is not None:
         return render_route_caption(
             snapshot, gym_id=artifact.gym_id, lang=lang, with_schedule=with_schedule

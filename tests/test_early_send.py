@@ -100,7 +100,7 @@ async def test_card_reaches_the_queue_before_the_turn_ends(kb, state, sessionmak
     )
 
     decisions = await process_inbound(
-        deps, webhook_payload("early-1", "А расписание?", chat_id="77015550001")
+        deps, webhook_payload("early-1", "А расписание в КСК?", chat_id="77015550001")
     )
 
     assert [d.action.value for d in decisions] == ["reply"]
@@ -143,7 +143,7 @@ async def test_card_waits_by_default_and_arrives_as_one_message(
         queue=RecordingQueue(), settings=settings,
     )
 
-    await process_inbound(deps, webhook_payload("slow-1", "А расписание?", chat_id="77015550003"))
+    await process_inbound(deps, webhook_payload("slow-1", "А расписание в КСК?", chat_id="77015550003"))
 
     async with sessionmaker() as db:
         rows = (await db.execute(sa.select(OutboxMessage.payload))).scalars().all()

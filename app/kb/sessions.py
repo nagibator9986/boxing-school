@@ -30,12 +30,14 @@ __all__ = [
     "client_named_day",
     "client_named_name",
     "client_named_time",
+    "client_day_parts",
     "client_times",
     "COMBINED_DISCIPLINE",
     "same_classes",
     "fold_name",
     "normalize_time",
     "resolve_trial_session",
+    "time_by_day_part",
     "weekday_code",
 ]
 
@@ -134,6 +136,56 @@ _WEEKDAY_WORDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
         ("sun", r"воскресень\w*|жексенбі|(?<![а-яё])вс(?![а-яё])"),
     )
 )
+
+
+#: Часть дня словами клиента: «на вечернее время», «вечером», «с утра», «днём».
+_DAY_PART_WORDS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = tuple(
+    (part, re.compile(pattern, re.IGNORECASE))
+    for part, pattern in (
+        ("morning", r"(?<![а-яё])утр[оаеу]\w*|таңертең\w*|таңғы"),
+        ("day", r"(?<![а-яё])(?:дн[её]м|дневн\w*|после\s+обеда|в\s+обед)|түсте|түстен\s+кейін"),
+        ("evening", r"(?<![а-яё])вечер\w*|кешке|кешкі|кеште"),
+    )
+)
+#: «Добрый вечер», «доброе утро», «қайырлы кеш» — приветствие, а не выбор времени.
+_DAY_GREETING_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])добр\w*\s+(?:утр\w*|вечер\w*|д[её]н\w*)|қайырлы\s+(?:таң|кеш|күн)\w*", re.IGNORECASE
+)
+#: Где кончается часть дня — по часу начала занятия.
+_DAY_PART_HOURS: Final[dict[str, range]] = {
+    "morning": range(0, 12), "day": range(12, 16), "evening": range(16, 24),
+}
+
+
+def client_day_parts(texts) -> frozenset[str]:
+    """Части дня, которые клиент назвал сам: ``morning``, ``day``, ``evening``."""
+    found: set[str] = set()
+    for raw in texts:
+        own = _DAY_GREETING_RE.sub(" ", split_agreement(raw)[0])
+        found |= {part for part, pattern in _DAY_PART_WORDS if pattern.search(own)}
+    return frozenset(found)
+
+
+def time_by_day_part(gym: Gym, texts, *, discipline: str | None = None, day: str | None = None) -> str | None:
+    """Время занятия по части дня из слов клиента — если в эту часть оно у зала одно.
+
+    Живые диалоги 15 и 16.10.2026: «Да, в вечернее время» на Плазе, где вечером только
+    19:00, — и бот всё равно спросил «Какое время вам удобнее? 1. 09:00 2. 19:00».
+    Две части дня сразу («утром или вечером») — не выбор: решает вопрос с вариантами.
+    """
+    parts = client_day_parts(texts)
+    if len(parts) != 1:
+        return None
+    hours = _DAY_PART_HOURS[next(iter(parts))]
+    wanted = _weekday(day)
+    starts = {
+        slot.time_start
+        for slot in gym.schedule
+        if (discipline is None or slot.discipline == discipline)
+        and (wanted is None or wanted in slot.days)
+        and int(slot.time_start.split(":")[0]) in hours
+    }
+    return next(iter(starts)) if len(starts) == 1 else None
 
 
 def _client_times(texts: tuple[str, ...] | list[str]) -> set[str]:

@@ -140,9 +140,12 @@ _MEDICAL_MARKERS: Final[tuple[str, ...]] = (
     "астма", "диабет", "эпилеп", "порок сердца", "сколиоз", "аллерг", "инвалид",
     "операц", "перелом", "давление", "зрение", "плоскостопие", "витамин", "диет",
     "питание", "похуд", "набрать вес", "лишний вес", "полненьк", "толст", "худой",
-    "худеньк", "телосложен", "болит", "болеет", "здоровье ребенка", "справка от врача",
-    "можно ли ему заниматься", "можно ли ей заниматься", "дәрі", "ауырады",
+    "худеньк", "телосложен", "здоровье ребенка", "справка от врача",
+    "можно ли ему заниматься", "можно ли ей заниматься", "дәрі",
 )
+#: Ребёнок приболел сейчас. Записанному на пробное это не вопрос о здоровье, а причина
+#: перенести занятие: «у нас отит, можно со следующего вторника?» (диалог 15.10.2026).
+_PASSING_ILLNESS_MARKERS: Final[tuple[str, ...]] = ("болит", "болеет", "ауырады")
 #: Обещания результата: запрещены политикой бренда.
 _PROMISE_MARKERS: Final[tuple[str, ...]] = (
     "гарантиру", "станет чемпионом", "будет чемпионом", "точно выигра", "обещаете",
@@ -200,6 +203,7 @@ def scan(
     lexicon: LexiconFile,
     policies: PoliciesFile,
     booking_in_progress: bool = False,
+    trial_upcoming: bool = False,
 ) -> GuardVerdict:
     """Один проход по всем правилам.
 
@@ -266,7 +270,12 @@ def scan(
         )
 
     matter = _intent_phrases(lexicon, IntentHint.CLIENT_MATTER)
-    if booking_in_progress:
+    if trial_upcoming:
+        # Пробное ещё впереди (или идёт): «заболела», «опоздаем», «не сможем прийти» —
+        # это про запись, которую ведёт сам бот: перенести, подождать, подсказать. Владелец
+        # 15.10.2026: «почему бот не может записать на следующий вторник? Мы теряем клиента».
+        matter = ()
+    elif booking_in_progress:
         # Бот только что предложил запись или время, а клиент ещё не записан:
         # «неудобно в 19, можно в среду?» — выбор времени пробного. Без предложения
         # та же фраза — перенос тренировки действующего клиента, её ведёт человек.
@@ -299,7 +308,7 @@ def scan(
     if injection:
         flags.append(GuardFlag.INJECTION)
 
-    kind = off_topic_kind(normalized, lexicon=lexicon)
+    kind = off_topic_kind(normalized, lexicon=lexicon, passing_illness=trial_upcoming)
     if kind is not None:
         flags.append(GuardFlag.OFF_TOPIC)
 
@@ -403,16 +412,19 @@ def detect_off_topic(text: str, *, lexicon: LexiconFile) -> bool:
     return off_topic_kind(text, lexicon=lexicon) is not None
 
 
-def off_topic_kind(text: str, *, lexicon: LexiconFile) -> str | None:
+def off_topic_kind(text: str, *, lexicon: LexiconFile, passing_illness: bool = False) -> str | None:
     """Категория off-topic: ``medical``, ``promise``, ``sensitive``, ``unrelated``.
 
     Разделение нужно пайплайну: медицина уходит человеку с готовым текстом,
-    остальное — мягкий возврат к теме силами модели.
+    остальное — мягкий возврат к теме силами модели. ``passing_illness`` — у клиента
+    впереди пробное: «болеет» тогда причина перенести запись, а не вопрос о здоровье.
     """
     normalized = normalize(text or "")
     if not normalized:
         return None
-    if _matches_stem(normalized, _MEDICAL_MARKERS):
+    if _matches_stem(normalized, _MEDICAL_MARKERS) or (
+        not passing_illness and _matches_stem(normalized, _PASSING_ILLNESS_MARKERS)
+    ):
         return "medical"
     if _matches_stem(normalized, _PROMISE_MARKERS):
         return "promise"

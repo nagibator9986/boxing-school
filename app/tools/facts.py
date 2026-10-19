@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any, Final, Sequence
 
+from app.kb.agreement import split_agreement
 from app.kb.gaps import gap_for_topic, say_no_data
 from app.kb.models import FAQ_TOPICS, Bilingual, FaqEntry, KBSnapshot
 from app.types import (
@@ -92,6 +93,11 @@ def _gap_of(entry: FaqEntry | None, topic: str) -> GapRef | None:
 _WORDS_RE: Final[re.Pattern[str]] = re.compile(r"[^\W_]+", re.UNICODE)
 
 
+def _folded(text: str | None) -> str:
+    """Нижний регистр и «ё» как «е»: «ребёнка» и «ребенка» — одно слово."""
+    return (text or "").lower().replace("ё", "е")
+
+
 def _best_match(entries: Sequence[Any], question: str) -> Any | None:
     """Запись темы, чьи варианты вопроса ближе всего к словам клиента.
 
@@ -101,7 +107,7 @@ def _best_match(entries: Sequence[Any], question: str) -> Any | None:
     словам вопроса клиента, а не по подстроке: «как оплатить абонемент» и
     вариант «как оплатить» не совпадают целиком ни одним куском.
     """
-    words = {word for word in _WORDS_RE.findall((question or "").lower()) if len(word) > 2}
+    words = {word for word in _WORDS_RE.findall(_folded(question)) if len(word) > 2}
     if not words or not entries:
         return None
 
@@ -113,7 +119,7 @@ def _best_match(entries: Sequence[Any], question: str) -> Any | None:
         raw = entry.question_variants or {}
         variants = [phrase for phrases in raw.values() for phrase in (phrases or [])]
         for variant in variants:
-            tokens = {w for w in _WORDS_RE.findall(variant.lower()) if len(w) > 2}
+            tokens = {w for w in _WORDS_RE.findall(_folded(variant)) if len(w) > 2}
             if not tokens:
                 continue
             score = len(tokens & words) / len(tokens)
@@ -177,7 +183,12 @@ async def get_kb_fact(
 
     entries = kb.faq_entries(topic_key, parsed_scope)
     answered = [entry for entry in entries if entry.answered]
-    entry = _best_match(entries, question) or (
+    # Сначала — слова самого клиента, потом пересказ модели. Диалог 15.10.2026: «Да, но у
+    # нас нет ещё экипировки?» модель передала как «сколько стоит экипировка» — запись без
+    # ответа, — и клиент получил «уточнит администратор», хотя ответ владельца «на первую
+    # тренировку ничего покупать не нужно» в базе есть.
+    own_words = split_agreement(ctx.client_texts[-1])[0] if ctx.client_texts else ""
+    entry = _best_match(entries, own_words) or _best_match(entries, question) or (
         answered[0] if answered else (entries[0] if entries else None)
     )
     if entry is not None and not entry.answered:

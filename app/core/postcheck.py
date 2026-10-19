@@ -1058,6 +1058,49 @@ def _invented_name(text: str, known_names: Sequence[str], invocations) -> tuple[
     return tuple(dict.fromkeys(found))
 
 
+#: Тренер по имени: «Тренер Марат Сапаров будет ждать», «тренер — Марат»,
+#: «жаттықтырушы Марат». Имя — слово с заглавной буквы сразу после слова «тренер».
+_COACH_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яёәА-ЯЁ])(?:[Тт]ренер\w*|[Жж]аттықтырушы\w*)\s*(?:[—–-]\s*|по\s+имени\s+)?"
+    # «Тренер Вас встретит» — вежливое «Вас», а не имя.
+    r"(?!(?:Вас|Вам|Ваш\w*|Вами|Вы|Он|Она|Они|Его|Её|Ее|Сіз\w*)(?![а-яё]))"
+    r"([А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]{2,}(?:\s+[А-ЯЁӘҒҚҢӨҰҮҺІ][а-яёәғқңөұүһі]{2,})?)"
+)
+_SENTENCES_RE: Final[re.Pattern[str]] = re.compile(r"[^.!?\n]+[.!?]*\s*|\n")
+
+
+def strip_invented_coaches(text: str, kb: KBSnapshot) -> tuple[str, tuple[str, ...]]:
+    """Ответ без фраз о тренере, которого нет в базе знаний, и сами выдуманные имена.
+
+    Диалог 16.10.2026 (имена здесь изменены): «Ждём вас сегодня в 19:30… Тренер Марат Сапаров будет ждать» —
+    такого тренера в школе нет (имя и фамилию модель взяла у ребёнка), а родитель
+    пошёл бы искать его в зале. Тренеров база пока не знает (G-8), поэтому любое имя
+    тренера — выдумка. Снимается только эта фраза: весь ответ из-за неё не теряется.
+    """
+    known = {
+        fold_name(word)[:4]
+        for gym in kb.gyms.gyms
+        for coach in gym.coaches
+        for word in re.findall(r"[^\W\d_]{3,}", coach.name or "")
+    }
+    invented: list[str] = []
+    kept: list[str] = []
+    for sentence in _SENTENCES_RE.findall(text or ""):
+        names = [
+            match.group(1)
+            for match in _COACH_NAME_RE.finditer(sentence)
+            if not all(fold_name(word)[:4] in known for word in match.group(1).split())
+        ]
+        if names:
+            invented.extend(names)
+            continue
+        kept.append(sentence)
+    if not invented:
+        return text, ()
+    cleaned = re.sub(r"\n{3,}", "\n\n", "".join(kept)).strip()
+    return cleaned, tuple(dict.fromkeys(invented))
+
+
 def _wrong_age_limit(text: str, kb: KBSnapshot) -> tuple[str, ...]:
     """Возрастная граница, не совпадающая с подтверждённой владельцем.
 

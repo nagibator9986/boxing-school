@@ -121,14 +121,17 @@ def test_schedule_card_names_the_accepted_age(kb: KBSnapshot) -> None:
     уточнять нечего, ответ уже есть в базе. Число берётся из ответа FAQ про
     возраст: карточка и текст, который читает клиент, обязаны совпадать.
     """
-    from app.kb.models import min_accepted_age
+    from app.kb.models import max_accepted_age, min_accepted_age
 
     gym = kb.gym("ksk_kairbekova_334")
     text = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
     accepted = min_accepted_age(kb)
+    upper = max_accepted_age(kb)
 
     assert accepted is not None, "в базе знаний не сказано, с какого возраста принимают"
-    assert f"с {accepted} лет" in text, text
+    # Зарина 16.10.2026: «Добавьте в шаблон, что принимаем детей с 5 до 17 лет».
+    assert (accepted, upper) == (5, 17)
+    assert f"Принимаем детей с {accepted} до {upper} лет" in text, text
     assert "уточнит администратор" not in text.lower()
 
 

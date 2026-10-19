@@ -358,6 +358,8 @@ class IntentHint(str, Enum):
     #: Вопрос действующего клиента: пропуск занятия, перенос, замена группы,
     #: оплата уже купленного абонемента. Такое решает человек, а не бот.
     CLIENT_MATTER = "client_matter"
+    #: Счёт на оплату абонемента — его выставляет бухгалтер (владелец 15.10.2026).
+    INVOICE = "invoice"
     ERASE = "erase"
     STOP = "stop"
     SAFETY = "safety"
@@ -424,6 +426,8 @@ class ManagerCardKind(str, Enum):
     LEAD = "lead"
     ESCALATION = "escalation"
     ALERT = "alert"
+    #: Просьба выставить счёт — бухгалтеру, а не администратору.
+    INVOICE = "invoice"
 
 
 class GapRef(str, Enum):
@@ -936,6 +940,9 @@ class ToolContext:
     list_choices: tuple[str, ...] = ()
     #: Заявка, уже сохранённая в этом диалоге до хода.
     saved_lead: SavedLead | None = None
+    #: Зал, чью карточку (расписание, дорогу, адрес) клиент видел последней. Выбрать по
+    #: ней время — ещё не выбрать зал, но и список залов заново ему не нужен.
+    gym_in_view: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

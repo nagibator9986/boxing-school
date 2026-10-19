@@ -362,6 +362,11 @@ async def _deliver(
         if conversation_id is not None:
             await repo_conversation.touch_outbound(session, conversation_id, now)
         await session.commit()
+    if conversation_id is not None and message.kind is OutboundKind.OPERATOR_REPLY:
+        # Отдельной транзакцией: отметка отправки уже сохранена, и сбой здесь не вернёт
+        # строку в очередь — повторная отправка того же ответа хуже пропущенной отметки.
+        async with deps.sessionmaker() as session:
+            await _remember_operator_reply(session, conversation_id, message.text or "", now=now)
 
     metrics.observe_outbound_sent(message.channel, message.kind)
     log.info(
@@ -713,6 +718,29 @@ def _deps(ctx: dict[str, Any]) -> Any:
     if deps is None:
         raise RuntimeError("В контексте воркера нет PipelineDeps: не отработал startup")
     return deps
+
+
+async def _remember_operator_reply(session: Any, conversation_id: UUID, text: str, *, now: datetime) -> None:
+    """Ответ человека из CRM — часть разговора, как и ответ с телефона.
+
+    С телефона ответ приходит эхом и попадает и в историю модели, и в отметку «человек
+    был в диалоге». Из CRM он уходит этой очередью, а эхо его считается своим — и раньше
+    не попадал никуда. Диалог 15.10.2026: администратор ответил «Конечно можно,
+    выздоравливайте», вернул бота, клиент написал «Спасибо, в след вторник будем» — и бот,
+    не видевший ответа, написал «Администратор уже в курсе и ответит здесь».
+    """
+    from app.core import session as conv_session
+    from app.storage import repo_conversation
+
+    try:
+        await pause.note_operator(session, conversation_id, now=now)
+        conv = await repo_conversation.get_by_id(session, conversation_id)
+        if conv is not None and text.strip():
+            await conv_session.save_turn(session, conv, [{"role": "model", "parts": [{"text": text}]}])
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 - отметка не важнее самой отправки
+        await session.rollback()
+        log.warning("operator_reply_note_failed", error=type(exc).__name__)
 
 
 def _now() -> datetime:

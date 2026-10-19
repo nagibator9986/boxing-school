@@ -771,7 +771,9 @@ async def test_withheld_reply_is_not_picked_up_later_by_the_sweep(deps, llm, mon
     monkeypatch.setattr(
         pipeline_module.pause, "operator_last_seen", wrote_while_the_model_worked
     )
-    await say(deps, llm, "s-2", "А во сколько?", [FakeTurn.answer("Ответ, который уже не нужен.")])
+    # Вопрос о цене: голое «А во сколько?» без зала с 19.10.2026 получает расписание всех
+    # залов кодом, без модели, — а здесь нужен ход модели, который отменяется.
+    await say(deps, llm, "s-2", "А сколько стоит?", [FakeTurn.answer("Ответ, который уже не нужен.")])
 
     async with deps.sessionmaker() as session:
         rows = (

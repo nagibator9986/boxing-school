@@ -618,7 +618,11 @@ async def test_operator_entering_keeps_the_lead_card(kb, state, sessionmaker, se
 
 
 def test_card_links_to_the_dialog_only_on_a_public_https_address(kb, settings, monkeypatch) -> None:
-    """Ссылка на переписку в CRM — только если адрес бота настоящий, https."""
+    """Ссылка на переписку в CRM — только если адрес бота настоящий, https.
+
+    Идентификатор — без дефисов, как его хранит база и строит сама CRM: ссылка с
+    дефисами открывала «Такого клиента нет» (найдено 19.10.2026).
+    """
     import app.tools.booking as booking
     from app.types import LeadDraft
 
@@ -627,7 +631,8 @@ def test_card_links_to_the_dialog_only_on_a_public_https_address(kb, settings, m
 
     monkeypatch.setattr(booking, "get_settings", lambda: settings.model_copy(update={"public_base_url": "https://bot.example"}))
     card = booking._card_text(ctx, draft, kb.gym(RAHAT))
-    assert f"Переписка: https://bot.example/crm/clients/{ctx.conversation_id}" in card, card
+    assert f"Переписка: https://bot.example/crm/clients/{ctx.conversation_id.hex}" in card, card
+    assert "-" not in card.split("/crm/clients/", 1)[1].split()[0]
 
     monkeypatch.setattr(booking, "get_settings", lambda: settings.model_copy(update={"public_base_url": "http://localhost:8000"}))
     assert "Переписка" not in booking._card_text(ctx, draft, kb.gym(RAHAT))

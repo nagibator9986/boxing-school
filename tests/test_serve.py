@@ -434,3 +434,28 @@ def test_schema_step_moves_old_trial_slots_to_utc(tmp_path: Path, monkeypatch: p
     assert asyncio.run(_stored()).startswith("2026-10-12 12:00:00")
     assert serve.ensure_schema(env) is True, "повторный запуск"
     assert asyncio.run(_stored()).startswith("2026-10-12 12:00:00"), "второй раз не сдвигает"
+
+
+def test_owner_edited_lexicon_receives_a_new_intent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Интент «счёт на оплату» (19.10.2026) обязан доехать, даже если словарь правили в CRM."""
+    data = tmp_path / "data"
+    image = tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    lexicon = image / "kb" / "lexicon.yaml"
+    original = lexicon.read_text(encoding="utf-8")
+    # Прошлый выпуск — без интента invoice.
+    start = original.index("  invoice:")
+    end = original.index("  erase:", start)
+    lexicon.write_text(original[:start] + original[end:], encoding="utf-8")
+    serve.seed_from_image(data, image_root=image)
+    owner = data / "kb" / "lexicon.yaml"
+    owner.write_text(owner.read_text(encoding="utf-8").replace('  - "кжби"\n', '  - "кжби"\n  - "кжби район"\n', 1), encoding="utf-8")
+
+    lexicon.write_text(original, encoding="utf-8")   # новый выпуск с invoice
+    serve.seed_from_image(data, image_root=image)
+
+    merged = owner.read_text(encoding="utf-8")
+    assert "  invoice:" in merged and "выставите счет" in merged, "новый интент дописан"
+    assert '  - "кжби район"' in merged, "правка владельца осталась"
+    assert serve._kb_loads(data / "kb", data / "media"), "база читается"

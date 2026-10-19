@@ -150,6 +150,8 @@ class RuntimeSettings:
     ignored_numbers: str = ""
     #: Текст автоприветствия рекламы; см. ``Settings.auto_greeting_texts``.
     auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ\nThank you for contacting us"
+    #: WhatsApp бухгалтера: ему уходят просьбы выставить счёт. Пусто — администратору.
+    accountant_contact: str = ""
 
     # ------------------------------------------------------------------ чтение
     @classmethod
@@ -179,6 +181,7 @@ class RuntimeSettings:
             trial_free=_as_bool(values.get("trial_free", ""), True),
             ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
             auto_greeting_texts=(values.get("auto_greeting_texts", "") or "").strip(),
+            accountant_contact=(values.get("accountant_contact", "") or "").strip(),
         )
 
     # ------------------------------------------------------------ применение

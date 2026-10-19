@@ -102,6 +102,29 @@ artifacts:
   max_send_per_dialog: 2
   gap_ref: null
   render_from: gyms
+# Владелец 15.10.2026: на «Вы с 09:00 до пяти работаете?» бот позвал администратора —
+# «он мог бы просто скинуть наши расписания залов». Тот же список залов с номерами, но под
+# каждым залом его расписание.
+- id: schedules_city
+  kind: text_card
+  enabled: true
+  scope: city
+  gym_id: null
+  title:
+    ru: Расписание всех залов Костаная
+    kk: Қостанайдағы барлық залдардың кестесі
+  when_to_send_ru: когда спрашивают расписание, часы работы или «во сколько у вас», а зал ещё не выбран — по Костанаю
+  body: null
+  file_path: null
+  file_mime: null
+  file_bytes: null
+  file_sha256: null
+  channels:
+    whatsapp: allow
+    instagram: allow
+  max_send_per_dialog: 2
+  gap_ref: null
+  render_from: schedules
 - id: gyms_list_all
   kind: text_card
   enabled: true

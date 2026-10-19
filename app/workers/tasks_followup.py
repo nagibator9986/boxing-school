@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channels.outbound import check_send_allowed
 from app.config import get_settings
-from app.core import ignore_list
+from app.core import ignore_list, pause
 from app.kb.models import FollowupRule
 from app.logging_conf import bind_correlation, clear_correlation, get_logger
 from app.observability import metrics
@@ -305,12 +305,14 @@ async def schedule_followups(
     if int(conv.followup_stage) >= int(settings.followup_max_attempts):
         return []
 
-    if is_closing_phrase(client_text, closing_words=closing_words):
-        # Разговор закончен по-хорошему. Напоминание через полчаса после
-        # «спасибо большое» — навязчивость; владелец просил дожимать тех, кто
-        # замолчал на середине, а не тех, кто попрощался.
+    # Разговор закончен по-хорошему. Напоминание через полчаса после «спасибо большое» —
+    # навязчивость; владелец просил дожимать тех, кто замолчал на середине, а не тех,
+    # кто попрощался. Но напоминание о записанном пробном — не дожим: раньше «Спасибо»
+    # после записи снимало и его (каждый ответ клиента отменяет запланированное и
+    # планирует заново), и записанный клиент оставался без «сегодня в 19:00».
+    closing = is_closing_phrase(client_text, closing_words=closing_words)
+    if closing:
         log.info("followups_skipped_closing", conv_id=str(conv.id))
-        return []
 
     lead = await repo_lead.get_by_conversation(session, conv.id)
     trial_slot = getattr(lead, "trial_slot", None)
@@ -321,6 +323,8 @@ async def schedule_followups(
     created: list[UUID] = []
     for rule in policy:
         if rule.max_times <= 0:
+            continue
+        if closing and rule.event not in _TRIAL_ANCHORED:
             continue
         if not _rule_applies(rule.event, booked=booked, trial_slot=trial_slot):
             continue
@@ -358,12 +362,19 @@ async def schedule_followups(
     return created
 
 
-async def cancel_followups(session: AsyncSession, conv_id: UUID, *, reason: str) -> int:
-    """Снимает все незапущенные напоминания диалога. Возвращает число отменённых."""
+async def cancel_followups(
+    session: AsyncSession, conv_id: UUID, *, reason: str, keep_trial: bool = False
+) -> int:
+    """Снимает незапущенные напоминания диалога. Возвращает число отменённых.
+
+    ``keep_trial`` — напоминания о записанном пробном остаются: передача вопроса
+    администратору запись не отменяет, а клиент всё так же придёт на занятие.
+    """
+    conditions = [FollowupTask.conversation_id == conv_id, FollowupTask.state == STATE_PENDING]
+    if keep_trial:
+        conditions.append(FollowupTask.kind.not_in([kind.value for kind in _TRIAL_ANCHORED]))
     result = await session.execute(
-        sa.update(FollowupTask)
-        .where(FollowupTask.conversation_id == conv_id, FollowupTask.state == STATE_PENDING)
-        .values(state=STATE_CANCELLED)
+        sa.update(FollowupTask).where(*conditions).values(state=STATE_CANCELLED)
     )
     count = int(result.rowcount or 0)
     if count:
@@ -464,7 +475,11 @@ async def _skip_reason(
         return "ignored_number"
     if conv.followup_blocked:
         return "blocked"
-    if conv.state in _DEAD_STATES:
+    if conv.state in _DEAD_STATES and not (
+        kind in _BEFORE_TRIAL
+        and conv.state == ConversationState.ESCALATED.value
+        and await pause.bot_pause_over(session, conv.id, now=now)
+    ):
         return "operator"
     if int(task.attempt) >= int(settings.followup_max_attempts):
         return "attempts"

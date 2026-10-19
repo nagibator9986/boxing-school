@@ -36,7 +36,7 @@ from app.types import (
     Urgency,
 )
 from app.kb.agreement import chosen_option, question_sentence, split_agreement
-from app.tools.booking import format_local_dt, render_card_text
+from app.tools.booking import dialog_link, format_local_dt, render_card_text
 
 #: Причины, для которых в базе знаний есть отдельная, более точная фраза клиенту.
 _REPLY_KEYS: Final[dict[str, str]] = {
@@ -50,6 +50,9 @@ _REPLY_KEYS: Final[dict[str, str]] = {
 _ALWAYS_HIGH: Final[frozenset[str]] = frozenset(
     {EscalationReason.MEDICAL.value, EscalationReason.COMPLAINT.value}
 )
+
+#: Пустое поле карточки: строку с ним карточка не печатает.
+_NO_LINK: Final[str] = "—"
 
 #: Запасная длительность паузы, если в policies.yaml значение не задано.
 _DEFAULT_PAUSE_MINUTES: Final[int] = 60
@@ -104,6 +107,24 @@ def _answered_the_bot(ctx: ToolContext) -> bool:
     return proposal is not None or chosen_option(latest) is not None or bool(_BARE_REPLY_RE.match(own))
 
 
+#: Начало вопроса: «как», «сколько», «можно», «есть ли», «подскажите»; казахские
+#: вопросительные слова и частицы.
+_QUESTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\W*(?:а\s+|и\s+)?(?:как|сколько|где|когда|можно|что|чем|какой|какая|какие|какое|каких|почему|зачем"
+    r"|есть\s+ли|нужн\w*\s+ли|подскажите|скажите|расскажите|объясните|у\s+вас)(?![а-яё])"
+    r"|(?<![а-яәөүұқғңһі])(?:қанша|қайда|қашан|қалай|неге|ма|ме|ба|бе|па|пе)(?![а-яәөүұқғңһі])",
+    re.IGNORECASE,
+)
+
+
+def _just_telling(ctx: ToolContext) -> bool:
+    """Клиент рассказывает о себе, а не спрашивает: «Он ходил в том году», «Вчера был у вас»."""
+    if not ctx.client_texts:
+        return False
+    own = split_agreement(ctx.client_texts[-1])[0].strip()
+    return bool(own) and "?" not in own and not _QUESTION_RE.search(own)
+
+
 def _reply_key(reason: str) -> str:
     """Ключ i18n с текстом, который увидит клиент."""
     return _REPLY_KEYS.get(reason, "escalation.handoff")
@@ -153,6 +174,22 @@ async def escalate_to_manager(
             "перечислив варианты нумерованным списком"
         )
 
+    # Живой прогон 19.10.2026: на «Он ходил в том году» модель передала разговор
+    # администратору «за отсутствием данных» — а клиент ничего не спрашивал. Владелец
+    # 15.10.2026: «через каждый диалог пишется: здесь лучше ответит администратор».
+    if (
+        reason_enum in _STUCK_REASONS
+        and _just_telling(ctx)
+        and not _agreed_to_a_handover(ctx)
+        and not _client_asked_for_human(ctx)
+    ):
+        return ToolResult.invalid_input(
+            "клиент ничего не спросил — он рассказывает о себе («ходил в том году», «вчера был "
+            "у вас»). Не передавай разговор администратору: ответь по-человечески одной фразой и "
+            "задай один вопрос, который ведёт дальше — к записи или абонементу. Если клиент о "
+            "чём-то просит, а данных нет, спроси, передать ли вопрос администратору"
+        )
+
     summary = " ".join(str(question_summary or "").split())[:200].strip()
     if not summary:
         return ToolResult.invalid_input("question_summary пуст: администратору нечего передать")
@@ -163,11 +200,13 @@ async def escalate_to_manager(
     # 13.10.2026: «Вчера на 9.00 договорились», «Или 18.00», «Не понятно» — три передачи
     # подряд. Жалоба и здоровье уходят всегда: это новая, срочная причина.
     if reason_key not in _ALWAYS_HIGH and await ctx.services.escalation_open(within_minutes=pause_minutes):
+        # Диалог 16.10.2026: на «Да, конечно» о рассказе про абонементы модель дописала
+        # к прайсу «Администратор уже подключается…» — согласие не вопрос для человека.
         return ToolResult.invalid_input(
             "администратор уже получил вопрос из этого диалога и ещё не ответил — повторно не "
             "передавай. Ответь клиенту сам по данным инструментов (расписание, залы, цены, запись). "
-            "Если ответа в данных нет — одной фразой скажи, что администратор уже в курсе и "
-            "ответит здесь, без обещания сроков"
+            "Об администраторе пиши, только если клиент спросил то, чего в данных нет: тогда одной "
+            "фразой — вопрос уже у администратора, он ответит здесь, без обещания сроков"
         )
 
     try:
@@ -198,8 +237,11 @@ async def escalate_to_manager(
             "reason": reason_enum.value,
             "channel": ctx.channel.value,
             "dt": format_local_dt(ctx.now),
+            "dialog": dialog_link(ctx) or _NO_LINK,
         },
     )
+    # Без адреса сервиса ссылки нет — и строки «Переписка: —» тоже.
+    card_text = "\n".join(line for line in card_text.splitlines() if not line.endswith(f": {_NO_LINK}"))
     card = ManagerCard(
         kind=ManagerCardKind.ESCALATION,
         text=card_text,

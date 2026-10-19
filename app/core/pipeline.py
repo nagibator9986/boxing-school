@@ -88,8 +88,9 @@ from app.storage import repo_conversation, repo_lead, repo_message, repo_outbox
 from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
-from app.tools.gyms import gyms_named_in, normalize_text
+from app.tools.gyms import district_gym, gyms_named_in, normalize_text
 from app.types import (
+    MAX_MESSAGE_CHARS,
     OWNER_TEXT_ARTIFACT_PREFIX,
     ManagerCardKind,
     SavedLead,
@@ -1008,6 +1009,19 @@ async def _run_turn(
                 await _flush_queue(deps, services)
                 return decision
 
+        # --- 6b-счёт. Просьба выставить счёт — бухгалтеру ------------------------ #
+        # Владелец 15.10.2026: «бот не понимает, когда человек ходил и просит счёт на
+        # оплату. Пускай переадресовывает на бухгалтера — бухгалтер выставит счёт».
+        if chosen is None:
+            decision = await _answer_invoice(
+                deps, db, services, conv, inbound,
+                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
+            )
+            if decision is not None:
+                await db.commit()
+                await _flush_queue(deps, services)
+                return decision
+
         # --- 6b'. Час вместо номера: «9» на бокс и кикбоксинг в 09:00 -------- #
         if chosen is None:
             decision = await _answer_hour_with_sections(
@@ -1032,10 +1046,25 @@ async def _run_turn(
                 await _flush_queue(deps, services)
                 return decision
 
+        # --- 6d. «Во сколько вы работаете?», зал не выбран — расписание всех залов -- #
+        # Владелец 15.10.2026: на «Вы с 09:00 до пяти работаете?» бот позвал администратора —
+        # «мог бы просто скинуть наши расписания залов». В трёх живых прогонах модель ни разу
+        # их не прислала, а дважды выдумала «занятия только вечером».
+        if chosen is None:
+            decision = await _answer_schedule_overview(
+                deps, db, services, conv, inbound,
+                kb=kb, lang=lang, text=text, correlation_id=correlation_id, now=now,
+            )
+            if decision is not None:
+                await db.commit()
+                await _flush_queue(deps, services)
+                return decision
+
         # --- 7. Guards ----------------------------------------------------- #
         verdict = guards.scan(
             text, lang=lang, lexicon=kb.lexicon, policies=kb.policies,
             booking_in_progress=await _booking_in_progress(db, conv),
+            trial_upcoming=await _trial_ahead(db, conv, kb, now=now, settings=settings),
         )
         if verdict.has(GuardFlag.STOP_WORD):
             await _block_followups(db, conv.id)
@@ -1170,6 +1199,7 @@ async def _run_turn(
         # параллельно с ним, а не после: последовательный вызов добавлял к
         # каждому ходу около секунды ожидания на стороне клиента.
         lead_task = await _start_lead_extraction(deps, db, conv, lang=lang)
+        gym_in_view = await _gym_in_view(db, conv, kb)
 
         ctx = ToolContext(
             conversation_id=conv.id,
@@ -1190,13 +1220,13 @@ async def _run_turn(
             dialog_client_texts=_recent_client_texts(client_turn_text, stored, lookback=None),
             list_choices=_list_choices(stored, text if chose_from_list else None),
             saved_lead=await _saved_lead(db, conv),
+            gym_in_view=gym_in_view,
         )
         executor = await build_tool_executor(deps, ctx)
 
         # Заметка собирается заново каждый ход и уходит ПОСЛЕДНИМ элементом
         # contents: любая динамика в начале запроса убивает implicit-кэш.
         child_talk = await _child_talk_continues(db, conv, text)
-        gym_in_view = await _gym_in_view(db, conv, kb)
         dynamic_note = build_dynamic_note(
             lang=lang,
             now=_school_time(now, settings),
@@ -1287,7 +1317,8 @@ async def _run_turn(
         )
         reply_raw = (response.text or "").strip()
         owner_answer = await _owner_answer_for_handover(
-            executor, kb, reply=reply_raw, intents=intents, invocations=invocations, text=text
+            executor, kb, reply=reply_raw, intents=intents, invocations=invocations, text=text,
+            gym_in_view=gym_in_view,
         )
         if owner_answer is not None:
             invocations = (*invocations, owner_answer)
@@ -1331,6 +1362,9 @@ async def _run_turn(
 
         # --- 9. Postcheck --------------------------------------------------- #
         cleaned = sanitize(reply_raw)
+        cleaned, invented_coaches = postcheck.strip_invented_coaches(cleaned, kb)
+        if invented_coaches:
+            _log.warning("invented_coach_stripped", names=list(invented_coaches))
         strict = injection or verdict.has(GuardFlag.OFF_TOPIC)
         sent_before = await _texts_already_sent(db, conv)
         pc = postcheck.check(
@@ -1451,6 +1485,9 @@ async def _run_turn(
         # пересказала следом, клиент читает вторым экземпляром — а предложение
         # прислать то, что уже прислано, читается как невнимательность.
         reply = reply_dedup.strip_card_repeats(reply, [m.text or "" for m in services.messages])
+        # «💳 Цены и тарифы указаны в карточке выше», «можно посмотреть в нашей карточке»
+        # (диалоги 15.10.2026): карточка и так стоит над ответом — или её не отправляли вовсе.
+        reply = _without_card_pointers(reply)
         if not child_talk:
             # Владелец 10.09.2026: «для записи спрашивать не только имя, а ФИ». Модель
             # всё равно пишет «Как зовут ребёнка?» — вопрос заменяется формулировкой базы.
@@ -1462,8 +1499,10 @@ async def _run_turn(
         )
         if _trial_confirmed(services):
             # Клиент уже получил готовое подтверждение записи от кода. Текст модели
-            # следом — это «администратор свяжется» или пересказ того же самого.
-            reply = ""
+            # следом — это «администратор свяжется» или пересказ того же самого. К переносу
+            # остаётся только вежливая фраза без дня и часа: «Выздоравливайте!» в ответ на
+            # «у нас отит, можно со следующего вторника?» (диалог 15.10.2026).
+            reply = _courtesy(reply) if _moved_this_turn(invocations) else ""
         elif _owner_text_sent(services):
             # Текст владельца ушёл дословно отдельным сообщением. Пересказ модели следом —
             # тот же ответ вторым экземпляром и чужими словами: «удобная спортивная
@@ -1475,6 +1514,10 @@ async def _run_turn(
             if not asked or funnel.is_handover(asked):
                 asked = next_step
             reply = asked
+        elif _card_sent(services, SCHEDULES_CARD) and funnel.is_handover(reply):
+            # Вместо «уточнит администратор» ушло расписание всех залов, и оно само
+            # заканчивается вопросом — передача администратору следом лишняя.
+            reply = ""
         elif (_asks_which_gym(reply) or _lists_gyms(reply, kb)) and not await _gyms_list_seen(
             db, conv, kb, services
         ):
@@ -1587,7 +1630,7 @@ async def _run_turn(
             sent_parts = [
                 message.text or "" for message in services.messages
                 if message.kind is OutboundKind.LEAD_CONFIRMATION
-            ]
+            ] + ([reply] if reply.strip() else [])
         elif not sent_parts:
             # Модель промолчала, а карточки ушли — в истории остаются карточки.
             sent_parts = [message.text or "" for message in services.messages]
@@ -1945,6 +1988,9 @@ async def _escalate_turn(
         lang=lang,
         phone=conv.phone_e164 or inbound.phone_e164 or inbound.contact_phone,
         channel=inbound.channel,
+        # Владелец 15.10.2026: «администратор об этом знает вообще, что он должен ответить?»
+        # Карточка уходит ему в WhatsApp — со ссылкой, по которой диалог открывается сразу.
+        dialog_url=deps.settings.crm_dialog_url(conv.id),
         now=now,
         conversation_id=conv.id,
     )
@@ -1968,7 +2014,8 @@ async def _escalate_turn(
             reason=pause_reason,
             now=now,
         )
-    await _cancel_followups(db, conv.id, reason="escalated")
+    # Запись на пробное передача не отменяет: «сегодня в 19:00» клиенту по-прежнему нужно.
+    await _cancel_followups(db, conv.id, reason="escalated", keep_trial=True)
     return _decision(
         DecisionAction.ESCALATE,
         f"escalate:{reason.value}",
@@ -2315,6 +2362,200 @@ async def _answer_menu_facts(
         correlation_id=correlation_id,
     )
     await _schedule_followups(db, conv, decision, kb=kb, client_text=inbound.text or "")
+    return decision
+
+
+#: Ответ на просьбу выставить счёт: номер бухгалтера и что запрос ему передан.
+TEXT_INVOICE: Final[str] = "system.invoice_to_accountant"
+#: Бухгалтер в настройках не указан — просьба уходит администратору.
+TEXT_INVOICE_ADMIN: Final[str] = "escalation.invoice_to_admin"
+
+
+async def _answer_invoice(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    text: str,
+    correlation_id: str,
+    now: datetime,
+) -> PipelineDecision | None:
+    """Счёт на оплату: клиенту — номер бухгалтера, бухгалтеру — карточка с клиентом.
+
+    Диалог 08.10.2026: «Можно сына записать… Выставите счёт удалённо», — бот спросил
+    возраст и район, модель потом написала «счёт удалённо мы не выставляем», а на «Вчера
+    был у вас» позвала администратора. Счёт выставляет бухгалтер, его номер владелец
+    вписывает в CRM. ``None`` — это не просьба о счёте.
+    """
+    from app.notify.manager import build_manager_message
+    from app.notify.templates import format_phone
+    from app.tools.booking import channel_title, format_local_dt, render_card_text
+
+    if IntentHint.INVOICE not in lexicon.intent_hints(split_agreement(text)[0], lexicon=kb.lexicon):
+        return None
+    runtime = _owner_runtime(deps)
+    targets = notify_targets(runtime.accountant_contact) if runtime is not None else ()
+    if not targets:
+        return await _escalate_turn(
+            deps, db, services, conv, inbound,
+            kb=kb, lang=lang, text=text, key=TEXT_INVOICE_ADMIN,
+            reason=EscalationReason.USER_REQUEST, pause_reason=PauseReason.ESCALATION,
+            correlation_id=correlation_id, now=now,
+        )
+    reply = _kb_text(kb, TEXT_INVOICE, lang, phone=format_phone(targets[0]) or targets[0])
+    if not reply:
+        return None
+    parts = await _enqueue_reply(deps, services, conv, inbound, lang=lang, text=reply, now=now)
+
+    saved = await _saved_lead(db, conv)
+    child = (saved.child_name if saved is not None else None) or "—"
+    card_text = render_card_text(
+        kb,
+        "lead_card.invoice",
+        {
+            "phone": format_phone(conv.phone_e164 or inbound.phone_e164 or inbound.contact_phone or inbound.chat_id)
+            or "—",
+            "question": " ".join(text.split())[:300],
+            "child": child,
+            "channel": channel_title(inbound.channel.value),
+            "dt": format_local_dt(now),
+            "dialog": deps.settings.crm_dialog_url(conv.id) or "—",
+        },
+    )
+    card = ManagerCard(
+        kind=ManagerCardKind.INVOICE,
+        # Пустые поля карточка не печатает.
+        text="\n".join(line for line in card_text.splitlines() if not line.endswith(": —")),
+        conversation_id=conv.id,
+        lang=lang,
+    )
+    services.cards.append(card)
+    owner = _owner_settings(deps)
+    for target in targets:
+        message = build_manager_message(card, settings=owner, to=target)
+        if message is not None:
+            await services._enqueue(message, to_client=False)
+    await conv_session.save_turn(
+        db, conv, [_client_content(text), {"role": "model", "parts": [{"text": "\n\n".join(parts) or reply}]}]
+    )
+    # Действующему ученику «вы ещё думаете над пробной?» ни к чему; запись на пробное,
+    # если она есть, остаётся со своими напоминаниями.
+    await _cancel_followups(db, conv.id, reason="invoice", keep_trial=True)
+    _log.info("invoice_to_accountant", conv_key=conv.conv_key, targets=len(targets))
+    return _decision(
+        DecisionAction.REPLY,
+        "invoice_to_accountant",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        cards=services.cards,
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+
+
+#: Карточка «расписание всех залов города» (kb/media.yaml).
+SCHEDULES_CARD: Final[str] = "schedules_city"
+#: «Сегодня», «завтра», «послезавтра» — вопрос про один день.
+_DAY_WORD_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])(?:сегодня|завтра|послезавтра)(?![а-яё])|бүгін|ертең", re.IGNORECASE
+)
+#: Возраст в вопросе: «4 лет», «сыну 6 годиков», «5 жаста».
+_AGE_MENTION_RE: Final[re.Pattern[str]] = re.compile(r"(?<![а-яё])(?:лет|года|годик\w*|жас\w*)(?![а-яё])", re.IGNORECASE)
+
+
+async def _answer_schedule_overview(
+    deps: PipelineDeps,
+    db: AsyncSession,
+    services: _Services,
+    conv: Conversation,
+    inbound: InboundMessage,
+    *,
+    kb: KBSnapshot,
+    lang: Language,
+    text: str,
+    correlation_id: str,
+    now: datetime,
+) -> PipelineDecision | None:
+    """Вопрос только о времени, без зала и места — расписание всех залов города, кодом.
+
+    ``None`` — вопрос не такой (назван зал или место, зал уже перед глазами, есть
+    другие темы) или карточка уже уходила дважды: тогда отвечает модель.
+    """
+    own = split_agreement(text)[0]
+    if set(lexicon.intent_hints(own, lexicon=kb.lexicon)) != {IntentHint.SCHEDULE}:
+        return None
+    if _AGE_MENTION_RE.search(own):
+        # «Вы работаете с детьми 4 лет?» — вопрос о возрасте ребёнка, ответит модель.
+        return None
+    if _weekdays_in((own,)) or _DAY_WORD_RE.search(own):
+        # «Во сколько по вторникам?», «а завтра?» — у модели есть поиск занятий по дню
+        # (find_sessions): ответ про один день точнее, чем расписание всех залов.
+        return None
+    if _names_a_place(kb, normalize_text(own)) or await _gym_in_view(db, conv, kb) is not None:
+        return None
+    if await _already_booked(db, conv):
+        # Записанный спрашивает время своего занятия — его знает заметка о записи.
+        return None
+    stored = await _stored_contents(db, conv)
+    if scope_by_texts(kb, _recent_client_texts(own, stored)) is Scope.REGION:
+        # Клиент из райцентра: там у залов почти нет расписания — разберётся модель.
+        return None
+    artifact = kb.artifact(SCHEDULES_CARD)
+    if artifact is None or not artifact.enabled:
+        return None
+    try:
+        sent = await services.count_artifact_sends(conv.id, SCHEDULES_CARD)
+    except Exception as exc:  # noqa: BLE001 - не знаем — пусть отвечает модель
+        _log.warning("schedules_card_lookup_failed", error=type(exc).__name__)
+        return None
+    if sent >= int(artifact.max_send_per_dialog or 1):
+        return None
+    try:
+        card = render_artifact_body(kb, artifact_id=SCHEDULES_CARD, lang=lang)
+    except Exception as exc:  # noqa: BLE001 - молчание хуже ответа модели
+        _log.warning("schedules_card_render_failed", error=type(exc).__name__)
+        return None
+    if len(card) > MAX_MESSAGE_CHARS:
+        # Залов стало больше, чем помещается в одно сообщение, — ответ номером зала по
+        # двум сообщениям не разобрать. Пусть отвечает модель, пока карточку не сократят.
+        _log.warning("schedules_card_too_long", chars=len(card))
+        return None
+    await services.enqueue_outbound(
+        OutboundMessage(
+            conversation_id=conv.id,
+            channel_id=inbound.channel_id,
+            channel=inbound.channel,
+            chat_id=inbound.chat_id,
+            lang=lang,
+            kind=OutboundKind.ARTIFACT,
+            text=card,
+            artifact_id=SCHEDULES_CARD,
+        )
+    )
+    await repo_conversation.bump_counters(services.session, conv.id, msg_out=1)
+    await repo_conversation.touch_outbound(services.session, conv.id, now)
+    await conv_session.save_turn(
+        db, conv, [_client_content(text), {"role": "model", "parts": [{"text": card}]}]
+    )
+    _log.info("schedule_overview_sent", conv_key=conv.conv_key)
+    decision = _decision(
+        DecisionAction.REPLY,
+        "schedule_overview",
+        inbound=inbound,
+        conv_id=conv.id,
+        lang=lang,
+        outbound=services.messages,
+        cards=services.cards,
+        kb_hash=kb.kb_hash,
+        correlation_id=correlation_id,
+    )
+    await _schedule_followups(db, conv, decision, kb=kb, client_text=text)
     return decision
 
 
@@ -2948,6 +3189,12 @@ def _just_said(
     name = lexicon.extract_name(text)
     if name:
         said.append(f"имя ребёнка — {name}" if name_is_childs else f"имя — {name}")
+    # Место, которое по базе ведёт ровно к одному залу. Живой прогон 19.10.2026: на «Живу
+    # Костанай 2 район, гостиница Остров» модель не стала искать по району и сама выбрала
+    # центр, а владелец закрепил второй Костанай за Плазой («ближайшая — Плаза Аймед»).
+    gym = kb.gym(district_gym(kb, text) or "")
+    if gym is not None:
+        said.append(f"район — ближайший к нему зал «{gym.title.ru}» ({gym.id}), другой зал не подбирай")
     return tuple(said)
 
 
@@ -3090,7 +3337,9 @@ _NAME_NEEDS: Final[frozenset[str]] = frozenset({"need_name", "need_age"})
 _SECTION_NEEDS: Final[frozenset[str]] = frozenset({"need_discipline", "unknown_discipline"})
 _TIME_NEEDS: Final[frozenset[str]] = frozenset({"need_time", "unknown_time", "unknown_day"})
 #: Шаги записи, вопрос по которым задаёт код всегда: варианты, список залов, перенос.
-_CODE_ASKS: Final[frozenset[str]] = _SECTION_NEEDS | _TIME_NEEDS | {"need_gym", "need_time_confirm"}
+#: Вопросы-подтверждения «Записать в зал «…» — в среду, 21.10 в 17:00?».
+_CONFIRM_NEEDS: Final[frozenset[str]] = frozenset({"need_time_confirm", "need_gym_confirm"})
+_CODE_ASKS: Final[frozenset[str]] = _SECTION_NEEDS | _TIME_NEEDS | _CONFIRM_NEEDS | {"need_gym"}
 
 
 def _booking_question(
@@ -3119,8 +3368,8 @@ def _booking_question(
             # Модель выбрала зал сама — родитель его не называл. Вопрос — список залов
             # с номерами: цифру в ответ код разворачивает в зал (см. ``_gym_choice``).
             return _gyms_question(kb, lang)
-        if first == "need_time_confirm":
-            gym = kb.gym(str(data.get("gym_id") or ""))
+        if first in _CONFIRM_NEEDS:
+            gym = kb.gym(str(data.get("gym_id") or data.get("confirm_gym_id") or ""))
             when = str(data.get("confirm_when") or "")
             if gym is None or not when:
                 return None
@@ -3258,6 +3507,7 @@ async def _owner_answer_for_handover(
     intents: Sequence[IntentHint],
     invocations: Sequence[ToolInvocation],
     text: str,
+    gym_in_view: str | None = None,
 ) -> ToolInvocation | None:
     """Готовый ответ владельца вместо «уточнит администратор».
 
@@ -3270,6 +3520,16 @@ async def _owner_answer_for_handover(
         return None
     if any(invocation.name in ("get_kb_fact", "escalate_to_manager") for invocation in invocations):
         return None
+    if IntentHint.SCHEDULE in intents and not gym_in_view and not any(
+        invocation.name in ("get_schedule", "find_sessions") for invocation in invocations
+    ):
+        # «Вы с 09:00 до пяти работаете?» — и «здесь лучше ответит администратор». Владелец
+        # 15.10.2026: «мог бы просто скинуть наши расписания залов».
+        result = await executor("send_content", {"artifact_id": SCHEDULES_CARD})
+        if result.ok:
+            _log.info("schedules_instead_of_handover")
+            sent = getattr(executor, "invocations", ())
+            return sent[-1] if sent else None
     for intent in intents:
         topic = intent.value
         if topic not in FAQ_TOPICS:
@@ -3440,6 +3700,60 @@ _WELCOME_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: День и час во фразе модели: их к подтверждению переноса добавлять нельзя — это
+#: делает код по расписанию, а пересказ модели может с ним разойтись.
+_WHEN_WORDS_RE: Final[re.Pattern[str]] = re.compile(
+    r"\d|понедельник|вторник|сред[аеуы]|четверг|пятниц|суббот|воскресен|сегодня|завтра"
+    r"|дүйсенбі|сейсенбі|сәрсенбі|бейсенбі|жұма|сенбі|жексенбі|бүгін|ертең",
+    re.IGNORECASE,
+)
+
+
+def _moved_this_turn(invocations: Sequence[ToolInvocation]) -> bool:
+    """Перенёс ли ``create_trial_lead`` уже сделанную запись в этом ходу."""
+    return any(
+        invocation.name == "create_trial_lead"
+        and invocation.result is not None
+        and (invocation.result.data or {}).get("moved") is True
+        for invocation in invocations
+    )
+
+
+def _courtesy(reply: str) -> str:
+    """Одна вежливая фраза модели — без вопроса, без дня и часа. Пусто — такой нет."""
+    for sentence in _SENTENCE_RE.findall(_lead_in(reply)):
+        sentence = sentence.strip()
+        if sentence and not _WHEN_WORDS_RE.search(sentence) and not funnel.is_handover(sentence):
+            return sentence
+    return ""
+
+
+#: Ссылка модели на карточку этого же хода: «указаны в карточке выше», «смотрите выше».
+_CARD_POINTER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:карточк\w*|сообщени\w*|списк\w*)\s+выше|указан\w*\s+выше|(?:см\.|смотрите)\s+выше"
+    # «Цены можно посмотреть в нашей карточке», «указаны в карточке» — но не «оплата картой».
+    r"|(?:смотр\w*|посмотр\w*|указан\w*|найд[её]те)[^.!?\n]{0,40}?\bв\s+(?:нашей\s+|этой\s+)?карточк",
+    re.IGNORECASE,
+)
+
+
+def _without_card_pointers(reply: str) -> str:
+    """Ответ без фраз, которые лишь отсылают к карточке над ним."""
+    kept: list[str] = []
+    for line in (reply or "").splitlines():
+        sentences = [part for part in _SENTENCE_RE.findall(line) if part.strip()]
+        useful = [part.strip() for part in sentences if not _CARD_POINTER_RE.search(part)]
+        if sentences and not useful:
+            continue
+        kept.append(" ".join(useful) if len(useful) != len(sentences) else line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def _card_sent(services: _Services, artifact_id: str) -> bool:
+    """Ушла ли в этом ходу карточка с этим идентификатором."""
+    return any(artifact_id in message.artifacts() for message in services.messages)
+
+
 def _owner_text_sent(services: _Services) -> bool:
     """Ушёл ли в этом ходу текст владельца, который нельзя пересказывать."""
     return any(
@@ -3474,6 +3788,43 @@ async def _booking_in_progress(db: AsyncSession, conv: Conversation) -> bool:
         if asked and (_OFFER_TIME_RE.search(asked) or any(word in asked for word in ("запис", "врем", "удобн"))):
             return True
     return False
+
+
+#: Сколько идёт занятие, если по расписанию зала его конец не узнать.
+_DEFAULT_SESSION_LENGTH: Final[timedelta] = timedelta(minutes=90)
+
+
+def _session_window(lead: Any, kb: KBSnapshot | None, settings: Settings) -> tuple[datetime, datetime] | None:
+    """Начало и конец пробного занятия по записи — конец берётся из расписания зала."""
+    if lead is None or lead.status != LeadStatus.TRIAL_BOOKED.value or lead.trial_slot is None:
+        return None
+    start = lead.trial_slot if lead.trial_slot.tzinfo else lead.trial_slot.replace(tzinfo=timezone.utc)
+    length = _DEFAULT_SESSION_LENGTH
+    gym = kb.gym(lead.gym_id or "") if kb is not None else None
+    if gym is not None:
+        local = _school_time(start, settings)
+        weekday = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[local.weekday()]
+        for slot in gym.schedule:
+            if slot.time_start == f"{local:%H:%M}" and weekday in slot.days and slot.time_end:
+                hours, minutes = (int(part) for part in slot.time_end.split(":"))
+                end = local.replace(hour=hours, minute=minutes)
+                if end > local:
+                    length = end - local
+                break
+    return start, start + length
+
+
+async def _trial_ahead(
+    db: AsyncSession, conv: Conversation, kb: KBSnapshot, *, now: datetime, settings: Settings
+) -> bool:
+    """Впереди ли у клиента пробное занятие — или оно идёт прямо сейчас."""
+    try:
+        lead = await repo_lead.get_by_conversation(db, conv.id)
+    except Exception as exc:  # noqa: BLE001 - не узнали — ведём себя как раньше
+        _log.warning("trial_lookup_failed", error=type(exc).__name__)
+        return False
+    window = _session_window(lead, kb, settings)
+    return window is not None and now < window[1]
 
 
 async def _already_booked(db: AsyncSession, conv: Conversation) -> bool:
@@ -3541,8 +3892,18 @@ async def _booking_details(
         local = _school_time(aware, settings)
         today = _school_time(now, settings).date()
         moment = f"{local:%d.%m} ({_WEEKDAY_NAMES[local.weekday()]}) в {local:%H:%M}"
-        if aware <= now:
+        window = _session_window(lead, kb, settings)
+        ends = window[1] if window is not None else aware
+        if ends <= now:
             when = f"занятие уже прошло — было {moment}"
+        elif aware <= now:
+            # Диалог 16.10.2026: пробное в 19:30, в 19:33 «Да мы едем» — и бот спросил
+            # «Как прошла тренировка у Тимура?». Начавшееся занятие ещё не прошло.
+            when = (
+                f"занятие идёт прямо сейчас — началось в {local:%H:%M}, закончится в "
+                f"{_school_time(ends, settings):%H:%M}. Оно ещё не закончилось: не спрашивай, "
+                "как прошла тренировка; если клиент едет или опаздывает — ждём его"
+            )
         elif local.date() == today:
             when = f"занятие сегодня в {local:%H:%M}"
         elif local.date() == today + timedelta(days=1):
@@ -4008,12 +4369,14 @@ async def _schedule_followups(
         _log.warning("followup_schedule_failed", error=type(exc).__name__)
 
 
-async def _cancel_followups(db: AsyncSession, conv_id: UUID, *, reason: str) -> None:
+async def _cancel_followups(
+    db: AsyncSession, conv_id: UUID, *, reason: str, keep_trial: bool = False
+) -> None:
     """Снимает запланированные напоминания (вошёл оператор, ушла эскалация)."""
     try:
         from app.workers.tasks_followup import cancel_followups
 
-        await cancel_followups(db, conv_id, reason=reason)
+        await cancel_followups(db, conv_id, reason=reason, keep_trial=keep_trial)
     except Exception as exc:  # noqa: BLE001
         _log.warning("followup_cancel_failed", error=type(exc).__name__)
 

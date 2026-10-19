@@ -802,6 +802,13 @@ class ToolContext:
     lead_draft: LeadDraft = field(default_factory=LeadDraft)
     intents: tuple[IntentHint, ...] = ()
     injection_suspected: bool = False
+    client_texts: tuple[str, ...] = ()          # последние реплики клиента, его словами
+    dialog_client_texts: tuple[str, ...] = ()   # все реплики клиента в диалоге
+    list_choices: tuple[str, ...] = ()          # выбор цифрой из списка залов, развёрнутый
+    saved_lead: SavedLead | None = None         # заявка, сохранённая до хода
+    gym_in_view: str | None = None              # зал последней карточки (19.10.2026):
+                                                # время по его расписанию без названия зала →
+                                                # create_trial_lead вернёт need_gym_confirm
 
 
 class ToolExecutor(Protocol):

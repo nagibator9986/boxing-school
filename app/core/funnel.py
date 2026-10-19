@@ -131,10 +131,19 @@ def ask_full_name(reply: str, *, kb: KBSnapshot, lang: Language) -> str:
     return "\n".join(lines) if replaced else reply
 
 
+#: «Передать оба вопроса?», «передать ему ваш вопрос», «передам вопросы» — с пропуском до
+#: двух слов. Скриншот 15.10.2026: после текста владельца «что взять» ушло «Обычно это
+#: спрашивают вместе с расписанием — передать оба вопроса?», а «Да пожалуйста» на него —
+#: и разговор ушёл администратору («бот потерялся»).
+_HANDOVER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![а-яё])переда(?:ть|м|ю|ём|ем)\s+(?:[а-яё]+\s+){0,2}вопрос", re.IGNORECASE
+)
+
+
 def is_handover(text: str) -> bool:
     """Похоже ли, что этим ответом бот передаёт разговор человеку."""
     lowered = (text or "").lower()
-    return any(marker in lowered for marker in _HANDOVER_MARKERS)
+    return any(marker in lowered for marker in _HANDOVER_MARKERS) or bool(_HANDOVER_RE.search(lowered))
 
 
 def turn_showed_a_gym(messages: Sequence[OutboundMessage]) -> bool:

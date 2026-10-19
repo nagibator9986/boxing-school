@@ -34,7 +34,10 @@ def test_city_price_card_names_the_special_price(kb) -> None:
     card = render_price_card(kb, scope=Scope.CITY, lang=Language.RU)
 
     assert "Стандартный — 25 000 ₸" in card, "общий прайс не меняется"
-    assert "КСК — школа №9: Бокс, Вт, Чт, Сб в 09:00, 17:00 — абонемент 20 000 ₸" in card, card
+    # Владелец 15.10.2026: столбиком и с концом каждого занятия — «в 09:00, 17:00» родитель
+    # прочитал как «вы с 09:00 до пяти работаете».
+    assert "КСК — школа №9\nСекция бокса\nВт, Чт, Сб\n09:00–10:30\n17:00–18:30\nАбонемент — 20 000 ₸" in card, card
+    assert "в 09:00, 17:00" not in card
 
 
 async def test_price_and_schedule_tools_carry_the_special_price(ctx) -> None:
@@ -44,7 +47,7 @@ async def test_price_and_schedule_tools_carry_the_special_price(ctx) -> None:
     price = await calculate_price(ctx, scope="city", plan="standard", children_count=1)
     assert price.data["special_prices"] == [{
         "gym_id": KSK, "discipline": "boxing", "days": ["tue", "thu", "sat"],
-        "times": ["09:00", "17:00"], "price": 20000,
+        "times": ["09:00", "17:00"], "ranges": ["09:00–10:30", "17:00–18:30"], "price": 20000,
     }]
     assert any("special_prices" in caveat for caveat in price.caveats)
     assert price.data["total"] == 25000, "общий расчёт не меняется"

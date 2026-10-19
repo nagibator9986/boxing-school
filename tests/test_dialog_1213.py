@@ -520,10 +520,26 @@ async def test_schedule_question_after_the_list_asks_for_the_number(kb, state, s
     await process_inbound(deps, webhook_payload("s-1", "Где находится?", chat_id=chat))
     deps.llm.reset([FakeTurn.answer("Занятия по вторникам и четвергам.")])
 
-    second = await process_inbound(deps, webhook_payload("s-2", "Какое расписание?", chat_id=chat))
+    second = await process_inbound(deps, webhook_payload("s-2", "Когда можно?", chat_id=chat))
 
     assert [d.action for d in second] == [DecisionAction.REPLY], [d.reason for d in second]
     assert _client_text(second) == kb.text("card.pick_gym", Language.RU)
+
+
+async def test_schedule_question_after_the_list_gets_every_schedule(kb, state, sessionmaker, settings) -> None:
+    """«Какое расписание?» после списка залов — расписание всех залов с теми же номерами."""
+    deps = _deps(kb, state, sessionmaker, settings, [])
+    chat = "77015551309"
+    deps.llm.reset([FakeTurn.tool(FakeCall("send_content", {"artifact_id": "gyms_list_city"})), FakeTurn.answer("")])
+    await process_inbound(deps, webhook_payload("s-1", "Где находится?", chat_id=chat))
+    deps.llm.reset([])
+
+    second = await process_inbound(deps, webhook_payload("s-2", "Какое расписание?", chat_id=chat))
+
+    text = _client_text(second)
+    assert [d.reason for d in second] == ["schedule_overview"], text
+    assert "2. КСК — школа №9\n🕒 Кикбоксинг: Пн, Ср, Пт" in text, text
+    assert text.rstrip().endswith(kb.text("card.pick_gym_scheduled", Language.RU)), text
 
 
 # --------------------------------------------------------------------------- #
