@@ -19,7 +19,7 @@ from typing import Final
 from zoneinfo import ZoneInfo
 
 from app.kb.agreement import chosen_option, offers_choice, question_sentence, split_agreement
-from app.kb.models import Gym, ScheduleSlot, age_value
+from app.kb.models import HALF_AGE_RE, Gym, ScheduleSlot, age_value, whole_years
 
 __all__ = [
     "SessionChoice",
@@ -412,7 +412,7 @@ def age_answer(text: str, asked: str) -> int | None:
     question = question_sentence(asked or "").lower()
     if not question or not _AGE_QUESTION_RE.search(question) or offers_choice(asked or ""):
         return None
-    own = _without_place_numbers(split_agreement(text or "")[0].lower())
+    own = _without_place_numbers(whole_years(split_agreement(text or "")[0].lower()))
     tokens = [token for token in _AGE_TOKEN_RE.findall(own) if token not in _AGE_ANSWER_FILLERS]
     if len(tokens) != 1:
         return None
@@ -447,7 +447,12 @@ def client_named_age(age: int | None, texts) -> bool:
     if age is None:
         return False
     for text in texts:
-        own = _without_place_numbers(split_agreement(text)[0].lower())
+        said = split_agreement(text)[0].lower()
+        # «4.5 года» называет и четыре, и пять: модель может округлить в любую сторону, а
+        # переспрашивать возраст, который родитель только что написал, нельзя.
+        if any(age in (int(match.group(1)), int(match.group(1)) + 1) for match in HALF_AGE_RE.finditer(said)):
+            return True
+        own = _without_place_numbers(whole_years(said))
         if any(_age_of_token(token) == age for token in _AGE_TOKEN_RE.findall(own)):
             return True
         for match in _KK_TENS_RE.finditer(own):

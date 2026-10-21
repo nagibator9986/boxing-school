@@ -204,6 +204,13 @@ async def test_the_city_itself_is_not_a_district(deps, kb) -> None:
     assert await say(deps, 2, "8") == [kb.text("funnel.district", Language.RU)]
 
 
+async def test_four_and_a_half_years_is_an_age_not_a_refusal(deps, kb) -> None:
+    """Владелец 21.10.2026: «не записывает тех, кому скоро будет 5, 4.5 года» — это возраст приёма."""
+    await say(deps, 1, "Хочу записать сына на пробное", FakeTurn.answer("Сколько лет ребёнку?"))
+
+    assert await say(deps, 2, "4.5") == [kb.text("funnel.district", Language.RU)]
+
+
 # --------------------------------------------------------------------------- #
 # Живой прогон того же вечера: «9» → «выберите из списка выше» → «1» → ложное «записан»
 # --------------------------------------------------------------------------- #

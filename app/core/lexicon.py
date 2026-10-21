@@ -23,7 +23,7 @@ import unicodedata
 from datetime import datetime
 from typing import Final, Iterable, Sequence
 
-from app.kb.models import Gym, LexiconFile
+from app.kb.models import Gym, LexiconFile, whole_years
 from app.types import normalize_phone_kz
 from app.types import Gender, IntentHint
 
@@ -207,9 +207,9 @@ def extract_age(text: str, *, lexicon: LexiconFile, now: datetime) -> int | None
 
     Числа без возрастного контекста игнорируются: «25000 тг» и «дом 12» возрастом
     не считаются. Из нескольких кандидатов выигрывает попавший в детский диапазон
-    3–17 лет, потому что запись ведут ребёнку, а не взрослому.
+    3–17 лет, потому что запись ведут ребёнку, а не взрослому. «4.5 года» — четыре полных года.
     """
-    haystack = normalize(text)
+    haystack = normalize(whole_years(text))
     if not haystack:
         return None
 

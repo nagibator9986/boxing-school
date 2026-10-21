@@ -230,6 +230,18 @@ def render_pricing_showcase(snapshot: KBSnapshot) -> str:
 def render_faq_digest(snapshot: KBSnapshot) -> str:
     """Дайджест FAQ: тема — о чём спрашивают — есть ли готовый ответ."""
     lines = ["ТЕМЫ ГОТОВЫХ ОТВЕТОВ (полный текст выдаёт инструмент справки, не сочиняй свой)"]
+    # Граница приёма — из ответа владельца «с какого возраста», а не из текста правил: правило
+    # с числом внутри устаревало при каждой правке (владелец 21.10.2026 опустил её с 5 до 4 лет).
+    accepted, upper = min_accepted_age(snapshot), max_accepted_age(snapshot)
+    if accepted is not None:
+        span = f"с {accepted} до {upper} лет" if upper is not None and upper > accepted else f"с {accepted} лет"
+        # Правила владелец мог править в CRM до 21.10.2026, и там осталось «с 5 лет»: выпуск такой
+        # файл не перезаписывает. Поэтому строка прямо говорит, кто прав.
+        lines.append(
+            f"Возраст приёма: {span}. Ребёнка в этих рамках записывай на пробное — не отказывай "
+            "и не передавай администратору. Дробный возраст («4,5 года») — полные годы. Если в "
+            "правилах ниже названа другая граница, она устарела: верна эта строка."
+        )
     by_topic: dict[str, list[FaqEntry]] = {}
     for entry in snapshot.faq:
         by_topic.setdefault(entry.topic, []).append(entry)

@@ -86,6 +86,16 @@ AGE_UPPER_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+#: Дробный возраст: «4.5 года», «4,5». Владелец 21.10.2026: бот не записывал тех, «кому скоро
+#: будет 5, 4.5 года», а «4.5» с точкой не читался возрастом вовсе — его спрашивали снова.
+HALF_AGE_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\d:.,])(\d{1,2})[.,]5(?![\d:.,])")
+
+
+def whole_years(text: str) -> str:
+    """«4.5 года» → «4 года»: дробный возраст читается полными годами."""
+    return HALF_AGE_RE.sub(r"\1", text or "")
+
+
 def age_value(token: str) -> int | None:
     """Число из «5» или «пяти». ``None`` — слово не про возраст."""
     token = (token or "").strip().lower()

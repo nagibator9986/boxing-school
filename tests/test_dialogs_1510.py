@@ -628,7 +628,7 @@ async def test_working_hours_question_gets_every_schedule(kb, state, sessionmake
     text = _client_text(decisions)
     assert [d.reason for d in decisions] == ["schedule_overview"], text
     assert "🕒 Бокс: Вт, Чт, Сб · 09:00–10:30, 17:00–18:30 — абонемент 20 000 ₸" in text, text
-    assert "Принимаем детей с 5 до 17 лет" in text
+    assert "Принимаем детей с 4 до 17 лет" in text
     assert len(text) <= 1000
     assert not deps.llm.requests
 
@@ -1051,11 +1051,11 @@ def test_coach_rule_keeps_times_and_places(kb) -> None:
 def test_a_wrong_upper_age_is_caught(kb) -> None:
     from app.core.postcheck import _wrong_age_limit
 
-    assert _wrong_age_limit("Принимаем детей с 5 до 14 лет.", kb)
-    assert not _wrong_age_limit("Принимаем детей с 5 до 17 лет.", kb)
+    assert _wrong_age_limit("Принимаем детей с 4 до 14 лет.", kb)
+    assert not _wrong_age_limit("Принимаем детей с 4 до 17 лет.", kb)
     # «до» перед нижней границей — час или число человек, а не возраст.
-    assert not _wrong_age_limit("Занимаемся до 20:00, берём с 5 лет.", kb)
-    assert not _wrong_age_limit("Занимаемся в группах до 12 человек с 5 лет.", kb)
+    assert not _wrong_age_limit("Занимаемся до 20:00, берём с 4 лет.", kb)
+    assert not _wrong_age_limit("Занимаемся в группах до 12 человек с 4 лет.", kb)
 
 
 def test_a_day_without_classes_is_unknown_not_a_time_question(kb) -> None:
@@ -1154,3 +1154,40 @@ def test_a_colon_inside_a_lead_in_keeps_the_sentence() -> None:
     ) == "Да, на КЖБИ есть наш зал: Гашека 9/3. Занятия начнутся 01.11.2026."
     assert pipeline._lead_in("Варианты на эту неделю:\n1. 17:00\n2. 19:00") == ""
     assert pipeline._lead_in("В 17:30 занятий нет. Какое время выбрать?") == "В 17:30 занятий нет."
+
+
+# --------------------------------------------------------------------------- #
+# Владелец 21.10.2026: «уберём, что запись только с 5 лет — не записывает тех, кому скоро 5, 4.5 года»
+# --------------------------------------------------------------------------- #
+def test_the_prompt_takes_the_accepted_age_from_the_owners_answer(kb) -> None:
+    from app.kb.render import render_system_prompt
+
+    prompt = render_system_prompt(kb)
+
+    assert "Возраст приёма: с 4 до 17 лет" in prompt
+    # Число живёт только в ответе «с какого возраста»: правило с «с 5 лет» внутри устарело бы снова.
+    assert "с 5 лет" not in prompt and "с 5 до 17" not in prompt
+
+
+def test_a_half_year_age_is_read_as_whole_years(kb) -> None:
+    from app.core.lexicon import extract_age
+    from app.kb.sessions import age_answer, client_named_age
+
+    for said in ("Сыну 4.5 года", "Ребёнку 4,5 года", "4.5"):
+        assert client_named_age(4, [said]) and client_named_age(5, [said]), said
+        assert not client_named_age(9, [said]), said
+    assert age_answer("4.5", "Сколько лет ребёнку?") == 4
+    assert extract_age("Сыну 4.5 года", lexicon=kb.lexicon, now=THURSDAY) == 4
+    # Время с точкой возрастом не становится.
+    assert not client_named_age(17, ["в 17.30"]) and age_answer("17.30", "Сколько лет ребёнку?") is None
+
+
+async def test_a_four_and_a_half_year_old_is_booked(make_ctx) -> None:
+    ctx = _ctx(make_ctx, "Мы в центре живём", "Сидоров Тимур, ему 4.5 года", "В субботу можно?")
+
+    result = await create_trial_lead(
+        ctx, child_name="Сидоров Тимур", child_age=4, gym_id=CENTER, parent_agreed=True, session_day="sat",
+    )
+
+    assert result.data["booked"] is True, result.data
+    assert ctx.services.leads[-1].child_age == 4

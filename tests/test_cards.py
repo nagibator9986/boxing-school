@@ -129,8 +129,9 @@ def test_schedule_card_names_the_accepted_age(kb: KBSnapshot) -> None:
     upper = max_accepted_age(kb)
 
     assert accepted is not None, "в базе знаний не сказано, с какого возраста принимают"
-    # Зарина 16.10.2026: «Добавьте в шаблон, что принимаем детей с 5 до 17 лет».
-    assert (accepted, upper) == (5, 17)
+    # Зарина 16.10.2026: «Добавьте в шаблон, что принимаем детей с 5 до 17 лет»; владелец
+    # 21.10.2026 опустил нижнюю границу до 4 лет — «4.5 года, скоро 5».
+    assert (accepted, upper) == (4, 17)
     assert f"Принимаем детей с {accepted} до {upper} лет" in text, text
     assert "уточнит администратор" not in text.lower()
 
