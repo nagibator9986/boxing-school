@@ -232,12 +232,13 @@ def create_app(cfg: CrmConfig | None = None) -> Flask:
     app.jinja_env.filters["money"] = _fmt_money
     app.jinja_env.filters["yesno"] = _yesno
 
-    from crm.views import auth, clients, dashboard, kb_content, kb_gyms, leads, settings
+    from crm.views import auth, campaign, clients, dashboard, kb_content, kb_gyms, leads, settings
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(dashboard.bp)
     app.register_blueprint(clients.bp)
     app.register_blueprint(leads.bp)
+    app.register_blueprint(campaign.bp)
     app.register_blueprint(kb_gyms.bp)
     app.register_blueprint(kb_content.bp)
     app.register_blueprint(settings.bp)

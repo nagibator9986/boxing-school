@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ contact.parent_name or contact.wa_name or contact.phone }}{% endblock %}
+{% block content %}
+<h1 class="page-title">{{ contact.parent_name or contact.wa_name or 'Без имени' }}</h1>
+<p class="page-note">{{ contact.phone }} · {{ segment_titles.get(contact.segment, contact.segment) }} ·
+  <span class="tag {{ 'ok' if contact.status == 'ready' else ('bad' if contact.status in ('excluded', 'opted_out') else 'warn') }}">{{ status_titles.get(contact.status, contact.status) }}</span>
+  · <a href="{{ url_for('campaign.index', tab='check' if contact.status == 'needs_check' else ('ready' if contact.status == 'ready' else 'closed')) }}">к списку</a></p>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Из разбора переписки</h2>
+    <table>
+      <tbody>
+        <tr><td>Имя в WhatsApp</td><td>{{ contact.wa_name or '—' }}</td></tr>
+        <tr><td>Родитель (из текста)</td><td>{{ contact.parent_name or '—' }}</td></tr>
+        <tr><td>Ребёнок</td><td>{{ contact.child_name or '—' }}</td></tr>
+        <tr><td>Этап</td><td>{{ contact.stage or '—' }}</td></tr>
+        <tr><td>Итог</td><td>{{ contact.summary or '—' }}</td></tr>
+        <tr><td>Препятствие</td><td>{{ contact.obstacle or '—' }}</td></tr>
+        <tr><td>Следующий шаг</td><td>{{ contact.next_step or '—' }}</td></tr>
+        <tr><td>Что проверить</td><td>{{ contact.check_note or '—' }}</td></tr>
+        <tr><td>Пробное</td><td>{{ contact.trial_info or '—' }}</td></tr>
+        <tr><td>Оплата</td><td>{{ contact.payment_info or '—' }}</td></tr>
+        <tr><td>Последний контакт</td><td>{{ contact.last_contact_at | dt }}</td></tr>
+        <tr><td>Писать не раньше</td><td>{{ contact.not_before | dt('%d.%m.%Y') }}</td></tr>
+        <tr><td>Переписка с ботом</td><td>{% if contact.conversation_id %}<a href="{{ url_for('clients.show', conv_id=contact.conversation_id) }}">открыть</a>{% else %}нет — писал до бота{% endif %}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Проверка</h2>
+    {% if contact.status_reason %}<p><b>{{ contact.status_reason }}</b></p>{% endif %}
+    {% if contact.outcome %}<p class="mini">Отмечено {{ contact.checked_at | dt }}: {{ outcome_titles.get(contact.outcome, contact.outcome) }}</p>{% endif %}
+    {% if contact.note %}<p class="mini">Заметка: {{ contact.note }}</p>{% endif %}
+
+    {% if contact.status in ('needs_check', 'ready', 'excluded') %}
+    <form method="post" action="{{ url_for('campaign.outcome', contact_id=contact.id) }}">
+      <input type="hidden" name="back" value="contact">
+      <div class="field"><label>Заметка (необязательно)</label><input type="text" name="note" maxlength="300" placeholder="например: оплатил 15.10, ходит в КСК"></div>
+      <div class="field"><label>Для «Позже» — с какого дня писать</label><input type="date" name="not_before"></div>
+      <div class="actions">
+        {% for value, title in outcome_titles.items() %}
+          <button class="btn {{ 'primary' if value == 'write' }}" type="submit" name="outcome" value="{{ value }}">{{ title }}</button>
+        {% endfor %}
+      </div>
+    </form>
+    {% endif %}
+    {% if contact.status in ('excluded', 'ready') %}
+    <form method="post" action="{{ url_for('campaign.restore', contact_id=contact.id) }}" class="inline">
+      <input type="hidden" name="back" value="contact">
+      <button class="btn small" type="submit">Вернуть на проверку</button>
+    </form>
+    {% endif %}
+    <p class="mini">«Писать можно» и «Был, не купил» переводят контакт в список для сообщения. Само сообщение на этом
+      этапе не уходит: рассылка — следующий шаг, и каждый текст перед отправкой увидит человек.</p>
+  </div>
+</div>
+{% endblock %}

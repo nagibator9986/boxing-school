@@ -192,3 +192,6 @@ pre.raw { background: var(--bg); border: 1px solid var(--line); border-radius: 8
 .issue:last-child { border-bottom: 0; }
 .issue.error b { color: var(--danger, #e2544a); }
 .issue.warn b { color: var(--warn, #d9a441); }
+
+/* Номер телефона не рвётся на две строки (список «Возврат клиентов»). */
+.nowrap { white-space: nowrap; }

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Возврат клиентов{% endblock %}
+{% block content %}
+<h1 class="page-title">Возврат клиентов</h1>
+<p class="page-note">Клиенты из старых переписок, которым, возможно, стоит написать снова. Сейчас здесь только список
+  и проверка: рассылки нет. Сначала отметьте, кто уже занимается, кто был на пробном, кто не пришёл, — бот не должен
+  предлагать пробное тому, кто уже ходит.</p>
+
+{% if not ready %}
+  <div class="flash error">Таблица возврата ещё не создана: она появится после перезапуска бота с новой версией.</div>
+{% else %}
+<div class="card">
+  <form method="post" action="{{ url_for('campaign.upload') }}" enctype="multipart/form-data" class="inline">
+    <input type="file" name="file" accept=".xlsx" required>
+    <button class="btn primary" type="submit">Загрузить Excel разбора</button>
+    <span class="mini">Лист «Потенциальные». Повторная загрузка обновит описание, но не отменит ваши отметки.</span>
+  </form>
+  <form method="post" action="{{ url_for('campaign.recheck') }}" class="inline">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <button class="btn" type="submit">Сверить с перепиской бота</button>
+    <span class="mini">Записан ли номер ботом, писал ли стоп-слово, ведёт ли диалог администратор.</span>
+  </form>
+</div>
+
+<div class="toolbar">
+  {% for key, (title, count) in tabs.items() %}
+    <a class="btn {{ 'primary' if key == tab }}" href="{{ url_for('campaign.index', tab=key) }}">{{ title }} ({{ count }})</a>
+  {% endfor %}
+  <span class="mini">Всего в списке: {{ total }}</span>
+  {% if segments %}
+  <form method="get" class="inline">
+    <input type="hidden" name="tab" value="{{ tab }}">
+    <select name="segment">
+      <option value="">все сегменты</option>
+      {% for value, count in segments %}
+        <option value="{{ value }}" {{ 'selected' if value == segment }}>{{ segment_titles.get(value, value) }} ({{ count }})</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Показать</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+<table>
+  <thead><tr><th>Контакт</th><th>Сегмент</th><th>Итог переписки</th><th>Что проверить / почему</th><th>Последний контакт</th><th></th></tr></thead>
+  <tbody>
+  {% for c in contacts %}
+    <tr>
+      <td>
+        <a href="{{ url_for('campaign.show', contact_id=c.id) }}"><strong>{{ c.parent_name or c.wa_name or 'Без имени' }}</strong></a>
+        <div class="mini nowrap">{{ c.phone }}</div>
+        {% if c.child_name %}<div class="mini">ребёнок: {{ c.child_name }}</div>{% endif %}
+        {% if c.conversation_id %}<div class="mini"><a href="{{ url_for('clients.show', conv_id=c.conversation_id) }}">переписка с ботом</a></div>{% endif %}
+      </td>
+      <td class="mini">{{ segment_titles.get(c.segment, c.segment) }}</td>
+      <td class="mini">{{ (c.summary or '—') | truncate(220) }}{% if c.obstacle %}<div><b>Препятствие:</b> {{ c.obstacle | truncate(120) }}</div>{% endif %}</td>
+      <td class="mini">
+        {% if c.status_reason %}<div><b>{{ c.status_reason }}</b></div>{% endif %}
+        {% if tab == 'check' and c.check_note %}<div>{{ c.check_note | truncate(160) }}</div>{% endif %}
+        {% if c.not_before %}<div>Писать не раньше {{ c.not_before | dt('%d.%m.%Y') }}</div>{% endif %}
+      </td>
+      <td class="mini">{{ c.last_contact_at | ago }}</td>
+      <td>
+        {% if tab == 'check' %}
+          <form method="post" action="{{ url_for('campaign.outcome', contact_id=c.id) }}" class="actions">
+            <input type="hidden" name="back" value="list"><input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="segment" value="{{ segment }}">
+            {% for value in ('bought', 'came', 'no_show', 'write', 'refused') %}
+              <button class="btn small" type="submit" name="outcome" value="{{ value }}">{{ outcome_titles[value] }}</button>
+            {% endfor %}
+          </form>
+        {% else %}
+          <form method="post" action="{{ url_for('campaign.restore', contact_id=c.id) }}" class="inline">
+            <input type="hidden" name="back" value="list"><input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="segment" value="{{ segment }}">
+            {% if c.status != 'opted_out' %}<button class="btn small" type="submit">Вернуть на проверку</button>{% endif %}
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">{{ 'Список пуст — загрузите Excel разбора' if not total else 'В этой вкладке никого' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

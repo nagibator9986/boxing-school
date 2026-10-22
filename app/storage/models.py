@@ -506,8 +506,79 @@ class KBVersion(Base):
     )
 
 
+# --------------------------------------------------------------------------- #
+# campaign_contact
+# --------------------------------------------------------------------------- #
+class CampaignContact(Base):
+    """Клиент из старых переписок, которому, возможно, стоит написать снова.
+
+    Строки заводит CRM импортом Excel разбора, исход проверяет человек. Бот-консультант
+    таблицу не читает. Внешнего ключа на ``conversation`` нет намеренно: многих из
+    списка в базе бота нет вовсе (переписка была до него), а связь по ``chat_id``
+    находится заново при каждой сверке. Колонки следующих этапов (черновик, отправка,
+    ответ) заведены сразу: ``create_all`` новые колонки в готовую таблицу не добавляет.
+    """
+
+    __tablename__ = "campaign_contact"
+    __table_args__ = (
+        sa.UniqueConstraint("chat_id", name="uq_campaign_contact_chat_id"),
+        sa.Index("ix_campaign_contact_status", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(sa.Uuid(), primary_key=True, default=uuid4)
+    #: Номер WhatsApp цифрами, как ``conversation.chat_id``: ``77011234567``.
+    chat_id: Mapped[str] = mapped_column(sa.Text(), nullable=False)
+    channel: Mapped[str] = mapped_column(
+        sa.Text(), nullable=False, default="whatsapp", server_default=sa.text("'whatsapp'")
+    )
+    source_key: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    import_batch: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+
+    wa_name: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    parent_name: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    child_name: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+
+    #: Этап из разбора дословно и сегмент (``CampaignSegment``).
+    stage: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    segment: Mapped[str] = mapped_column(sa.Text(), nullable=False)
+    summary: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    reason: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    obstacle: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    next_step: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    check_note: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    check_required: Mapped[bool] = mapped_column(
+        sa.Boolean(), nullable=False, default=True, server_default=sa.true()
+    )
+    trial_info: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    payment_info: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    last_contact_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    not_before: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+
+    #: ``CampaignStatus`` и причина последнего решения — её читает администратор.
+    status: Mapped[str] = mapped_column(sa.Text(), nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    #: Проверка человеком: ``CampaignOutcome``, когда и его заметка.
+    outcome: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    checked_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    note: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    #: Диалог в базе бота с этим номером, если он есть (по последней сверке).
+    conversation_id: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+
+    # Следующие этапы: черновик и одобрение, отправка, напоминание, ответ.
+    draft_text: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    approved_text: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    replied_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(TS, nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(TS, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 __all__ = [
     "Base",
+    "CampaignContact",
     "Conversation",
     "EscalationState",
     "FollowupTask",

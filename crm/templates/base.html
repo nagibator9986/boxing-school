@@ -15,6 +15,7 @@
     <a href="{{ url_for('dashboard.index') }}" class="{{ 'active' if request.endpoint == 'dashboard.index' }}">Обзор</a>
     <a href="{{ url_for('clients.index') }}" class="{{ 'active' if request.blueprint == 'clients' }}">Клиенты</a>
     <a href="{{ url_for('leads.index') }}" class="{{ 'active' if request.blueprint == 'leads' }}">Заявки</a>
+    <a href="{{ url_for('campaign.index') }}" class="{{ 'active' if request.blueprint == 'campaign' }}">Возврат клиентов</a>
 
     <div class="navgroup">База знаний</div>
     <a href="{{ url_for('kb_gyms.index') }}" class="{{ 'active' if request.endpoint in ('kb_gyms.index', 'kb_gyms.edit') }}">Залы</a>
