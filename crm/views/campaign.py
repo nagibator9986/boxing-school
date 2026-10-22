@@ -19,7 +19,7 @@ from app.campaign.contacts import CampaignOutcome, CampaignStatus
 from app.logging_conf import get_logger
 from crm.app import config, login_required
 from crm.campaign_excel import parse_workbook
-from crm.campaign_store import CampaignStore
+from crm.campaign_store import CampaignStore, ContactRow, StoreBusy
 from crm.forms import choice, opt_text, text
 
 bp = Blueprint("campaign", __name__, url_prefix="/campaign")
@@ -63,6 +63,9 @@ STATUS_TITLES: Final[dict[str, str]] = {
     "opted_out": "Стоп",
     "excluded": "Не пишем",
 }
+
+#: Что сказать, когда база бота занята записью: бот пишет в тот же файл.
+BUSY: Final[str] = "База бота сейчас занята — повторите через минуту. Ничего не потеряно."
 
 #: Кнопки проверки — в том порядке, в каком их чаще нажимают.
 OUTCOME_TITLES: Final[dict[str, str]] = {
@@ -144,16 +147,22 @@ def upload() -> Any:
         flash(" ".join(parsed.errors) or "В файле нет ни одного контакта.", "error")
         return redirect(url_for("campaign.index"))
     now = _now()
-    report = store.import_rows(parsed.rows, batch=f"{upload_file.filename} · {now:%d.%m.%Y}", now=now)
+    try:
+        report = store.import_rows(parsed.rows, batch=f"{upload_file.filename} · {now:%d.%m.%Y}", now=now)
+    except StoreBusy:
+        flash(BUSY, "error")
+        return redirect(url_for("campaign.index"))
     message = (
         f"Лист «{parsed.sheet}»: новых {report.added}, обновлено {report.updated}, "
-        f"без смены статуса (уже проверены или им писали) {report.kept}. "
-        f"По переписке бота изменено: {report.reconciled}."
+        f"без смены статуса (проверены вами, просили не писать или им уже писали) {report.kept}. "
+        f"Поправлено по переписке бота (записан, стоп, свежий диалог): {report.reconciled}."
     )
     if parsed.duplicates:
         message += f" Повторы номеров в файле пропущены: {parsed.duplicates}."
     if parsed.errors:
-        message += f" Не разобрано строк: {len(parsed.errors)}."
+        # Какие именно строки — иначе их не найти в файле на двести строк.
+        shown = " ".join(parsed.errors[:3]) + (" …" if len(parsed.errors) > 3 else "")
+        message += f" Не разобрано строк: {len(parsed.errors)}. {shown}"
     flash(message, "ok")
     _log.info("campaign_import", added=report.added, updated=report.updated, kept=report.kept,
               reconciled=report.reconciled, skipped=len(parsed.errors))
@@ -164,8 +173,12 @@ def upload() -> Any:
 @login_required
 def recheck() -> Any:
     """Сверить список с перепиской бота заново."""
-    changed = _store().reconcile_all(now=_now())
-    flash(f"Сверено с перепиской бота. Изменилось: {changed}.", "ok")
+    try:
+        changed = _store().reconcile_all(now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+    else:
+        flash(f"Сверено с перепиской бота. Изменилось: {changed}.", "ok")
     return redirect(url_for("campaign.index", tab=text(request.form, "tab") or "check"))
 
 
@@ -199,12 +212,17 @@ def outcome(contact_id: str) -> Any:
     if result is CampaignOutcome.LATER and not_before is None:
         flash("Для «Позже» укажите дату — с неё можно будет писать.", "error")
         return redirect(url_for("campaign.show", contact_id=contact_id))
-    if not _store().set_outcome(
-        contact_id, result, now=_now(), not_before=not_before, note=opt_text(request.form, "note")
-    ):
+    try:
+        saved = _store().set_outcome(
+            contact_id, result, now=_now(), not_before=not_before, note=opt_text(request.form, "note")
+        )
+    except StoreBusy:
+        flash(BUSY, "error")
+        return back
+    if saved is None:
         flash("Этот контакт уже не на проверке — отметку не поставить.", "error")
         return back
-    flash(f"Отмечено: {OUTCOME_TITLES[value]}.", "ok")
+    _flash_result(f"Отмечено: {OUTCOME_TITLES[value]}.", saved, expected=_expected_status(result))
     return back
 
 
@@ -212,11 +230,34 @@ def outcome(contact_id: str) -> Any:
 @login_required
 def restore(contact_id: str) -> Any:
     """Вернуть контакт на проверку."""
-    if _store().restore(contact_id, now=_now()):
-        flash("Контакт возвращён на проверку.", "ok")
-    else:
+    try:
+        restored = _store().restore(contact_id, now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+        return _back(contact_id)
+    if restored is None:
         flash("Этот контакт вернуть на проверку нельзя.", "error")
+    else:
+        _flash_result("Контакт возвращён на проверку.", restored, expected=CampaignStatus.NEEDS_CHECK.value)
     return _back(contact_id)
+
+
+def _expected_status(outcome: CampaignOutcome) -> str:
+    """Какой статус даёт отметка, если бот ей не мешает."""
+    closed = (CampaignOutcome.BOUGHT, CampaignOutcome.REFUSED, CampaignOutcome.NOT_CLIENT)
+    return (CampaignStatus.EXCLUDED if outcome in closed else CampaignStatus.READY).value
+
+
+def _flash_result(done: str, contact: ContactRow, *, expected: str) -> None:
+    """Отметка сохранена; если переписка бота её перекрыла — сказать почему, а не молчать."""
+    if contact.status == expected:
+        flash(done, "ok")
+        return
+    flash(
+        f"{done} Но по переписке бота контакт теперь «{STATUS_TITLES.get(contact.status, contact.status)}»: "
+        f"{contact.status_reason or 'см. карточку'}.",
+        "error",
+    )
 
 
 def _back(contact_id: str) -> Any:

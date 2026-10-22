@@ -173,7 +173,10 @@ class BotFacts:
     """Что знает о номере сам бот: его база видит то, чего не видел разбор Excel."""
 
     conversation_id: str | None = None
+    #: Последнее сообщение в диалоге — от клиента или от бота (напоминание тоже считается).
     last_activity_at: datetime | None = None
+    #: Последнее сообщение самого клиента.
+    last_inbound_at: datetime | None = None
     stop_word: bool = False
     lead_status: str | None = None
     trial_at: datetime | None = None
@@ -187,14 +190,16 @@ def reconcile(
     facts: BotFacts,
     *,
     now: datetime,
-    checked: bool,
+    checked_at: datetime | None,
     recent_days: int = RECENT_DAYS,
 ) -> Decision | None:
     """Сверка с базой бота. ``None`` — менять нечего.
 
-    ``checked`` — исход уже отметил человек: тогда работают только жёсткие запреты
-    (стоп-слово, сотрудник, купил, пробное впереди), а «свежий диалог» и «записан ботом»
-    не возвращают контакт на проверку, которую человек уже сделал.
+    ``checked_at`` — когда исход отметил человек. Мягкие сигналы (свежий диалог, пауза
+    человека, прошедшая запись) он уже видел, если переписка с ботом была до отметки, и
+    решение человека они не отменяют. Переписка после отметки — новость: клиент снова
+    говорит с ботом, и написать ему «вы интересовались у нас…» посреди разговора нельзя.
+    Жёсткие запреты (сотрудник, стоп-слово, купил, пробное впереди) действуют всегда.
     """
     if status in _SETTLED:
         return None
@@ -205,10 +210,19 @@ def reconcile(
     if facts.lead_status == "converted":
         return Decision(CampaignStatus.EXCLUDED, segment, "По заявке в боте — купил абонемент")
     if facts.lead_status == "trial_booked" and facts.trial_at is not None and facts.trial_at > now:
+        # Не исключение навсегда: после пробного контакт снова нужен — пришёл ли, купил ли.
         return Decision(
-            CampaignStatus.EXCLUDED, segment, f"Записан ботом на пробное {_local_day(facts.trial_at)} — оно ещё впереди"
+            CampaignStatus.NEEDS_CHECK,
+            CampaignSegment.BOOKED_UNKNOWN,
+            f"Записан ботом на пробное {_local_day(facts.trial_at)} — после него проверить, пришёл ли",
         )
-    if checked or status not in (_WRITABLE | {CampaignStatus.NEEDS_CHECK}):
+    if status not in (_WRITABLE | {CampaignStatus.NEEDS_CHECK}):
+        return None
+    # Новость — только то, что написал сам клиент: напоминание бота после отметки ничего не меняет.
+    after_check = (
+        checked_at is not None and facts.last_inbound_at is not None and facts.last_inbound_at > checked_at
+    )
+    if checked_at is not None and not after_check:
         return None
     if facts.lead_status == "trial_booked" and facts.trial_at is not None:
         return Decision(
@@ -223,6 +237,13 @@ def reconcile(
             CampaignStatus.NEEDS_CHECK,
             segment,
             f"Переписывался с ботом {_local_day(facts.last_activity_at)} — диалог свежий",
+        )
+    if after_check:
+        # Клиент писал боту уже после отметки: того, что человек проверял, может уже не быть.
+        return Decision(
+            CampaignStatus.NEEDS_CHECK,
+            segment,
+            f"Писал боту {_local_day(facts.last_inbound_at)}, уже после проверки — проверить заново",
         )
     return None
 

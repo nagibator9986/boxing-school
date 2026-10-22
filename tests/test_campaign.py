@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import sqlite3
 import subprocess
+from contextlib import closing
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -113,16 +114,24 @@ def test_only_a_clean_faded_contact_is_ready_at_once() -> None:
         assert decision.status is CampaignStatus.EXCLUDED and decision.reason, segment
 
 
-def _reconcile(facts: BotFacts, status: CampaignStatus = CampaignStatus.READY, *, checked: bool = False):
-    return reconcile(status, CampaignSegment.FADED, facts, now=NOW, checked=checked)
+CHECKED = NOW - timedelta(days=4)
 
 
-def test_hard_bot_signals_close_the_contact_even_after_a_check() -> None:
-    assert _reconcile(BotFacts(ignored=True), checked=True).status is CampaignStatus.EXCLUDED
-    assert _reconcile(BotFacts(stop_word=True), checked=True).status is CampaignStatus.OPTED_OUT
-    assert _reconcile(BotFacts(lead_status="converted"), checked=True).status is CampaignStatus.EXCLUDED
-    ahead = _reconcile(BotFacts(lead_status="trial_booked", trial_at=NOW + timedelta(days=2)), checked=True)
-    assert ahead.status is CampaignStatus.EXCLUDED and "впереди" in ahead.reason
+def _reconcile(facts: BotFacts, status: CampaignStatus = CampaignStatus.READY, *, checked_at=None):
+    return reconcile(status, CampaignSegment.FADED, facts, now=NOW, checked_at=checked_at)
+
+
+def test_hard_bot_signals_act_even_after_a_check() -> None:
+    assert _reconcile(BotFacts(ignored=True), checked_at=CHECKED).status is CampaignStatus.EXCLUDED
+    assert _reconcile(BotFacts(stop_word=True), checked_at=CHECKED).status is CampaignStatus.OPTED_OUT
+    assert _reconcile(BotFacts(lead_status="converted"), checked_at=CHECKED).status is CampaignStatus.EXCLUDED
+
+
+def test_a_trial_ahead_is_a_wait_not_a_permanent_exclusion() -> None:
+    """Запись впереди — не «не пишем» навсегда: после пробного нужен вопрос «пришёл ли»."""
+    ahead = _reconcile(BotFacts(lead_status="trial_booked", trial_at=NOW + timedelta(days=2)), checked_at=CHECKED)
+    assert (ahead.status, ahead.segment) == (CampaignStatus.NEEDS_CHECK, CampaignSegment.BOOKED_UNKNOWN)
+    assert "после него" in ahead.reason
 
 
 def test_soft_bot_signals_send_the_contact_back_to_a_check() -> None:
@@ -132,9 +141,27 @@ def test_soft_bot_signals_send_the_contact_back_to_a_check() -> None:
     fresh = _reconcile(BotFacts(last_activity_at=NOW - timedelta(days=3)))
     assert fresh.status is CampaignStatus.NEEDS_CHECK and "свежий" in fresh.reason
     assert _reconcile(BotFacts(last_activity_at=NOW - timedelta(days=30))) is None
-    # Человек уже проверил — мягкие сигналы его решение не отменяют.
-    assert _reconcile(BotFacts(last_activity_at=NOW - timedelta(days=3)), checked=True) is None
-    assert _reconcile(BotFacts(lead_status="trial_booked", trial_at=NOW - timedelta(days=5)), checked=True) is None
+
+
+def test_a_check_stands_until_the_client_writes_again() -> None:
+    before = NOW - timedelta(days=5)
+    # Всё это человек видел, когда отмечал: решение остаётся.
+    assert _reconcile(BotFacts(last_activity_at=before, last_inbound_at=before), checked_at=CHECKED) is None
+    assert _reconcile(
+        BotFacts(lead_status="trial_booked", trial_at=before, last_activity_at=before, last_inbound_at=before),
+        checked_at=CHECKED,
+    ) is None
+    # Напоминание бота после отметки — не новость.
+    assert _reconcile(BotFacts(last_activity_at=NOW - timedelta(days=1), last_inbound_at=before),
+                      checked_at=CHECKED) is None
+    # Клиент сам написал боту после отметки — проверить заново, даже когда разговор уже стих.
+    wrote = NOW - timedelta(days=2)
+    fresh = _reconcile(BotFacts(last_activity_at=wrote, last_inbound_at=wrote), checked_at=CHECKED)
+    assert fresh.status is CampaignStatus.NEEDS_CHECK
+    quiet = reconcile(CampaignStatus.READY, CampaignSegment.FADED,
+                      BotFacts(last_activity_at=wrote, last_inbound_at=wrote),
+                      now=NOW + timedelta(days=30), checked_at=CHECKED)
+    assert quiet.status is CampaignStatus.NEEDS_CHECK and "после проверки" in quiet.reason
 
 
 def test_a_contact_already_written_to_is_left_alone() -> None:
@@ -212,14 +239,14 @@ def _upload(web, rows: list[list[object]]):
 
 
 def _status(cfg: CrmConfig, chat_id: str) -> tuple[str, str, str | None]:
-    with sqlite3.connect(cfg.bot_db) as conn:
+    with closing(sqlite3.connect(cfg.bot_db)) as conn, conn:
         return conn.execute(
             "SELECT status, segment, outcome FROM campaign_contact WHERE chat_id = ?", (chat_id,)
         ).fetchone()
 
 
 def _contact_id(cfg: CrmConfig, chat_id: str) -> str:
-    with sqlite3.connect(cfg.bot_db) as conn:
+    with closing(sqlite3.connect(cfg.bot_db)) as conn, conn:
         return conn.execute("SELECT id FROM campaign_contact WHERE chat_id = ?", (chat_id,)).fetchone()[0]
 
 
@@ -227,13 +254,13 @@ def _bot_conversation(cfg: CrmConfig, conv_id: str, chat_id: str, *, last_inboun
                       blocked: bool = False, lead: str | None = None, trial: datetime | None = None,
                       pause: str | None = None) -> None:
     stamp = last_inbound.strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(cfg.bot_db) as conn:
+    with closing(sqlite3.connect(cfg.bot_db)) as conn, conn:
         conn.execute(
             "INSERT INTO conversation (id, conv_key, channel_id, chat_type, chat_id, lang, lang_locked, state,"
             " msg_in_count, msg_out_count, bot_miss_count, followup_stage, followup_blocked, created_at,"
             " updated_at, last_inbound_at) VALUES (?, ?, 'wa', 'whatsapp', ?, 'ru', 0, 'active', 1, 1, 0, 0, ?,"
             " ?, ?, ?)",
-            (conv_id, f"wa:whatsapp:{chat_id}", chat_id, 1 if blocked else 0, stamp, stamp, stamp),
+            (conv_id, f"{conv_id}:whatsapp:{chat_id}", chat_id, 1 if blocked else 0, stamp, stamp, stamp),
         )
         if lead:
             conn.execute(
@@ -281,7 +308,7 @@ def test_the_bot_knows_what_the_file_does_not(client, sandbox: CrmConfig) -> Non
 
     _upload(client, [_row(f"7701555020{n}", "Интерес затих до записи", check="Нет") for n in range(1, 9)])
 
-    assert _status(sandbox, "77015550201")[0] == "excluded"       # пробное впереди
+    assert _status(sandbox, "77015550201")[:2] == ("needs_check", "booked_unknown")  # пробное впереди
     assert _status(sandbox, "77015550202")[0] == "opted_out"      # стоп-слово боту
     assert _status(sandbox, "77015550203")[0] == "needs_check"    # свежий диалог
     assert _status(sandbox, "77015550204")[:2] == ("needs_check", "booked_unknown")
@@ -289,7 +316,7 @@ def test_the_bot_knows_what_the_file_does_not(client, sandbox: CrmConfig) -> Non
     assert _status(sandbox, "77015550206")[0] == "ready"          # бот его не знает
     assert _status(sandbox, "77015550207")[0] == "needs_check"    # диалог ведёт администратор
     assert _status(sandbox, "77015550208")[0] == "ready"          # пауза самого бота — не человек
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         linked = conn.execute(
             "SELECT conversation_id FROM campaign_contact WHERE chat_id = '77015550203'"
         ).fetchone()[0]
@@ -315,12 +342,22 @@ def test_a_check_mark_moves_the_contact_and_survives_a_new_upload(client, sandbo
     rows[1] = _row("77015550302", "После пробного / бесплатного курса", summary="Новый итог")
     report = _upload(client, rows).get_data(as_text=True)
 
-    assert "без смены статуса (уже проверены или им писали) 2" in report, report
+    assert "без смены статуса (проверены вами, просили не писать или им уже писали) 2" in report, report
     assert _status(sandbox, "77015550302") == ("excluded", "after_trial", "bought")
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         assert conn.execute(
             "SELECT summary FROM campaign_contact WHERE chat_id = '77015550302'"
         ).fetchone()[0] == "Новый итог"
+
+
+def test_a_new_file_recounts_what_only_the_file_decided(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    """«Текущий диалог» прошлого разбора в новом стал «интерес затих» — контакт снова к работе."""
+    _upload(client, [_row("77015551501", "Текущий диалог")])
+    assert _status(sandbox, "77015551501")[0] == "excluded"
+
+    _upload(client, [_row("77015551501", "Интерес затих до записи", check="Нет")])
+
+    assert _status(sandbox, "77015551501")[:2] == ("ready", "faded")
 
 
 def test_later_needs_a_date_and_keeps_it(client, sandbox: CrmConfig) -> None:  # noqa: F811
@@ -332,7 +369,7 @@ def test_later_needs_a_date_and_keeps_it(client, sandbox: CrmConfig) -> None:  #
     assert _status(sandbox, "77015550401")[0] == "needs_check"
 
     client.post(f"/campaign/{contact}/outcome", data={"outcome": "later", "not_before": "2026-12-01"})
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         status, not_before = conn.execute(
             "SELECT status, not_before FROM campaign_contact WHERE id = ?", (contact,)
         ).fetchone()
@@ -341,7 +378,7 @@ def test_later_needs_a_date_and_keeps_it(client, sandbox: CrmConfig) -> None:  #
 
     # «Писать можно» дату, о которой клиент просил сам, не стирает.
     client.post(f"/campaign/{contact}/outcome", data={"outcome": "write"})
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         assert conn.execute("SELECT not_before FROM campaign_contact WHERE id = ?", (contact,)).fetchone()[0]
 
 
@@ -350,12 +387,93 @@ def test_a_check_mark_does_not_override_a_new_stop_word(client, sandbox: CrmConf
     _bot_conversation(sandbox, "cv9", "77015550901", last_inbound=datetime.now(tz=UTC) - timedelta(days=2))
     _upload(client, [_row("77015550901", "Интерес затих до записи", check="Нет")])
     assert _status(sandbox, "77015550901")[0] == "needs_check"
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         conn.execute("UPDATE conversation SET followup_blocked = 1 WHERE id = 'cv9'")
 
     client.post(f"/campaign/{_contact_id(sandbox, '77015550901')}/outcome", data={"outcome": "write"})
 
     assert _status(sandbox, "77015550901")[0] == "opted_out"
+
+
+def test_every_dialog_of_a_number_counts(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    """Стоп-слово и запись из старого диалога номера действуют, хотя есть диалог новее."""
+    now = datetime.now(tz=UTC)
+    _bot_conversation(sandbox, "old1", "77015551001", last_inbound=now - timedelta(days=60), blocked=True)
+    _bot_conversation(sandbox, "new1", "77015551001", last_inbound=now - timedelta(days=20))
+    _bot_conversation(sandbox, "old2", "77015551002", last_inbound=now - timedelta(days=40),
+                      lead="trial_booked", trial=now + timedelta(days=3))
+    _bot_conversation(sandbox, "new2", "77015551002", last_inbound=now - timedelta(days=20))
+
+    _upload(client, [_row("77015551001", "Интерес затих до записи", check="Нет"),
+                     _row("77015551002", "Интерес затих до записи", check="Нет")])
+
+    assert _status(sandbox, "77015551001")[0] == "opted_out"
+    assert _status(sandbox, "77015551002")[:2] == ("needs_check", "booked_unknown")
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
+        assert conn.execute(
+            "SELECT conversation_id FROM campaign_contact WHERE chat_id = '77015551001'"
+        ).fetchone()[0] == "new1"
+
+
+def test_a_client_who_writes_after_the_check_is_checked_again(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    now = datetime.now(tz=UTC)
+    _bot_conversation(sandbox, "cv11", "77015551101", last_inbound=now - timedelta(days=30))
+    _upload(client, [_row("77015551101", "Интерес затих до записи")])
+    client.post(f"/campaign/{_contact_id(sandbox, '77015551101')}/outcome", data={"outcome": "write"})
+    assert _status(sandbox, "77015551101")[0] == "ready"
+
+    later = (now + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
+        conn.execute("UPDATE conversation SET last_inbound_at = ? WHERE id = 'cv11'", (later,))
+    client.post("/campaign/reconcile")
+
+    assert _status(sandbox, "77015551101")[0] == "needs_check"
+
+
+def test_a_mark_overridden_by_the_bot_is_explained(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    now = datetime.now(tz=UTC)
+    _bot_conversation(sandbox, "cv12", "77015551201", last_inbound=now - timedelta(days=30),
+                      lead="trial_booked", trial=now + timedelta(days=2))
+    _upload(client, [_row("77015551201", "Интерес затих до записи")])
+
+    page = client.post(
+        f"/campaign/{_contact_id(sandbox, '77015551201')}/outcome", data={"outcome": "write"}, follow_redirects=True
+    ).get_data(as_text=True)
+
+    assert "Но по переписке бота контакт теперь «Проверить»" in page
+    assert "после него проверить" in page
+    assert _status(sandbox, "77015551201")[0] == "needs_check"
+
+
+def test_a_busy_database_is_a_message_not_an_error_page(client, sandbox: CrmConfig, monkeypatch) -> None:  # noqa: F811
+    from crm.campaign_store import CampaignStore
+
+    _upload(client, [_row("77015551301", "Интерес затих до записи")])
+    contact = _contact_id(sandbox, "77015551301")
+    original = CampaignStore._connect
+
+    def locked(self, *, write: bool = False):
+        if write:
+            raise sqlite3.OperationalError("database is locked")
+        return original(self, write=write)
+
+    monkeypatch.setattr(CampaignStore, "_connect", locked)
+    for response in (
+        client.post(f"/campaign/{contact}/outcome", data={"outcome": "write"}, follow_redirects=True),
+        client.post(f"/campaign/{contact}/restore", follow_redirects=True),
+        client.post("/campaign/reconcile", follow_redirects=True),
+        _upload(client, [_row("77015551302", "Интерес затих до записи")]),
+    ):
+        assert response.status_code == 200
+        assert "База бота сейчас занята" in response.get_data(as_text=True)
+    monkeypatch.undo()
+    assert _status(sandbox, "77015551301")[0] == "needs_check"
+
+
+def test_rows_that_failed_are_named_in_the_report(client) -> None:  # noqa: F811
+    page = _upload(client, [_row("77015551401", "Интерес затих до записи"), _row("123", "Интерес затих до записи")])
+
+    assert "Не разобрано строк: 1. Строка 10" in page.get_data(as_text=True)
 
 
 def test_restore_returns_a_mistake_but_not_a_stop_word(client, sandbox: CrmConfig) -> None:  # noqa: F811
@@ -380,7 +498,7 @@ def test_restore_returns_a_mistake_but_not_a_stop_word(client, sandbox: CrmConfi
 
 def test_the_bots_own_tables_are_only_read(client, sandbox: CrmConfig) -> None:  # noqa: F811
     def snapshot() -> dict[str, list[tuple]]:
-        with sqlite3.connect(sandbox.bot_db) as conn:
+        with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
             return {
                 table: conn.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
                 for table in ("conversation", "lead", "message", "outbox_message", "escalation_state", "followup_task")
@@ -396,7 +514,7 @@ def test_the_bots_own_tables_are_only_read(client, sandbox: CrmConfig) -> None: 
 
 
 def test_without_the_table_the_section_waits_for_a_restart(client, sandbox: CrmConfig) -> None:  # noqa: F811
-    with sqlite3.connect(sandbox.bot_db) as conn:
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
         conn.execute("DROP TABLE campaign_contact")
 
     assert "ещё не создана" in client.get("/campaign/").get_data(as_text=True)
