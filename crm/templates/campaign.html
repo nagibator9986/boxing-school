@@ -170,7 +170,8 @@
     <tr>
       <td>{{ who(c) }}</td>
       <td><span class="tag {{ status_tones.get(c.status, 'warn') }}">{{ status_titles.get(c.status, c.status) }}</span>
-        {% if c.status_reason %}<div class="mini">{{ c.status_reason }}</div>{% endif %}</td>
+        {% if c.status_reason %}<div class="mini">{{ c.status_reason }}</div>{% endif %}
+        {% if c.delivery_error %}<div class="mini">Ответ Wazzup: {{ c.delivery_error | truncate(220) }}</div>{% endif %}</td>
       <td class="mini">{{ (c.approved_text or '') | truncate(160) }}</td>
       <td class="mini nowrap">отправлено {{ c.sent_at | dt }}
         {% if c.reminder_sent_at %}<div>напомнили {{ c.reminder_sent_at | dt }}</div>{% endif %}

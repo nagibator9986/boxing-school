@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
+from uuid import UUID, uuid5
 
 from app.campaign.contacts import CampaignSegment
 from app.kb.models import EMOJI_RE, MARKDOWN_RE, KBSnapshot
@@ -26,7 +27,10 @@ __all__ = [
     "address_name",
     "compose",
     "draft_prompt",
+    "first_message_id",
     "history_note",
+    "other_sport",
+    "reminder_message_id",
     "reminder_text",
     "template_body",
     "validate_draft",
@@ -55,6 +59,9 @@ DRAFT_INSTRUCTION: Final[str] = (
     "чтобы он звучал лично: можно назвать, о чём родитель спрашивал (вид спорта, для кого — "
     "сын или дочь, возраст ребёнка), если это прямо сказано в итоге. Чего в итоге нет, того "
     "не называй: не сказано, сын или дочь, — пиши «ребёнок»; не сказан вид спорта — «занятия». "
+    "Предлагай только то, что предлагает шаблон: другого не предлагай и не упоминай — ни "
+    "индивидуальных занятий, ни абонементов, тарифов и цен, ни других видов спорта, даже если "
+    "о них есть в итоге. "
     "Правила: только факты из шаблона и итога; не называй цены, суммы, скидки, время, дни "
     "недели, даты, адреса, телефоны и имена — ни тренеров, ни детей, ни родителей; не "
     "пересказывай итог и не упоминай, что переписку разбирали; не называй, почему родитель "
@@ -92,6 +99,26 @@ _DETAILS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"кикбоксинг", re.IGNORECASE),
     re.compile(r"(?<!кик)бокс", re.IGNORECASE),
 )
+#: Предложения, которых нет в шаблоне, — первое сообщение их не делает никогда. Живая
+#: рассылка 27.10.2026: модель приняла совет разбора («предложить индивидуальные») за
+#: задание, написала «подходят ли вам наши тарифы» и извинилась за неотвеченный вопрос
+#: о борьбе — которой в школе нет.
+_FOREIGN_OFFERS: Final[re.Pattern[str]] = re.compile(
+    r"индивидуальн|персональн|тариф|абонемент|стоимост|\bцен[аыуеой]?\b|оплат|скидк", re.IGNORECASE
+)
+#: Виды спорта, которых школа не ведёт: о них первое сообщение молчит, а контакт, который
+#: спрашивал только о них, решает человек.
+_OTHER_SPORTS: Final[re.Pattern[str]] = re.compile(
+    r"борьб|борец|футбол|плаван|карате|дзюдо|самбо|тхэквондо|таэквондо|гимнаст|\bмма\b|\bmma\b|"
+    r"танц|шахмат|волейбол|баскетбол|хоккей|теннис|гандбол",
+    re.IGNORECASE,
+)
+_OUR_SPORTS: Final[re.Pattern[str]] = re.compile(r"бокс", re.IGNORECASE)
+
+#: Пространство идентификаторов сообщений рассылки. ``crm_message_id`` выводится из id
+#: контакта: повтор прохода не создаст второе сообщение, а CRM найдёт строку отправки.
+_MESSAGE_NS: Final[UUID] = UUID("6f1d2c3e-5a4b-4c7d-9e8f-0a1b2c3d4e5f")
+
 #: Вежливые «Вы», «Вас», «Сіз» с заглавной — не имена.
 _POLITE: Final[frozenset[str]] = frozenset({"вы", "вас", "вам", "ваш", "ваша", "ваше", "ваши", "вами", "сіз", "сізге", "сізді"})
 
@@ -108,6 +135,29 @@ class Brief:
     next_step: str | None = None
     note: str | None = None
     last_contact_at: datetime | None = None
+
+
+def first_message_id(contact_id: str) -> UUID:
+    """``crm_message_id`` первого сообщения контакту. ``contact_id`` — 32 знака без дефисов."""
+    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:first")
+
+
+def reminder_message_id(contact_id: str) -> UUID:
+    """``crm_message_id`` напоминания контакту."""
+    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:reminder")
+
+
+def other_sport(brief: Brief) -> str | None:
+    """Спрашивал только о спорте, которого в школе нет, — слово из итога. ``None`` — нет.
+
+    Такому «вы писали нам о борьбе — вопрос актуален?» обещает то, чего школа не даст, а
+    приглашение на бокс ему, возможно, не нужно вовсе. Решает человек.
+    """
+    text = " ".join(value for value in (brief.summary, brief.obstacle) if value)
+    found = _OTHER_SPORTS.search(text)
+    if found is None or _OUR_SPORTS.search(text):
+        return None
+    return found.group(0).lower()
 
 
 def address_name(parent_name: str | None) -> str | None:
@@ -231,7 +281,13 @@ def _unknown_names(body: str, *, allowed: Sequence[str]) -> tuple[str, ...]:
 
 
 def _invented_details(body: str, *, template: str, facts: str) -> bool:
-    """Назвал ли черновик сына, дочь или вид спорта, о которых итог переписки молчит."""
+    """Назвал ли черновик сына, дочь или вид спорта, о которых итог переписки молчит, —
+    или предложил то, чего нет в шаблоне, о чём бы ни говорил итог."""
+    if any(
+        len(pattern.findall(body)) > len(pattern.findall(template))
+        for pattern in (_FOREIGN_OFFERS, _OTHER_SPORTS)
+    ):
+        return True
     return any(
         len(pattern.findall(body)) > len(pattern.findall(template)) and not pattern.search(facts)
         for pattern in _DETAILS
@@ -249,7 +305,8 @@ def _known(brief: Brief, *, tz_name: str) -> list[str]:
     for title, value in (
         ("итог", brief.summary),
         ("что помешало", brief.obstacle),
-        ("следующий шаг по разбору", brief.next_step),
+        # «Следующий шаг» разбора сюда не идёт: это совет аналитика, и модель принимала
+        # его за задание — «предложить индивидуальные тренировки» уходило клиенту.
         ("ребёнок", brief.child_name),
         ("заметка администратора", brief.note),
     ):

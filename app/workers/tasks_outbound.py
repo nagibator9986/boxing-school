@@ -525,11 +525,12 @@ async def _react_terminal(
         )
         return
 
-    if isinstance(exc, WazzupBadContactError) and message.kind is OutboundKind.CAMPAIGN:
+    if message.kind is OutboundKind.CAMPAIGN and not isinstance(exc, (WazzupSpamError, WazzupChannelError)):
         # Рассылка пишет по старому списку: номера без WhatsApp там ожидаемы. Тревога
-        # «нужен звонок» на каждый такой номер — шум без имени клиента; недоставку
-        # показывает CRM в «Возврате клиентов», там и решают, звонить ли.
-        log.info("campaign_bad_contact", code=code)
+        # «нужен звонок» или «ответьте вручную» на каждое такое сообщение — шум без имени
+        # клиента: недоставку с причиной показывает CRM, а серию отказов ловит сама
+        # рассылка и выключается (tasks_campaign). Спам и мёртвый канал — тревога как всегда.
+        log.info("campaign_undelivered", code=code)
         return
 
     if isinstance(exc, WazzupBadContactError):

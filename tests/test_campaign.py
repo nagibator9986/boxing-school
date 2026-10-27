@@ -716,3 +716,23 @@ def test_the_pult_warns_when_the_model_does_not_answer(client, sandbox: CrmConfi
     page = client.get("/campaign/").get_data(as_text=True)
 
     assert "получат карточки вместо разговора" in page and "Billing" in page
+
+
+def test_an_undelivered_contact_shows_what_wazzup_answered(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    from app.campaign.messages import first_message_id
+
+    contact = _draft(client, sandbox, "77015550892")
+    _set(sandbox, "77015550892", status="undelivered", approved_text="Текст?",
+         sent_at=datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f"), status_reason="Не доставлено (postmessageerror)")
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
+        conn.execute(
+            "INSERT INTO outbox_message (id, conversation_id, crm_message_id, payload, state, attempts, last_error,"
+            " created_at, updated_at) VALUES (?, NULL, ?, '{}', 'failed', 1, ?, ?, ?)",
+            ("ob-892", first_message_id(contact).hex, "postmessageerror: Wazzup 400: postMessageError: chat busy",
+             stamp, stamp),
+        )
+
+    assert "Ответ Wazzup: postmessageerror: Wazzup 400: postMessageError: chat busy" in client.get(
+        "/campaign/?tab=sent").get_data(as_text=True)
+    assert "chat busy" in client.get(f"/campaign/{contact}").get_data(as_text=True)

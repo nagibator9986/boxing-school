@@ -24,7 +24,7 @@ import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Final
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
@@ -46,7 +46,10 @@ from app.campaign.messages import (
     address_name,
     compose,
     draft_prompt,
+    first_message_id,
     history_note,
+    other_sport,
+    reminder_message_id,
     reminder_text,
     template_body,
     validate_draft,
@@ -81,10 +84,6 @@ _CANDIDATES: Final[int] = 5
 #: Потолок одного вызова модели для черновика, секунды.
 _DRAFT_TIMEOUT_S: Final[float] = 30.0
 
-#: Пространство идентификаторов сообщений рассылки. ``crm_message_id`` выводится из id
-#: контакта: повтор прохода не создаст второе сообщение, а CRM найдёт строку отправки.
-_MESSAGE_NS: Final[UUID] = UUID("6f1d2c3e-5a4b-4c7d-9e8f-0a1b2c3d4e5f")
-
 #: Причины недоставки человеческим языком — их читает администратор в CRM.
 _UNDELIVERED_TEXTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
     (BAD_CONTACT_CODES, "Не доставлено: номера нет в WhatsApp или он недоступен"),
@@ -105,16 +104,6 @@ _TRACKED: Final[tuple[str, ...]] = tuple(sorted(status.value for status in IN_PL
 #: Пометка черновика: откуда он.
 SOURCE_MODEL: Final[str] = "model"
 SOURCE_TEMPLATE: Final[str] = "template"
-
-
-def first_message_id(contact_id: str) -> UUID:
-    """``crm_message_id`` первого сообщения контакта. ``contact_id`` — 32 знака без дефисов."""
-    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:first")
-
-
-def reminder_message_id(contact_id: str) -> UUID:
-    """``crm_message_id`` напоминания контакту."""
-    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:reminder")
 
 
 # --------------------------------------------------------------------------- #
@@ -200,6 +189,7 @@ async def track(deps: Any, *, now: datetime, policy: Any, silent: frozenset[str]
             code in SPAM_CODES and updated is not None and updated >= now - _SPAM_WINDOW
             for _, _, code, updated in deliveries.values()
         )
+        streak = await _failure_streak(session, now=now, size=int(policy.stop_after_failures))
         for row in rows:
             known = facts_for(facts, row.chat_id, silent=silent)
             state, reason, _, _ = deliveries.get(first_message_id(row.id.hex), (None, None, "", None))
@@ -231,7 +221,21 @@ async def track(deps: Any, *, now: datetime, policy: Any, silent: frozenset[str]
                 due.append(row.id.hex)
         await session.commit()
     if spam:
-        await _stop_after_spam(deps)
+        await _stop_campaign(
+            deps,
+            "Рассылка «Возврат клиентов» остановлена: WhatsApp пометил её сообщение как спам. "
+            "Ответы клиентам идут как обычно. Прежде чем включать рассылку снова в настройках "
+            "CRM, уменьшите число сообщений в день.",
+            code="campaign_spam",
+        )
+    elif streak is not None:
+        await _stop_campaign(
+            deps,
+            f"Рассылка «Возврат клиентов» остановлена: {int(policy.stop_after_failures)} сообщения подряд "
+            f"не доставлены, ответ Wazzup — {streak}. Ответы клиентам идут как обычно. Подробности — "
+            "в CRM, вкладка «Отправлены»; включите рассылку, когда причина устранена.",
+            code="campaign_failures",
+        )
     return due
 
 
@@ -261,23 +265,59 @@ async def _deliveries(
         if state == OutboxState.SKIPPED.value:
             reason = _SKIPPED_TEXTS.get(str(error or ""), f"Не отправлено ({error or 'причина неизвестна'})")
         elif state == OutboxState.FAILED.value and next_attempt is None:
-            reason = _undelivered_text(code)
+            reason = _undelivered_text(code, error)
         found[crm_id] = (str(state), reason, code, _aware(updated))
     return found
 
 
-def _undelivered_text(code: str) -> str:
-    """Причина терминальной ошибки отправки словами."""
+async def _failure_streak(session: AsyncSession, *, now: datetime, size: int) -> str | None:
+    """Последние ``size`` первых сообщений не доставлены — код отказа последнего, иначе ``None``.
+
+    Живая рассылка 27.10.2026: из пяти сообщений четыре подряд вернулись с кодом Wazzup,
+    которого нет в документации, а рассылка шла дальше. Серия отказов — признак беды с
+    каналом или номером, а не с клиентами; номера без WhatsApp (``BAD_CONTACT``) в старом
+    списке ожидаемы и серию не составляют. Серия должна быть свежей: старые отказы после
+    повторного включения рассылку снова не остановят.
+    """
+    if size <= 0:
+        return None
+    contacts = (
+        await session.execute(
+            sa.select(CampaignContact.id)
+            .where(CampaignContact.sent_at.is_not(None))
+            .order_by(CampaignContact.sent_at.desc())
+            .limit(size)
+        )
+    ).scalars().all()
+    if len(contacts) < size:
+        return None
+    found = await _deliveries(session, [first_message_id(contact.hex) for contact in contacts])
+    failed = [
+        (code, updated)
+        for _, reason, code, updated in found.values()
+        if reason is not None and code not in BAD_CONTACT_CODES
+    ]
+    if len(failed) < size:
+        return None
+    newest = max((updated for _, updated in failed if updated is not None), default=None)
+    if newest is None or newest < now - _SPAM_WINDOW:
+        return None
+    return max(failed, key=lambda item: item[1] or now)[0] or "без кода"
+
+
+def _undelivered_text(code: str, error: str | None = None) -> str:
+    """Причина терминальной ошибки отправки словами; неизвестная — с ответом Wazzup как есть."""
     for codes, text in _UNDELIVERED_TEXTS:
         if code in codes:
             return text
-    return f"Не доставлено ({code or 'причина неизвестна'})"
+    detail = str(error or "").split(":", 1)[-1].strip()
+    return f"Не доставлено ({code or 'причина неизвестна'}){': ' + detail[:200] if detail else ''}"
 
 
-async def _stop_after_spam(deps: Any) -> None:
-    """WhatsApp назвал сообщение рассылки спамом: рассылка выключается сама.
+async def _stop_campaign(deps: Any, text: str, *, code: str) -> None:
+    """Сигнал беды с отправкой (спам, серия недоставок): рассылка выключается сама.
 
-    Отправка с номера школы уже остановлена на час (``tasks_outbound``), но через час
+    После спама отправка с номера школы уже стоит час (``tasks_outbound``), но через час
     рассылка продолжила бы — и следующий такой сигнал мог стоить номера целиком.
     Включить снова может только человек, увидев причину. Тревога — только когда
     рассылка была включена: иначе тот же сигнал повторял бы её каждые четверть часа.
@@ -297,13 +337,7 @@ async def _stop_after_spam(deps: Any) -> None:
     try:
         from app.notify.manager import notify_alert
 
-        await notify_alert(
-            deps,
-            "Рассылка «Возврат клиентов» остановлена: WhatsApp пометил её сообщение как спам. "
-            "Ответы клиентам идут как обычно. Прежде чем включать рассылку снова в настройках "
-            "CRM, уменьшите число сообщений в день.",
-            code="campaign_spam",
-        )
+        await notify_alert(deps, text, code=code)
     except Exception as exc:  # noqa: BLE001
         log.warning("campaign_alert_failed", error=type(exc).__name__)
 
@@ -327,11 +361,26 @@ async def draft(deps: Any, *, kb: Any, settings: Any) -> int:
                 .limit(DRAFTS_PER_PASS)
             )
         ).scalars().all()
-        briefs = [(row.id, _brief(row)) for row in rows]
+        briefs = [(row.id, _brief(row), row.outcome) for row in rows]
         await session.commit()
 
     written = 0
-    for contact_id, brief in briefs:
+    for contact_id, brief, outcome in briefs:
+        sport = other_sport(brief) if outcome is None else None
+        if sport is not None:
+            # Человек этот контакт ещё не смотрел: отметка «писать можно» снимет вопрос.
+            async with deps.sessionmaker() as session:
+                await session.execute(
+                    sa.update(CampaignContact)
+                    .where(CampaignContact.id == contact_id, CampaignContact.status == CampaignStatus.READY.value)
+                    .values(
+                        status=CampaignStatus.NEEDS_CHECK.value,
+                        status_reason=f"Спрашивал про другой спорт («{sport}…») — в школе его нет. Писать ли?",
+                        updated_at=utcnow(),
+                    )
+                )
+                await session.commit()
+            continue
         text, source = await write_draft(deps, kb=kb, brief=brief, tz_name=settings.timezone, key=contact_id.hex)
         if text is None:
             log.warning("campaign_no_template", segment=brief.segment.value)
@@ -393,7 +442,7 @@ async def write_draft(deps: Any, *, kb: Any, brief: Brief, tz_name: str, key: st
         known_names=[brief.child_name or ""],
         lang=lang,
         segment=brief.segment,
-        facts=" ".join(value for value in (brief.summary, brief.obstacle, brief.next_step, brief.note) if value),
+        facts=" ".join(value for value in (brief.summary, brief.obstacle, brief.note) if value),
     )
     if text is None:
         log.info("campaign_draft_by_template", reason="validation")

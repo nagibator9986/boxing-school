@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -32,6 +32,7 @@ from app.campaign.contacts import (
     reconcile,
 )
 from app.campaign.facts import FACTS_SQL, facts_for, facts_from_rows
+from app.campaign.messages import first_message_id
 from app.logging_conf import get_logger
 from crm.botdb import _parse_ts
 from crm.campaign_excel import ImportRow
@@ -86,6 +87,8 @@ class ContactRow:
     sent_at: datetime | None = None
     reminder_sent_at: datetime | None = None
     replied_at: datetime | None = None
+    #: Ответ Wazzup на недоставленное первое сообщение — как есть, для разбора причины.
+    delivery_error: str | None = None
 
     @property
     def message(self) -> str | None:
@@ -255,7 +258,28 @@ class CampaignStore:
             " ORDER BY last_contact_at IS NULL, last_contact_at DESC LIMIT ?",
             [*params, int(limit)],
         )
-        return [self._row(row) for row in rows]
+        return self._with_delivery_errors([self._row(row) for row in rows])
+
+    def _with_delivery_errors(self, contacts: list[ContactRow]) -> list[ContactRow]:
+        """Недоставленным — ответ Wazzup из очереди отправки бота (только чтение)."""
+        failed = {first_message_id(item.id).hex: item.id for item in contacts if item.status == "undelivered"}
+        if not failed:
+            return contacts
+        marks = ", ".join("?" for _ in failed)
+        try:
+            with self._session() as conn:
+                errors = {
+                    failed[str(row["crm_message_id"])]: row["last_error"]
+                    for row in conn.execute(
+                        f"SELECT crm_message_id, last_error FROM outbox_message WHERE crm_message_id IN ({marks})",
+                        list(failed),
+                    )
+                    if str(row["crm_message_id"]) in failed
+                }
+        except sqlite3.Error as exc:
+            _log.warning("campaign_delivery_errors_failed", error=str(exc))
+            return contacts
+        return [replace(item, delivery_error=errors.get(item.id)) for item in contacts]
 
     def segment_counts(self, *, statuses: Sequence[str]) -> list[tuple[str, int]]:
         """Сегменты среди контактов в этих статусах — для фильтра."""
@@ -271,7 +295,7 @@ class CampaignStore:
 
     def contact(self, contact_id: str) -> ContactRow | None:
         rows = self._query(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,))
-        return self._row(rows[0]) if rows else None
+        return self._with_delivery_errors([self._row(rows[0])])[0] if rows else None
 
     # ----------------------------------------------------------------- запись
     def import_rows(self, rows: Sequence[ImportRow], *, batch: str, now: datetime) -> ImportReport:

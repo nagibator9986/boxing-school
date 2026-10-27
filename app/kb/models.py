@@ -935,6 +935,9 @@ class CampaignPolicy(_Base):
     #: минуту WhatsApp читает как спам и может остановить номер школы целиком.
     min_gap_minutes: int = Field(default=4, ge=1)
     max_gap_minutes: int = Field(default=9, ge=1)
+    #: Столько первых сообщений подряд не доставлены (кроме «номера нет в WhatsApp») —
+    #: рассылка выключается сама: беда с каналом или номером, а не с клиентами.
+    stop_after_failures: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def _gap(self) -> "CampaignPolicy":

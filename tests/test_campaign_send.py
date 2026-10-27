@@ -729,3 +729,133 @@ async def test_an_unknown_number_alerts_only_outside_the_campaign(deps, monkeypa
                                          code="badcontact", reason="needs_human", conversation_id=None)
 
     assert len(raised) == alerts
+
+
+# --------------------------------------------------------------------------- #
+# Живая рассылка 27.10.2026: «индивидуальные», «тарифы», «борьба», postMessageError
+# --------------------------------------------------------------------------- #
+async def test_the_analysts_next_step_is_not_an_instruction_for_the_model(deps) -> None:
+    deps.llm.push(FakeTurn.answer(MODEL_DRAFT))
+    contact = await _contact(deps, status=CampaignStatus.READY, text=None,
+                             next_step="Предложить индивидуальные тренировки")
+
+    await campaign.draft(deps, kb=deps.kb(), settings=deps.settings)
+
+    assert "индивидуальн" not in deps.llm.requests[0].user_text.lower()
+    assert "индивидуальн" in deps.llm.requests[0].system_instruction.lower()  # запрет — в инструкции
+    assert (await _row(deps, contact)).draft_source == "model"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Вы интересовались индивидуальными тренировками для сына. Подобрать удобное время?",
+        "Вы ранее интересовались у нас занятиями для ребёнка. Подскажите, подходят ли вам наши тарифы?",
+        "Вы писали нам насчёт занятий борьбой, а мы так и не ответили. Вопрос ещё актуален?",
+        "Абонемент со скидкой ждёт вас. Подобрать зал?",
+    ],
+)
+async def test_an_offer_the_template_does_not_make_falls_back_to_it(deps, answer: str) -> None:
+    deps.llm.push(FakeTurn.answer(answer))
+    contact = await _contact(deps, status=CampaignStatus.READY, text=None,
+                             summary="Спрашивал про индивидуальные тренировки, тарифы и борьбу для сына, и про бокс")
+
+    await campaign.draft(deps, kb=deps.kb(), settings=deps.settings)
+
+    assert (await _row(deps, contact)).draft_source == "template"
+
+
+async def test_a_contact_who_asked_only_about_another_sport_goes_to_a_human(deps) -> None:
+    deps.llm.push(FakeTurn.answer("Вы спрашивали про занятия для сына. Подобрать зал рядом с домом?"))
+    unchecked = await _contact(deps, status=CampaignStatus.READY, text=None, summary="Спрашивал про борьбу для сына")
+    cleared = await _contact(deps, chat_id=OTHER, status=CampaignStatus.READY, text=None, outcome="write",
+                             summary="Спрашивал про борьбу для сына")
+
+    await campaign.draft(deps, kb=deps.kb(), settings=deps.settings)
+
+    row = await _row(deps, unchecked)
+    assert row.status == "needs_check" and "борьб" in row.status_reason
+    # Человек посмотрел и решил писать — пишем, о борьбе не упоминая.
+    assert (await _row(deps, cleared)).status == "draft"
+
+
+async def test_a_reminder_does_not_stop_on_its_own_history_note(deps) -> None:
+    contact = await _contact(deps, next_step="Предложить индивидуальные тренировки")
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is True
+    async with deps.sessionmaker() as session:
+        notes = [row.gemini_content for row in (await session.execute(sa.select(Message))).scalars()
+                 if row.gemini_content and row.gemini_content.get("role") == "user"]
+    assert notes and "индивидуальн" not in notes[0]["parts"][0]["text"].lower()
+
+
+async def _failed_sends(deps: PipelineDeps, errors: list[str], *, updated: datetime) -> None:
+    for index, error in enumerate(errors):
+        contact = await _contact(deps, chat_id=f"7701555077{index}", status=CampaignStatus.UNDELIVERED,
+                                 sent_at=updated - timedelta(minutes=5 * (len(errors) - index)))
+        async with deps.sessionmaker() as session:
+            session.add(OutboxMessage(
+                conversation_id=None, crm_message_id=campaign.first_message_id(contact.hex), payload={"text": "x"},
+                state="failed" if error else "sent", attempts=1, last_error=error or None, updated_at=updated,
+            ))
+            await session.commit()
+
+
+@pytest.mark.parametrize(
+    ("errors", "minutes_ago", "stopped"),
+    [
+        (["postmessageerror: Wazzup 400: postMessageError: x"] * 3, 2, True),
+        (["badcontact: Wazzup 400: BAD_CONTACT"] * 3, 2, False),           # номера без WhatsApp — не беда канала
+        (["postmessageerror: Wazzup 400: postMessageError: x"] * 3, 60, False),  # старая серия
+        (["postmessageerror: x", "", "postmessageerror: x"], 2, False),     # одно дошло — серии нет
+    ],
+)
+async def test_a_series_of_failures_switches_the_campaign_off(deps, admin_db: Path, monkeypatch, errors, minutes_ago,
+                                                             stopped) -> None:
+    from app.notify import manager
+
+    monkeypatch.setattr(manager, "manager_target", lambda *a, **k: (manager.ChannelKind.WHATSAPP, CHANNEL_ID, "77000000077"))
+    _campaign_setting(admin_db, "on")
+    await _failed_sends(deps, errors, updated=NOW - timedelta(minutes=minutes_ago))
+    await _sent(deps)  # хоть один в работе — иначе проход ничего не смотрит
+
+    await _track(deps, now=NOW)
+
+    assert (_campaign_setting(admin_db) == "off") is stopped
+    alerts = await _alerts(deps)
+    assert len(alerts) == (1 if stopped else 0)
+    if stopped:
+        assert "подряд не доставлены" in alerts[0] and "postmessageerror" in alerts[0]
+
+
+async def test_an_unknown_refusal_keeps_the_answer_of_wazzup(deps) -> None:
+    contact, _ = await _sent(deps, outbox_state="failed", error="postmessageerror: Wazzup 400: postMessageError: chat is busy")
+
+    await _track(deps, now=NOW)
+
+    row = await _row(deps, contact)
+    assert row.status == "undelivered" and "postMessageError: chat is busy" in row.status_reason
+
+
+async def test_a_campaign_refusal_raises_no_alert_per_message(deps, monkeypatch) -> None:
+    from app.types import ChannelKind, Language, OutboundKind, OutboundMessage, WazzupError, WazzupSpamError
+    from app.workers import tasks_outbound
+
+    raised: list[str] = []
+
+    async def alert(_deps, text: str, *, code: str) -> None:
+        raised.append(code)
+
+    async def stop(*args, **kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(tasks_outbound, "_alert", alert)
+    monkeypatch.setattr(tasks_outbound, "_stop_channel", stop)
+    message = OutboundMessage(channel_id=CHANNEL_ID, channel=ChannelKind.WHATSAPP, chat_id=PHONE, lang=Language.RU,
+                              kind=OutboundKind.CAMPAIGN, text="Здравствуйте!")
+    await tasks_outbound._react_terminal(deps, message, WazzupError("x", error_code="postMessageError"),
+                                         code="postmessageerror", reason="fatal", conversation_id=None)
+    assert raised == []
+    await tasks_outbound._react_terminal(deps, message, WazzupSpamError("x", error_code="MESSAGES_IS_SPAM"),
+                                         code="messagesisspam", reason="needs_human", conversation_id=None)
+    assert raised == ["wazzup_spam"]
