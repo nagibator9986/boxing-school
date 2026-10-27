@@ -21,7 +21,7 @@ from typing import Final
 
 from app.logging_conf import get_logger
 
-__all__ = ["AdminStore", "AdminUser", "SETTING_SPECS", "SettingSpec"]
+__all__ = ["COUNT_MAX", "AdminStore", "AdminUser", "SETTING_SPECS", "SettingSpec"]
 
 _log = get_logger(__name__)
 
@@ -41,9 +41,15 @@ class SettingSpec:
 
     key: str
     title: str
-    kind: str  # bool | time_range | minutes | phones | text
+    kind: str  # bool | time_range | minutes | count | phones | text
     default: str
     hint: str
+
+
+#: Верхняя граница настройки-счётчика: больше сообщений рассылки в день — уже не
+#: «администратор пишет старым клиентам», а массовая рассылка, за которую WhatsApp
+#: блокирует номер.
+COUNT_MAX: Final[int] = 100
 
 
 #: Закрытый список настраиваемого. Всё остальное — код и база знаний, их из чата
@@ -172,6 +178,38 @@ SETTING_SPECS: Final[tuple[SettingSpec, ...]] = (
             "Сообщения клиентов по-прежнему видны в CRM, отвечать можно отсюда же. "
             "Включите, когда бот должен снова отвечать сам."
         ),
+    ),
+    # Возврат клиентов, 27.10.2026. В конце списка — по той же причине, что и выключатель
+    # бота: номера прежних пунктов в Telegram-админке не сдвигаются.
+    SettingSpec(
+        key="campaign_enabled",
+        title="Рассылка «Возврат клиентов»",
+        kind="bool",
+        default="off",
+        hint=(
+            "Бот пишет первым тем, кто давно писал в школу, — только одобренные в CRM "
+            "сообщения, по одному, с паузами. Ответы клиентов ведёт сам бот, поэтому без "
+            "включённого бота рассылка не идёт. Выключено — ничего не уходит, черновики "
+            "и одобрения сохраняются."
+        ),
+    ),
+    SettingSpec(
+        key="campaign_daily_limit",
+        title="Сообщений рассылки в день",
+        kind="count",
+        default="12",
+        hint=(
+            "Сколько сообщений «Возврата клиентов» бот отправит за день, вместе с "
+            "напоминаниями. Начинайте с малого: много сообщений с одного номера WhatsApp "
+            f"считает спамом. Не больше {COUNT_MAX}."
+        ),
+    ),
+    SettingSpec(
+        key="campaign_hours",
+        title="Часы рассылки",
+        kind="time_range",
+        default="10:00-20:00",
+        hint="Когда бот пишет по «Возврату клиентов». Часовой пояс Костаная.",
     ),
 )
 

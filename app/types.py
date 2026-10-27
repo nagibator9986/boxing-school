@@ -300,6 +300,10 @@ class OutboundKind(str, Enum):
     OPERATOR_REPLY = "operator_reply"
     LEAD_CONFIRMATION = "lead_confirmation"
     FOLLOWUP = "followup"
+    #: Первое сообщение и напоминание «Возврата клиентов»: бот пишет первым тому, кто
+    #: давно писал в школу. Отдельный вид — чтобы в CRM и метриках его не путали с
+    #: напоминанием посреди разговора, а недоставку не превращали в тревогу «нужен звонок».
+    CAMPAIGN = "campaign"
     MANAGER_CARD = "manager_card"
     SYSTEM_NOTICE = "system_notice"
 

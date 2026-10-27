@@ -525,6 +525,13 @@ async def _react_terminal(
         )
         return
 
+    if isinstance(exc, WazzupBadContactError) and message.kind is OutboundKind.CAMPAIGN:
+        # Рассылка пишет по старому списку: номера без WhatsApp там ожидаемы. Тревога
+        # «нужен звонок» на каждый такой номер — шум без имени клиента; недоставку
+        # показывает CRM в «Возврате клиентов», там и решают, звонить ли.
+        log.info("campaign_bad_contact", code=code)
+        return
+
     if isinstance(exc, WazzupBadContactError):
         await _flag_lead(deps, conversation_id)
         await _alert(

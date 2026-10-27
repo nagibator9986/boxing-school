@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING, Final
 
-from app.admin.admin_store import SETTING_SPECS, AdminStore
+from app.admin.admin_store import COUNT_MAX, SETTING_SPECS, AdminStore
 from app.logging_conf import get_logger
 from app.types import is_group_chat
 
@@ -113,6 +113,26 @@ def _as_minutes(value: str, fallback: int) -> int:
     return min(1440, max(0, minutes))
 
 
+def _minutes_range(value: str, fallback: tuple[int, int]) -> tuple[int, int]:
+    """``10:00-20:00`` → минуты от полуночи (600, 1200). Мусор → ``fallback``."""
+    match = _RANGE_RE.match(value or "")
+    if not match:
+        return fallback
+    start_h, start_m, end_h, end_m = (int(part) for part in match.groups())
+    if not (0 <= start_h <= 23 and 0 <= end_h <= 23 and start_m < 60 and end_m < 60):
+        return fallback
+    return start_h * 60 + start_m, end_h * 60 + end_m
+
+
+def _as_count(value: str, fallback: int) -> int:
+    """Счётчик из строки настройки: от нуля до :data:`COUNT_MAX`. Мусор → ``fallback``."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return min(COUNT_MAX, max(0, number))
+
+
 def _as_bool(value: str, fallback: bool) -> bool:
     """Строка настройки в булево. Понимает ``on/off``, ``true/false``, ``1/0``."""
     text = (value or "").strip().lower()
@@ -152,6 +172,11 @@ class RuntimeSettings:
     auto_greeting_texts: str = "ЖМИ ОТПРАВИТЬ\nThank you for contacting us"
     #: WhatsApp бухгалтера: ему уходят просьбы выставить счёт. Пусто — администратору.
     accountant_contact: str = ""
+    #: Рассылка «Возврат клиентов»: выключатель, сообщений в день и часы — минуты от
+    #: полуночи по часам школы. Без настройки рассылка выключена всегда.
+    campaign_enabled: bool = False
+    campaign_daily_limit: int = 12
+    campaign_hours: tuple[int, int] = (600, 1200)
 
     # ------------------------------------------------------------------ чтение
     @classmethod
@@ -182,6 +207,9 @@ class RuntimeSettings:
             ignored_numbers=(values.get("ignored_numbers", "") or "").strip(),
             auto_greeting_texts=(values.get("auto_greeting_texts", "") or "").strip(),
             accountant_contact=(values.get("accountant_contact", "") or "").strip(),
+            campaign_enabled=_as_bool(values.get("campaign_enabled", ""), False),
+            campaign_daily_limit=_as_count(values.get("campaign_daily_limit", ""), 12),
+            campaign_hours=_minutes_range(values.get("campaign_hours", ""), (600, 1200)),
         )
 
     # ------------------------------------------------------------ применение

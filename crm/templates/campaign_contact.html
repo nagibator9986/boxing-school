@@ -3,8 +3,8 @@
 {% block content %}
 <h1 class="page-title">{{ contact.parent_name or contact.wa_name or 'Без имени' }}</h1>
 <p class="page-note">{{ contact.phone }} · {{ segment_titles.get(contact.segment, contact.segment) }} ·
-  <span class="tag {{ 'ok' if contact.status == 'ready' else ('bad' if contact.status in ('excluded', 'opted_out') else 'warn') }}">{{ status_titles.get(contact.status, contact.status) }}</span>
-  · <a href="{{ url_for('campaign.index', tab='check' if contact.status == 'needs_check' else ('ready' if contact.status == 'ready' else 'closed')) }}">к списку</a></p>
+  <span class="tag {{ status_tones.get(contact.status, 'warn') }}">{{ status_titles.get(contact.status, contact.status) }}</span>
+  · <a href="{{ url_for('campaign.index', tab=tab) }}">к списку</a></p>
 
 <div class="grid cols-2">
   <div class="card">
@@ -28,32 +28,81 @@
     </table>
   </div>
 
+  <div>
+  <div class="card">
+    <h2>Первое сообщение</h2>
+    {% if contact.status == 'draft' %}
+      <form method="post" action="{{ url_for('campaign.message', contact_id=contact.id) }}">
+        <input type="hidden" name="back" value="contact">
+        <textarea name="text" rows="6" maxlength="{{ max_chars }}">{{ contact.draft_text }}</textarea>
+        <p class="mini">{% if contact.draft_source == 'model' %}Написан моделью по итогу прошлой переписки — проверьте факты.{% elif contact.draft_source == 'edited' %}Исправлен вручную.{% else %}Шаблон из базы знаний: модель была недоступна или её текст не прошёл проверку.{% endif %}
+          Цены, время и адреса в первом сообщении не нужны: их бот назовёт сам, когда клиент ответит.</p>
+        <div class="actions">
+          <button class="btn primary" type="submit" name="action" value="approve">Одобрить</button>
+          <button class="btn" type="submit" name="action" value="save">Сохранить без одобрения</button>
+          <button class="btn" type="submit" name="action" value="redraft">Переписать заново</button>
+        </div>
+      </form>
+    {% elif contact.status == 'ready' %}
+      <p><span class="tag warn">черновик пишется</span> Бот напишет его в ближайшие минуты — обновите страницу.</p>
+    {% elif contact.status == 'approved' %}
+      <p style="white-space:pre-wrap">{{ contact.approved_text }}</p>
+      <p class="mini">Одобрено {{ contact.approved_at | dt }}. Уйдёт по очереди{% if contact.not_before %}, не раньше {{ contact.not_before | dt('%d.%m.%Y') }}{% endif %}, когда рассылка включена.</p>
+      <form method="post" action="{{ url_for('campaign.message', contact_id=contact.id) }}" class="inline">
+        <input type="hidden" name="back" value="contact">
+        <button class="btn" type="submit" name="action" value="unapprove">Вернуть в черновики</button>
+      </form>
+    {% elif contact.sent_at %}
+      <p style="white-space:pre-wrap">{{ contact.approved_text }}</p>
+      <p class="mini">Отправлено {{ contact.sent_at | dt }}{% if contact.reminder_sent_at %}, напомнили {{ contact.reminder_sent_at | dt }}{% endif %}{% if contact.replied_at %}, ответил {{ contact.replied_at | dt }}{% endif %}.
+        {% if contact.status_reason %}<b>{{ contact.status_reason }}</b>{% endif %}</p>
+      {% if contact.status != 'opted_out' %}
+      <form method="post" action="{{ url_for('campaign.result', contact_id=contact.id) }}">
+        <input type="hidden" name="back" value="contact">
+        <div class="field"><label>Заметка (необязательно)</label><input type="text" name="note" maxlength="300" placeholder="например: пришли 30.10, оплатили абонемент"></div>
+        <div class="actions">
+          {% for value, title in result_titles.items() %}
+            <button class="btn {{ 'primary' if value == 'bought' }}" type="submit" name="result" value="{{ value }}">{{ title }}</button>
+          {% endfor %}
+        </div>
+      </form>
+      <p class="mini">Ответ, запись и покупку бот отмечает сам по переписке. Кнопки — для того, что случилось без него:
+        записали по телефону, оплатили в зале.</p>
+      {% endif %}
+    {% else %}
+      <p class="mini">Черновик появится, когда контакт отметят «Писать можно» (или «Был, не купил», «Не пришёл»).</p>
+    {% endif %}
+  </div>
+
+  {% set checkable = contact.status in ('needs_check', 'ready', 'draft', 'approved', 'excluded') %}
+  {% if checkable or contact.outcome or contact.note %}
   <div class="card">
     <h2>Проверка</h2>
-    {% if contact.status_reason %}<p><b>{{ contact.status_reason }}</b></p>{% endif %}
+    {% if contact.status_reason and contact.status in ('needs_check', 'excluded') %}<p><b>{{ contact.status_reason }}</b></p>{% endif %}
     {% if contact.outcome %}<p class="mini">Отмечено {{ contact.checked_at | dt }}: {{ outcome_titles.get(contact.outcome, contact.outcome) }}</p>{% endif %}
     {% if contact.note %}<p class="mini">Заметка: {{ contact.note }}</p>{% endif %}
 
-    {% if contact.status in ('needs_check', 'ready', 'excluded') %}
+    {% if checkable %}
     <form method="post" action="{{ url_for('campaign.outcome', contact_id=contact.id) }}">
       <input type="hidden" name="back" value="contact">
       <div class="field"><label>Заметка (необязательно)</label><input type="text" name="note" maxlength="300" placeholder="например: оплатил 15.10, ходит в КСК"></div>
       <div class="field"><label>Для «Позже» — с какого дня писать</label><input type="date" name="not_before"></div>
       <div class="actions">
         {% for value, title in outcome_titles.items() %}
-          <button class="btn {{ 'primary' if value == 'write' }}" type="submit" name="outcome" value="{{ value }}">{{ title }}</button>
+          <button class="btn {{ 'primary' if value == 'write' and contact.status in ('needs_check', 'excluded') }}" type="submit" name="outcome" value="{{ value }}">{{ title }}</button>
         {% endfor %}
       </div>
     </form>
+    {% if contact.status in ('draft', 'approved') %}<p class="mini">Новая отметка сбросит черновик: бот напишет его заново под новый исход.</p>{% endif %}
     {% endif %}
-    {% if contact.status in ('excluded', 'ready') %}
+    {% if contact.status in ('excluded', 'ready', 'draft', 'approved') %}
     <form method="post" action="{{ url_for('campaign.restore', contact_id=contact.id) }}" class="inline">
       <input type="hidden" name="back" value="contact">
       <button class="btn small" type="submit">Вернуть на проверку</button>
     </form>
     {% endif %}
-    <p class="mini">«Писать можно» и «Был, не купил» переводят контакт в список для сообщения. Само сообщение на этом
-      этапе не уходит: рассылка — следующий шаг, и каждый текст перед отправкой увидит человек.</p>
+  </div>
+  {% endif %}
   </div>
 </div>
 {% endblock %}

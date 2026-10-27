@@ -9,7 +9,7 @@
     <h2>Диалог</h2>
     <div class="dialog">
       {% for message in dialog %}
-        <div class="bubble {{ 'client' if message.is_client else ('operator' if message.author == 'operator' else 'bot') }}">{{ message.text }}<span class="meta">{{ message.created_at | dt('%d.%m %H:%M') }}{% if message.author == 'operator' %} · оператор{% endif %}</span></div>
+        <div class="bubble {{ 'client' if message.is_client else ('operator' if message.author == 'operator' else 'bot') }}">{{ message.text }}<span class="meta">{{ message.created_at | dt('%d.%m %H:%M') }}{% if message.author == 'operator' %} · оператор{% elif message.msg_type == 'campaign' %} · возврат клиентов{% endif %}</span></div>
       {% else %}
         <div class="empty">Переписки пока нет</div>
       {% endfor %}

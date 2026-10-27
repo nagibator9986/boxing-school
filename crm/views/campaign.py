@@ -1,8 +1,10 @@
-"""Возврат клиентов, этап 1: список из разбора старых переписок и проверка исхода.
+"""Возврат клиентов: список из разбора старых переписок, проверка, черновики, итоги.
 
-Отправки здесь нет. Раздел нужен, чтобы до первого сообщения человек отметил, кто уже
-занимается, кто был на пробном и не купил, кто не дошёл, — и чтобы список сверился с
-перепиской самого бота.
+Путь контакта: человек отмечает исход (кто уже занимается, кто был на пробном и не
+купил, кто не дошёл) → бот пишет черновик первого сообщения → человек правит и
+одобряет → бот отправляет по одному, в часы рассылки, и дальше ведёт разговор сам →
+статус по переписке (ответил, записался, купил, стоп) или по отметке человека.
+Отправляет воркер бота (``app/workers/tasks_campaign.py``); здесь — решения человека.
 """
 
 from __future__ import annotations
@@ -15,11 +17,11 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 
-from app.campaign.contacts import CampaignOutcome, CampaignStatus
+from app.campaign.contacts import CampaignOutcome, CampaignResult, CampaignStatus
 from app.logging_conf import get_logger
 from crm.app import config, login_required
 from crm.campaign_excel import parse_workbook
-from crm.campaign_store import CampaignStore, ContactRow, StoreBusy
+from crm.campaign_store import MAX_MESSAGE_CHARS, CampaignStore, ContactRow, StoreBusy
 from crm.forms import choice, opt_text, text
 
 bp = Blueprint("campaign", __name__, url_prefix="/campaign")
@@ -29,9 +31,25 @@ _log = get_logger(__name__)
 #: Вкладки списка: название и статусы, которые в ней видны.
 TABS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "check": ("Проверить исход", (CampaignStatus.NEEDS_CHECK.value,)),
-    "ready": ("Можно писать", (CampaignStatus.READY.value,)),
+    "drafts": ("Черновики", (CampaignStatus.READY.value, CampaignStatus.DRAFT.value)),
+    "approved": ("Одобрены", (CampaignStatus.APPROVED.value,)),
+    "sent": (
+        "Отправлены",
+        (
+            CampaignStatus.SENT.value,
+            CampaignStatus.REPLIED.value,
+            CampaignStatus.BOOKED.value,
+            CampaignStatus.BOUGHT.value,
+            CampaignStatus.NO_ANSWER.value,
+            CampaignStatus.DECLINED.value,
+            CampaignStatus.UNDELIVERED.value,
+        ),
+    ),
     "closed": ("Не пишем", (CampaignStatus.EXCLUDED.value, CampaignStatus.OPTED_OUT.value)),
 }
+
+#: Прежнее имя вкладки «Можно писать» — ссылки и закладки на него ведут в черновики.
+_TAB_ALIASES: Final[dict[str, str]] = {"ready": "drafts"}
 
 SEGMENT_TITLES: Final[dict[str, str]] = {
     "faded": "Интерес затих до записи",
@@ -52,16 +70,31 @@ SEGMENT_TITLES: Final[dict[str, str]] = {
 
 STATUS_TITLES: Final[dict[str, str]] = {
     "needs_check": "Проверить",
-    "ready": "Можно писать",
+    "ready": "Черновик пишется",
     "draft": "Черновик",
     "approved": "Одобрен",
     "sent": "Отправлено",
     "replied": "Ответил",
     "booked": "Записался",
+    "bought": "Купил",
     "declined": "Отказ",
     "no_answer": "Не ответил",
     "opted_out": "Стоп",
+    "undelivered": "Не доставлено",
     "excluded": "Не пишем",
+}
+
+#: Цвет метки статуса: хорошо, ждём, плохо.
+STATUS_TONES: Final[dict[str, str]] = {
+    "replied": "ok", "booked": "ok", "bought": "ok", "approved": "ok",
+    "declined": "bad", "opted_out": "bad", "undelivered": "bad", "excluded": "bad", "no_answer": "bad",
+}
+
+#: Итог после сообщения — кнопки во вкладке «Отправлены».
+RESULT_TITLES: Final[dict[str, str]] = {
+    CampaignResult.BOOKED.value: "Записался",
+    CampaignResult.BOUGHT.value: "Купил",
+    CampaignResult.DECLINED.value: "Отказ",
 }
 
 #: Что сказать, когда база бота занята записью: бот пишет в тот же файл.
@@ -105,26 +138,114 @@ def _now() -> datetime:
 @bp.route("/")
 @login_required
 def index() -> Any:
-    """Список с вкладками и фильтром по сегменту."""
+    """Список с вкладками, фильтром по сегменту и пультом рассылки."""
     store = _store()
-    tab = choice(request.args, "tab", TABS, default="check")
+    raw_tab = text(request.args, "tab")
+    tab = choice({"tab": _TAB_ALIASES.get(raw_tab, raw_tab)}, "tab", TABS, default="check")
     segment = text(request.args, "segment")
     statuses = TABS[tab][1]
-    counts = store.counts()
+    funnel = store.funnel(since=_day_start())
+    counts = funnel.statuses
     return render_template(
         "campaign.html",
         ready=store.ready,
         tab=tab,
         tabs={key: (title, sum(counts.get(status, 0) for status in keys)) for key, (title, keys) in TABS.items()},
-        total=sum(counts.values()),
+        total=funnel.total,
         counts=counts,
+        funnel=funnel,
+        pult=_pult(),
         segment=segment,
         segments=store.segment_counts(statuses=statuses),
         contacts=store.contacts(statuses=statuses, segment=segment),
         segment_titles=SEGMENT_TITLES,
         status_titles=STATUS_TITLES,
+        status_tones=STATUS_TONES,
         outcome_titles=OUTCOME_TITLES,
+        result_titles=RESULT_TITLES,
+        max_chars=MAX_MESSAGE_CHARS,
     )
+
+
+def _pult() -> dict[str, Any]:
+    """Состояние рассылки для пульта: включена ли, лимит, часы и что ей мешает."""
+    from app.admin.runtime_settings import load_runtime_settings
+
+    runtime = load_runtime_settings(config().admin_db)
+    start, end = runtime.campaign_hours
+    problems: list[str] = []
+    if not runtime.bot_enabled:
+        problems.append(
+            "Бот выключен («Бот отвечает клиентам» в настройках): ответы клиентов вести некому, "
+            "поэтому рассылка не идёт."
+        )
+    if runtime.campaign_daily_limit <= 0:
+        problems.append("Сообщений в день — 0: рассылка ничего не отправит.")
+    if not _templates_ready():
+        problems.append(
+            "В базе знаний нет текстов возврата (группа campaign в «Системных фразах»): черновики не пишутся."
+        )
+    problems.extend(_model_problems())
+    return {
+        "enabled": runtime.campaign_enabled,
+        "bot_enabled": runtime.bot_enabled,
+        "limit": runtime.campaign_daily_limit,
+        "hours": f"{start // 60:02d}:{start % 60:02d}–{end // 60:02d}:{end % 60:02d}",
+        "problems": problems,
+    }
+
+
+def _model_problems() -> list[str]:
+    """Модель не отвечает — тому, кто ответит на рассылку, бот ответит карточками и «сбоем»."""
+    try:
+        from crm.app import data
+        from crm.health import _model_issues
+
+        issues = _model_issues(data())
+    except Exception as exc:  # noqa: BLE001 - пульт не имеет права падать из-за проверки
+        _log.warning("campaign_model_check_failed", error=type(exc).__name__)
+        return []
+    return [
+        f"{issue.title}. Клиенты, которые ответят на рассылку, получат карточки вместо разговора, а черновики "
+        f"пишутся по шаблону. {issue.detail}"
+        for issue in issues
+    ]
+
+
+def _templates_ready() -> bool:
+    """Есть ли в базе знаний тексты первых сообщений.
+
+    Достаточно найти ключ в файле: разбирать и проверять всю базу на каждое открытие
+    страницы незачем — сломанную базу показывает «Обзор».
+    """
+    try:
+        return "campaign.first_faded:" in (config().kb_dir / "i18n.yaml").read_text(encoding="utf-8")
+    except OSError as exc:
+        _log.warning("campaign_kb_unavailable", error=type(exc).__name__)
+        return False
+
+
+@bp.route("/switch", methods=["POST"])
+@login_required
+def switch() -> Any:
+    """Включить или выключить рассылку — та же настройка, что в «Настройках бота»."""
+    from app.admin.admin_store import AdminStore
+
+    turn_on = text(request.form, "state") == "on"
+    store = AdminStore(config().admin_db)
+    try:
+        store.set("campaign_enabled", "on" if turn_on else "off")
+        bot_on = store.get("bot_enabled") in ("on", "true", "1")
+    finally:
+        store.close()
+    if turn_on and not bot_on:
+        flash("Рассылка включена, но бот выключен — сообщения не пойдут, пока его не включат в настройках.", "error")
+    elif turn_on:
+        flash("Рассылка включена. Одобренные сообщения уйдут по одному, в часы рассылки.", "ok")
+    else:
+        flash("Рассылка выключена. Ничего не уходит; черновики и одобрения сохранены.", "ok")
+    _log.info("campaign_switched", enabled=turn_on)
+    return redirect(url_for("campaign.index", tab=text(request.form, "tab") or "check"))
 
 
 @bp.route("/import", methods=["POST"])
@@ -182,20 +303,125 @@ def recheck() -> Any:
     return redirect(url_for("campaign.index", tab=text(request.form, "tab") or "check"))
 
 
+@bp.route("/approve", methods=["POST"])
+@login_required
+def approve_all() -> Any:
+    """Одобрить черновики со страницы как есть."""
+    ids = request.form.getlist("ids")
+    try:
+        approved = _store().approve_many(ids, now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+    else:
+        skipped = len(set(ids)) - approved
+        message = f"Одобрено: {approved}."
+        if skipped:
+            message += f" Не одобрено {skipped}: их уже отправили, вернули на проверку или бот увидел запрет."
+        flash(message, "ok" if approved else "error")
+    return redirect(url_for("campaign.index", tab="drafts", segment=text(request.form, "segment") or None))
+
+
+@bp.route("/redraft-templates", methods=["POST"])
+@login_required
+def redraft_templates() -> Any:
+    """Переписать моделью все черновики по шаблону — когда модель снова отвечает."""
+    store = _store()
+    try:
+        changed = store.redraft(store.template_drafts(), now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+    else:
+        flash(f"Пишутся заново: {changed}. Бот возьмётся за них в ближайшие минуты.", "ok")
+    return redirect(url_for("campaign.index", tab="drafts"))
+
+
 @bp.route("/<contact_id>")
 @login_required
 def show(contact_id: str) -> Any:
-    """Карточка контакта: итог переписки, что проверить, отметка исхода."""
+    """Карточка контакта: итог переписки, проверка, сообщение, итог."""
     contact = _store().contact(contact_id)
     if contact is None:
         abort(404)
     return render_template(
         "campaign_contact.html",
         contact=contact,
+        tab=_tab_of(contact.status),
         segment_titles=SEGMENT_TITLES,
         status_titles=STATUS_TITLES,
+        status_tones=STATUS_TONES,
         outcome_titles=OUTCOME_TITLES,
+        result_titles=RESULT_TITLES,
+        max_chars=MAX_MESSAGE_CHARS,
     )
+
+
+@bp.route("/<contact_id>/message", methods=["POST"])
+@login_required
+def message(contact_id: str) -> Any:
+    """Черновик: сохранить правку, одобрить, переписать заново, вернуть из одобренных."""
+    action = choice(request.form, "action", ("save", "approve", "redraft", "unapprove"), default="")
+    back = _back(contact_id)
+    store = _store()
+    now = _now()
+    try:
+        if action == "redraft":
+            if store.redraft([contact_id], now=now):
+                flash("Черновик пишется заново — бот напишет его в ближайшие минуты.", "ok")
+            else:
+                flash("Этот черновик уже не переписать: сообщение отправлено или контакт закрыт.", "error")
+            return back
+        if action == "unapprove":
+            if store.unapprove(contact_id, now=now):
+                flash("Возвращено в черновики — сообщение не уйдёт, пока его снова не одобрят.", "ok")
+            else:
+                flash("Вернуть нельзя: сообщение уже отправлено или контакт не одобрен.", "error")
+            return back
+        body = text(request.form, "text").strip()
+        if not body:
+            flash("Пустое сообщение отправлять нечего.", "error")
+            return back
+        if len(body) > MAX_MESSAGE_CHARS:
+            flash(f"Слишком длинно: {len(body)} знаков, можно до {MAX_MESSAGE_CHARS}.", "error")
+            return back
+        if action == "approve":
+            saved = store.approve(contact_id, body, now=now)
+            if saved is None:
+                flash("Одобрить нельзя: черновика нет — сообщение отправлено, контакт закрыт или черновик ещё пишется.", "error")
+            else:
+                _flash_result("Одобрено — уйдёт по очереди.", saved, expected=CampaignStatus.APPROVED.value)
+            return back
+        if action == "save":
+            if store.save_draft(contact_id, body, now=now) is None:
+                flash("Сохранить нельзя: черновика уже нет.", "error")
+            else:
+                flash("Черновик сохранён.", "ok")
+            return back
+    except StoreBusy:
+        flash(BUSY, "error")
+        return back
+    flash("Не понятно, что сделать с черновиком.", "error")
+    return back
+
+
+@bp.route("/<contact_id>/result", methods=["POST"])
+@login_required
+def result(contact_id: str) -> Any:
+    """Итог после сообщения по отметке человека: записался, купил, отказ."""
+    value = choice(request.form, "result", RESULT_TITLES, default="")
+    back = _back(contact_id)
+    if not value:
+        flash("Не выбран итог.", "error")
+        return back
+    try:
+        saved = _store().set_result(contact_id, CampaignResult(value), now=_now(), note=opt_text(request.form, "note"))
+    except StoreBusy:
+        flash(BUSY, "error")
+        return back
+    if saved is None:
+        flash("Итог ставится только тем, кому уже написали, — и не после «стоп».", "error")
+    else:
+        flash(f"Отмечено: {RESULT_TITLES[value]}.", "ok")
+    return back
 
 
 @bp.route("/<contact_id>/outcome", methods=["POST"])
@@ -240,6 +466,20 @@ def restore(contact_id: str) -> Any:
     else:
         _flash_result("Контакт возвращён на проверку.", restored, expected=CampaignStatus.NEEDS_CHECK.value)
     return _back(contact_id)
+
+
+def _tab_of(status: str) -> str:
+    """Вкладка, где виден контакт в этом статусе."""
+    return next((key for key, (_, statuses) in TABS.items() if status in statuses), "check")
+
+
+def _day_start() -> datetime:
+    """Полночь по часам школы — с неё считается «отправлено сегодня»."""
+    try:
+        zone = ZoneInfo(config().timezone)
+    except Exception:  # noqa: BLE001 - кривое имя зоны не повод падать
+        zone = ZoneInfo("Asia/Almaty")
+    return datetime.now(tz=zone).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
 
 
 def _expected_status(outcome: CampaignOutcome) -> str:

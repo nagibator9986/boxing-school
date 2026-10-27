@@ -512,11 +512,13 @@ class KBVersion(Base):
 class CampaignContact(Base):
     """Клиент из старых переписок, которому, возможно, стоит написать снова.
 
-    Строки заводит CRM импортом Excel разбора, исход проверяет человек. Бот-консультант
-    таблицу не читает. Внешнего ключа на ``conversation`` нет намеренно: многих из
-    списка в базе бота нет вовсе (переписка была до него), а связь по ``chat_id``
-    находится заново при каждой сверке. Колонки следующих этапов (черновик, отправка,
-    ответ) заведены сразу: ``create_all`` новые колонки в готовую таблицу не добавляет.
+    Строки заводит CRM импортом Excel разбора, исход проверяет и черновик одобряет
+    человек; черновик пишет, сообщение отправляет и статус по переписке ведёт воркер
+    рассылки (``app/workers/tasks_campaign.py``). Конвейер ответов клиенту таблицу не
+    читает. Внешнего ключа на ``conversation`` нет намеренно: многих из списка в базе
+    бота нет вовсе (переписка была до него), а связь по ``chat_id`` находится заново
+    при каждой сверке. ``create_all`` новые колонки в готовую таблицу не добавляет —
+    это делает ``app/storage/upgrade.py`` при запуске.
     """
 
     __tablename__ = "campaign_contact"
@@ -564,8 +566,12 @@ class CampaignContact(Base):
     #: Диалог в базе бота с этим номером, если он есть (по последней сверке).
     conversation_id: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
 
-    # Следующие этапы: черновик и одобрение, отправка, напоминание, ответ.
+    # Черновик и одобрение, отправка, напоминание, ответ.
     draft_text: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
+    #: Откуда черновик: ``model`` — модель по итогу переписки, ``template`` — текст базы
+    #: знаний как есть (модель недоступна или её текст не прошёл проверку), ``edited`` —
+    #: правка человека.
+    draft_source: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     approved_text: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)

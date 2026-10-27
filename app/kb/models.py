@@ -145,7 +145,7 @@ def min_accepted_age(snapshot: "KBSnapshot") -> int | None:
 I18N_GROUPS: Final[frozenset[str]] = frozenset(
     {
         "gap", "escalation", "error", "bridge", "followup", "lead_card",
-        "greeting", "system", "card", "funnel",
+        "greeting", "system", "card", "funnel", "campaign",
     }
 )
 
@@ -920,6 +920,29 @@ class FollowupRule(_Base):
         return value
 
 
+class CampaignPolicy(_Base):
+    """Возврат клиентов: сроки напоминания и темп отправки.
+
+    Сколько сообщений в день и в какие часы — настройки владельца в CRM; здесь то, что
+    меняется редко и решает, насколько рассылка похожа на живого администратора.
+    """
+
+    #: Через сколько дней молчания после первого сообщения уходит одно напоминание.
+    remind_after_days: float = Field(default=3, gt=0)
+    #: Через сколько дней после напоминания молчащий клиент становится «не ответил».
+    give_up_after_days: float = Field(default=4, gt=0)
+    #: Пауза между двумя сообщениями рассылки, минуты: от и до. Сообщения пачкой в одну
+    #: минуту WhatsApp читает как спам и может остановить номер школы целиком.
+    min_gap_minutes: int = Field(default=4, ge=1)
+    max_gap_minutes: int = Field(default=9, ge=1)
+
+    @model_validator(mode="after")
+    def _gap(self) -> "CampaignPolicy":
+        if self.max_gap_minutes < self.min_gap_minutes:
+            raise ValueError("campaign: max_gap_minutes меньше min_gap_minutes")
+        return self
+
+
 class PoliciesFile(_Base):
     """Организационный слой. Юридических полей НЕТ — см. SCOPE-OVERRIDE §1."""
 
@@ -944,6 +967,9 @@ class PoliciesFile(_Base):
     #: сказал «спасибо, до встречи», — навязчивость.
     followup_closing_words: list[str] = Field(default_factory=list)
     forbidden_behaviour: list[str] = Field(default_factory=list)
+    #: Раздела может не быть: в файле, который владелец правил в CRM, выпуск его не
+    #: допишет — тогда действуют значения по умолчанию.
+    campaign: CampaignPolicy = Field(default_factory=CampaignPolicy)
 
     @model_validator(mode="after")
     def _consistent(self) -> "PoliciesFile":
@@ -1304,6 +1330,7 @@ def iter_bilinguals(model: BaseModel) -> Iterable[tuple[str, Bilingual]]:
 __all__ = [
     "Artifact",
     "Bilingual",
+    "CampaignPolicy",
     "Coach",
     "DerivedFact",
     "EMPTY_BILINGUAL",

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from app.admin.admin_store import SETTING_SPECS, AdminStore
+from app.admin.admin_store import COUNT_MAX, SETTING_SPECS, AdminStore
 from app.admin.media_store import MediaWriteError, register_media
 from app.admin.schedule_store import (
     ScheduleWriteError,
@@ -273,6 +273,8 @@ class AdminConsole:
         hint = (
             "Пришлите число минут, от 1 до 1440."
             if spec.kind == "minutes"
+            else f"Пришлите число от 0 до {COUNT_MAX}."
+            if spec.kind == "count"
             else "Пришлите номера через запятую или с новой строки."
             if spec.kind == "phones"
             else "Пришлите новый текст; варианты — с новой строки."
@@ -304,6 +306,10 @@ class AdminConsole:
         if spec is not None and spec.kind == "minutes":
             if not value.isdigit() or not 0 <= int(value) <= 1440:
                 return "Нужно число минут — от 0 до 1440. Ноль: молчать до возврата вручную."
+            value = str(int(value))
+        elif spec is not None and spec.kind == "count":
+            if not value.isdigit() or not 0 <= int(value) <= COUNT_MAX:
+                return f"Нужно число от 0 до {COUNT_MAX}."
             value = str(int(value))
         elif spec is not None and spec.kind == "phones":
             # Список номеров: формат записи свободный, проверять нечего, кроме

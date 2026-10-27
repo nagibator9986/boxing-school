@@ -522,12 +522,197 @@ def test_without_the_table_the_section_waits_for_a_restart(client, sandbox: CrmC
     assert "после перезапуска бота" in page
 
 
-def test_the_bot_itself_does_not_load_the_campaign_code() -> None:
-    """Этап 1 не трогает бота: его конвейер и воркеры этот пакет не импортируют."""
+def test_the_reply_pipeline_does_not_load_the_campaign_code() -> None:
+    """Рассылку ведёт свой воркер; конвейер ответов клиенту от её кода не зависит.
+
+    Ответ на сообщение рассылки — обычный разговор с ботом: сломанный код рассылки не
+    должен ронять ответы. Код CRM в процесс бота не попадает вовсе.
+    """
     probe = (
-        "import sys, app.core.pipeline, app.workers.queue, app.asgi; "
-        "print(sorted(name for name in sys.modules if name.startswith(('app.campaign', 'crm.campaign'))))"
+        "import sys, app.core.pipeline; "
+        "print(sorted(name for name in sys.modules if name.startswith(('app.campaign', 'crm.'))))"
     )
     result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True, check=True)
     # Последняя строка: выше неё может быть журнал запуска.
     assert result.stdout.strip().splitlines()[-1] == "[]", result.stdout + result.stderr
+    probe = "import sys, app.asgi; print(sorted(name for name in sys.modules if name.startswith('crm.campaign')))"
+    result = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True, check=True)
+    assert result.stdout.strip().splitlines()[-1] == "[]", result.stdout + result.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Этапы 2–3 в CRM: черновики, одобрение, итог, пульт рассылки
+# --------------------------------------------------------------------------- #
+def _set(cfg: CrmConfig, chat_id: str, **values: object) -> None:
+    names = ", ".join(f"{name} = ?" for name in values)
+    with closing(sqlite3.connect(cfg.bot_db)) as conn, conn:
+        conn.execute(f"UPDATE campaign_contact SET {names} WHERE chat_id = ?", [*values.values(), chat_id])
+
+
+def _get(cfg: CrmConfig, chat_id: str, *names: str) -> tuple:
+    with closing(sqlite3.connect(cfg.bot_db)) as conn, conn:
+        return conn.execute(f"SELECT {', '.join(names)} FROM campaign_contact WHERE chat_id = ?", (chat_id,)).fetchone()
+
+
+def _draft(client, cfg: CrmConfig, chat_id: str, text: str = "Здравствуйте! Подобрать зал рядом с домом?") -> str:  # noqa: F811
+    _upload(client, [_row(chat_id, "Интерес затих до записи", check="Нет")])
+    _set(cfg, chat_id, status="draft", draft_text=text, draft_source="model")
+    return _contact_id(cfg, chat_id)
+
+
+def test_a_draft_is_edited_and_approved(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    contact = _draft(client, sandbox, "77015550801")
+    page = client.get("/campaign/?tab=drafts").get_data(as_text=True)
+    assert "Подобрать зал рядом с домом?" in page and "написан по итогу переписки" in page
+
+    page = client.post(f"/campaign/{contact}/message", data={"action": "approve", "text": "Здравствуйте! Свой текст?"},
+                       follow_redirects=True).get_data(as_text=True)
+
+    assert "Одобрено" in page
+    assert _get(sandbox, "77015550801", "status", "approved_text", "draft_source") == (
+        "approved", "Здравствуйте! Свой текст?", "edited",
+    )
+    assert "Свой текст?" in client.get("/campaign/?tab=approved").get_data(as_text=True)
+    client.post(f"/campaign/{contact}/message", data={"action": "unapprove"})
+    assert _get(sandbox, "77015550801", "status", "approved_text") == ("draft", None)
+
+
+def test_approve_all_takes_drafts_as_they_are(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    first = _draft(client, sandbox, "77015550811")
+    second = _draft(client, sandbox, "77015550812", "Второй текст?")
+    _set(sandbox, "77015550812", status="sent")  # уже ушёл — одобрять нечего
+
+    page = client.post("/campaign/approve", data={"ids": [first, second]}, follow_redirects=True).get_data(as_text=True)
+
+    assert "Одобрено: 1" in page and "Не одобрено 1" in page
+    assert _get(sandbox, "77015550811", "status", "approved_text")[0] == "approved"
+    assert _get(sandbox, "77015550812", "status")[0] == "sent"
+
+
+def test_approval_does_not_override_a_stop_word(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    contact = _draft(client, sandbox, "77015550821")
+    _bot_conversation(sandbox, "cv-821", "77015550821", last_inbound=datetime.now(tz=UTC) - timedelta(days=30),
+                      blocked=True)
+
+    page = client.post(f"/campaign/{contact}/message", data={"action": "approve", "text": "Текст?"},
+                       follow_redirects=True).get_data(as_text=True)
+
+    assert _get(sandbox, "77015550821", "status")[0] == "opted_out"
+    assert "стоп" in page.lower()
+
+
+def test_redraft_and_a_new_outcome_drop_the_old_text(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    contact = _draft(client, sandbox, "77015550831")
+    client.post(f"/campaign/{contact}/message", data={"action": "redraft"})
+    assert _get(sandbox, "77015550831", "status", "draft_text") == ("ready", None)
+    assert "черновик пишется" in client.get("/campaign/?tab=drafts").get_data(as_text=True)
+
+    _set(sandbox, "77015550831", status="draft", draft_text="Старый текст?")
+    client.post(f"/campaign/{contact}/outcome", data={"outcome": "came"})
+    assert _get(sandbox, "77015550831", "status", "segment", "draft_text") == ("ready", "after_trial", None)
+
+
+def test_template_drafts_are_rewritten_on_request(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    _draft(client, sandbox, "77015550841")
+    _draft(client, sandbox, "77015550842")
+    _set(sandbox, "77015550841", draft_source="template")
+
+    assert "Переписать моделью шаблонные (1)" in client.get("/campaign/?tab=drafts").get_data(as_text=True)
+    client.post("/campaign/redraft-templates")
+
+    assert _get(sandbox, "77015550841", "status")[0] == "ready"
+    assert _get(sandbox, "77015550842", "status")[0] == "draft"
+
+
+def test_an_empty_or_long_text_is_not_approved(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    contact = _draft(client, sandbox, "77015550851")
+    assert "Пустое сообщение" in client.post(f"/campaign/{contact}/message", data={"action": "approve", "text": " "},
+                                             follow_redirects=True).get_data(as_text=True)
+    assert "Слишком длинно" in client.post(f"/campaign/{contact}/message",
+                                           data={"action": "approve", "text": "а" * 1001},
+                                           follow_redirects=True).get_data(as_text=True)
+    assert _get(sandbox, "77015550851", "status")[0] == "draft"
+
+
+def test_results_after_sending_and_the_funnel(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    contact = _draft(client, sandbox, "77015550861")
+    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    _set(sandbox, "77015550861", status="replied", approved_text="Текст?", sent_at=now, replied_at=now)
+    page = client.get("/campaign/?tab=sent").get_data(as_text=True)
+    assert "Ответил" in page and "Текст?" in page
+
+    client.post(f"/campaign/{contact}/result", data={"result": "bought", "note": "оплатили в зале"})
+
+    assert _get(sandbox, "77015550861", "status", "note") == ("bought", "оплатили в зале")
+    page = client.get("/campaign/").get_data(as_text=True)
+    assert "из них купили абонемент: 1" in page and "Сегодня отправлено: 1" in page
+    # После «стоп» итог не ставится.
+    _set(sandbox, "77015550861", status="opted_out")
+    page = client.post(f"/campaign/{contact}/result", data={"result": "booked"}, follow_redirects=True)
+    assert "не после «стоп»" in page.get_data(as_text=True)
+
+
+def test_the_switch_is_the_same_setting_as_in_settings(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    _upload(client, [_row("77015550871", "Интерес затих до записи", check="Нет")])
+    page = client.get("/campaign/").get_data(as_text=True)
+    assert "Включить рассылку" in page and "Бот выключен" in page
+
+    page = client.post("/campaign/switch", data={"state": "on"}, follow_redirects=True).get_data(as_text=True)
+    assert "бот выключен" in page
+    store = AdminStore(sandbox.admin_db)
+    try:
+        assert store.get("campaign_enabled") == "on"
+        store.set("bot_enabled", "on")
+    finally:
+        store.close()
+    page = client.get("/campaign/").get_data(as_text=True)
+    assert "Выключить рассылку" in page and "Бот выключен" not in page
+    client.post("/campaign/switch", data={"state": "off"})
+    store = AdminStore(sandbox.admin_db)
+    try:
+        assert store.get("campaign_enabled") == "off"
+    finally:
+        store.close()
+
+
+def test_the_daily_limit_is_checked_in_settings(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    from tests.test_crm import _Form
+
+    parser = _Form()
+    parser.feed(client.get("/settings/").get_data(as_text=True))
+    form = dict(parser.data)
+    form["campaign_daily_limit"] = "500"
+    page = client.post("/settings/", data=form, follow_redirects=True).get_data(as_text=True)
+    assert "нужно число от 0 до 100" in page
+    form["campaign_daily_limit"] = "20"
+    client.post("/settings/", data=form)
+    store = AdminStore(sandbox.admin_db)
+    try:
+        assert store.get("campaign_daily_limit") == "20"
+    finally:
+        store.close()
+
+
+def test_the_old_tab_link_still_works(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    _draft(client, sandbox, "77015550881", "Старая закладка?")
+    assert "Старая закладка?" in client.get("/campaign/?tab=ready").get_data(as_text=True)
+
+
+def test_the_pult_warns_when_the_model_does_not_answer(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    """Кредиты Gemini кончились — включать рассылку рано: ответившие получат «сбой»."""
+    _upload(client, [_row("77015550891", "Интерес затих до записи", check="Нет")])
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    with closing(sqlite3.connect(sandbox.bot_db)) as conn, conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_call)")}
+        for index in range(3):
+            values = {"id": f"llm-{index}", "created_at": stamp, "error": "llm_quota: кредиты кончились"}
+            for name, default in (("model", "m"), ("prompt_tokens", 0), ("candidates_tokens", 0), ("cost_usd", 0),
+                                  ("latency_ms", 0), ("correlation_id", "x"), ("kb_hash", "h")):
+                if name in columns:
+                    values[name] = default
+            names = ", ".join(values)
+            conn.execute(f"INSERT INTO llm_call ({names}) VALUES ({', '.join('?' for _ in values)})", list(values.values()))
+
+    page = client.get("/campaign/").get_data(as_text=True)
+
+    assert "получат карточки вместо разговора" in page and "Billing" in page

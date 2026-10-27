@@ -6,6 +6,12 @@
 же транзакции, что и сама правка: запуск, оборванный посередине, не повторит сдвиг
 дважды, а выполненная правка не запустится снова.
 
+Вторая забота — колонки, появившиеся в модели после того, как таблица уже легла на
+диск: ``create_all`` их не добавляет. Для таблиц из :data:`GROWING_TABLES` недостающие
+колонки дописываются при каждом запуске (``ALTER TABLE … ADD COLUMN``, только
+необязательные). Таблицы самого бота сюда не входят: их схема не менялась, и трогать
+её без нужды незачем.
+
 На PostgreSQL правки не нужны: ``timestamptz`` хранит момент вместе с поясом.
 """
 
@@ -18,11 +24,14 @@ from zoneinfo import ZoneInfo
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.storage.models import FollowupTask, Lead
+from app.storage.models import Base, FollowupTask, Lead
 from app.types import FollowupKind
 
 #: Номер последней правки. Новая правка — следующий номер и ветка в :func:`upgrade_sqlite_data`.
 DATA_VERSION: Final[int] = 1
+
+#: Таблицы, которым недостающие колонки дописываются при запуске.
+GROWING_TABLES: Final[tuple[str, ...]] = ("campaign_contact",)
 
 #: Напоминания, срок которых считался от времени пробного: «за 2 часа», «за сутки», «не пришёл».
 _SHIFTED_WITH_SLOT: Final[frozenset[str]] = frozenset(
@@ -42,12 +51,40 @@ async def upgrade_sqlite_data(connection: AsyncConnection, *, timezone_name: str
         return []
     version = int((await connection.exec_driver_sql("PRAGMA user_version")).scalar_one() or 0)
     done: list[str] = []
+    for table in GROWING_TABLES:
+        added = await _add_missing_columns(connection, table)
+        if added:
+            done.append(f"в {table} добавлены колонки: {', '.join(added)}")
     if version < 1:
         moved = await _trial_slot_to_utc(connection, ZoneInfo(timezone_name))
         done.append(f"время пробного переведено из местного в UTC: {moved}")
     if version < DATA_VERSION:
         await connection.exec_driver_sql(f"PRAGMA user_version = {DATA_VERSION}")
     return done
+
+
+async def _add_missing_columns(connection: AsyncConnection, table_name: str) -> list[str]:
+    """Дописывает в таблицу колонки модели, которых нет в файле. Возвращает их имена.
+
+    Только необязательные колонки (``NULL`` или значение по умолчанию на стороне базы):
+    обязательную без значения в таблицу со строками SQLite не добавит, и запуск упал бы.
+    """
+    table = Base.metadata.tables.get(table_name)
+    if table is None:
+        return []
+    present = {
+        str(row[1]) for row in (await connection.exec_driver_sql(f"PRAGMA table_info({table_name})")).all()
+    }
+    if not present:
+        return []
+    added: list[str] = []
+    for column in table.columns:
+        if column.name in present or not (column.nullable or column.server_default is not None):
+            continue
+        ddl = sa.schema.CreateColumn(column).compile(dialect=connection.dialect)
+        await connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+        added.append(column.name)
+    return added
 
 
 async def _trial_slot_to_utc(connection: AsyncConnection, zone: ZoneInfo) -> int:

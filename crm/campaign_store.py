@@ -1,8 +1,10 @@
-"""Список возврата в базе бота: импорт, сверка с перепиской бота и отметки исхода.
+"""Список возврата в базе бота: импорт, сверка, отметки исхода, черновики и итоги.
 
 CRM пишет в базу бота только свою таблицу ``campaign_contact`` (её создаёт ``create_all``
 при запуске службы, как и все таблицы бота). Таблицы самого бота здесь только читаются:
 по ним видно, что номер уже записан, писал стоп-слово или с ним говорит администратор.
+Черновик пишет и одобренное отправляет воркер рассылки (``app/workers/tasks_campaign.py``);
+CRM правит текст, одобряет его и отмечает итог.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -20,26 +22,25 @@ from zoneinfo import ZoneInfo
 from app.campaign.contacts import (
     BotFacts,
     CampaignOutcome,
+    CampaignResult,
     CampaignSegment,
     CampaignStatus,
     Decision,
     apply_outcome,
+    apply_result,
     initial_decision,
     reconcile,
 )
-from app.core.ignore_list import is_ignored, tail
+from app.campaign.facts import FACTS_SQL, facts_for, facts_from_rows
 from app.logging_conf import get_logger
 from crm.botdb import _parse_ts
 from crm.campaign_excel import ImportRow
 
-__all__ = ["CampaignStore", "ContactRow", "ImportReport", "StoreBusy"]
+__all__ = ["CampaignStore", "ContactRow", "Funnel", "ImportReport", "StoreBusy"]
 
 _log = get_logger(__name__)
 
 TABLE: Final[str] = "campaign_contact"
-
-#: Паузы, которые ставит человек: в таком диалоге бот молчит, а клиенту пишет администратор.
-_HUMAN_PAUSES: Final[frozenset[str]] = frozenset({"operator_reply", "manual"})
 
 #: Поля из файла, которые обновляет повторный импорт.
 _DESCRIPTIVE: Final[tuple[str, ...]] = (
@@ -78,6 +79,18 @@ class ContactRow:
     checked_at: datetime | None
     note: str | None
     conversation_id: str | None
+    draft_text: str | None = None
+    draft_source: str | None = None
+    approved_text: str | None = None
+    approved_at: datetime | None = None
+    sent_at: datetime | None = None
+    reminder_sent_at: datetime | None = None
+    replied_at: datetime | None = None
+
+    @property
+    def message(self) -> str | None:
+        """Текст, который ушёл или уйдёт клиенту: одобренный, иначе черновик."""
+        return self.approved_text or self.draft_text
 
     @property
     def phone(self) -> str:
@@ -86,6 +99,55 @@ class ContactRow:
         if len(digits) == 11:
             return f"+{digits[0]} {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:]}"
         return digits
+
+
+@dataclass(frozen=True, slots=True)
+class Funnel:
+    """Воронка рассылки одной строкой цифр — от проверки до покупки."""
+
+    statuses: dict[str, int]
+    replied: int
+    sent_today: int
+    last_sent_at: datetime | None
+    template_drafts: int
+
+    def count(self, *names: str) -> int:
+        return sum(self.statuses.get(name, 0) for name in names)
+
+    @property
+    def total(self) -> int:
+        return sum(self.statuses.values())
+
+    @property
+    def sent(self) -> int:
+        """Скольким уже написали — в каком бы статусе они ни были сейчас."""
+        return self.count(*(status.value for status in _WRITTEN))
+
+
+#: Статусы тех, кому сообщение уже ушло (или пыталось уйти).
+_WRITTEN: Final[tuple[CampaignStatus, ...]] = (
+    CampaignStatus.SENT,
+    CampaignStatus.REPLIED,
+    CampaignStatus.BOOKED,
+    CampaignStatus.BOUGHT,
+    CampaignStatus.DECLINED,
+    CampaignStatus.NO_ANSWER,
+    CampaignStatus.UNDELIVERED,
+)
+
+#: Где человек ещё может отметить исход: до отправки.
+_CHECKABLE: Final[frozenset[CampaignStatus]] = frozenset(
+    {
+        CampaignStatus.NEEDS_CHECK,
+        CampaignStatus.READY,
+        CampaignStatus.DRAFT,
+        CampaignStatus.APPROVED,
+        CampaignStatus.EXCLUDED,
+    }
+)
+
+#: Длиннее — не сообщение, а письмо; в WhatsApp такое не дочитают.
+MAX_MESSAGE_CHARS: Final[int] = 1000
 
 
 @dataclass(slots=True)
@@ -371,16 +433,14 @@ class CampaignStore:
     ) -> ContactRow | None:
         """Отметка исхода человеком. Возвращает контакт после отметки и сверки с ботом.
 
-        ``None`` — контакта нет, ему уже писали или он сам попросил не писать.
+        ``None`` — контакта нет, ему уже писали или он сам попросил не писать. Черновик
+        при отметке сбрасывается: исход меняет сегмент («был, не купил» — другое первое
+        сообщение), и бот напишет черновик заново.
         """
         try:
             with self._write() as conn:
                 row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
-                if row is None or _status(row["status"]) not in (
-                    CampaignStatus.NEEDS_CHECK,
-                    CampaignStatus.READY,
-                    CampaignStatus.EXCLUDED,
-                ):
+                if row is None or _status(row["status"]) not in _CHECKABLE:
                     return None
                 decision = apply_outcome(outcome, _segment(row["segment"]), not_before=not_before)
                 # Дата «не раньше» меняется только отметкой «позже»: прочие отметки сохраняют ту,
@@ -388,7 +448,8 @@ class CampaignStore:
                 later = outcome is CampaignOutcome.LATER
                 conn.execute(
                     f"UPDATE {TABLE} SET status = ?, segment = ?, status_reason = ?, outcome = ?,"
-                    " checked_at = ?, note = COALESCE(?, note),"
+                    " checked_at = ?, note = COALESCE(?, note), draft_text = NULL, draft_source = NULL,"
+                    " approved_text = NULL, approved_at = NULL,"
                     " not_before = CASE WHEN ? THEN ? ELSE not_before END, updated_at = ? WHERE id = ?",
                     (
                         decision.status.value, decision.segment.value, decision.reason, outcome.value,
@@ -405,17 +466,19 @@ class CampaignStore:
         return self.contact(contact_id)
 
     def restore(self, contact_id: str, *, now: datetime) -> ContactRow | None:
-        """Вернуть на проверку исключённый по ошибке контакт. Стоп-слово так не снимается.
+        """Вернуть на проверку исключённый по ошибке или ещё не отправленный контакт.
 
-        Возвращает контакт после сверки с ботом; ``None`` — вернуть нельзя.
+        Стоп-слово так не снимается. Возвращает контакт после сверки с ботом; ``None`` —
+        вернуть нельзя.
         """
         try:
             with self._write() as conn:
                 row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
-                if row is None or _status(row["status"]) not in (CampaignStatus.EXCLUDED, CampaignStatus.READY):
+                if row is None or _status(row["status"]) not in _CHECKABLE - {CampaignStatus.NEEDS_CHECK}:
                     return None
                 conn.execute(
                     f"UPDATE {TABLE} SET status = ?, status_reason = ?, outcome = NULL, checked_at = NULL,"
+                    " draft_text = NULL, draft_source = NULL, approved_text = NULL, approved_at = NULL,"
                     " updated_at = ? WHERE id = ?",
                     (CampaignStatus.NEEDS_CHECK.value, "Возвращён на проверку", _stamp(now), contact_id),
                 )
@@ -426,58 +489,175 @@ class CampaignStore:
             raise StoreBusy(str(exc)) from exc
         return self.contact(contact_id)
 
+    # ------------------------------------------------------------ черновики
+    def save_draft(self, contact_id: str, text: str, *, now: datetime) -> ContactRow | None:
+        """Правка черновика без одобрения. ``None`` — контакт уже не на черновике."""
+        return self._edit_draft(contact_id, text, now=now, approve=False)
+
+    def approve(self, contact_id: str, text: str, *, now: datetime) -> ContactRow | None:
+        """Одобрить текст — с правкой или как есть. Возвращает контакт после сверки с ботом.
+
+        ``None`` — черновика нет (контакт отправлен, закрыт или черновик ещё пишется).
+        """
+        return self._edit_draft(contact_id, text, now=now, approve=True)
+
+    def _edit_draft(self, contact_id: str, text: str, *, now: datetime, approve: bool) -> ContactRow | None:
+        body = (text or "").strip()
+        if not body:
+            raise ValueError("пустой текст")
+        try:
+            with self._write() as conn:
+                row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
+                if row is None or _status(row["status"]) not in (CampaignStatus.DRAFT, CampaignStatus.APPROVED):
+                    return None
+                edited = body != (row["draft_text"] or "").strip()
+                source = "edited" if edited else row["draft_source"]
+                if approve:
+                    conn.execute(
+                        f"UPDATE {TABLE} SET status = ?, status_reason = ?, draft_text = ?, draft_source = ?,"
+                        " approved_text = ?, approved_at = ?, updated_at = ? WHERE id = ?",
+                        (
+                            CampaignStatus.APPROVED.value, "Одобрен — уйдёт по очереди", body, source,
+                            body, _stamp(now), _stamp(now), contact_id,
+                        ),
+                    )
+                    # Одобрение не перекрывает запретов бота: стоп-слово, запись, свежий разговор.
+                    fresh = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
+                    self._reconcile_row(conn, fresh, self._bot_facts(conn), now)
+                else:
+                    conn.execute(
+                        f"UPDATE {TABLE} SET draft_text = ?, draft_source = ?, updated_at = ? WHERE id = ?",
+                        (body, source, _stamp(now), contact_id),
+                    )
+        except sqlite3.Error as exc:
+            _log.error("campaign_draft_save_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return self.contact(contact_id)
+
+    def approve_many(self, contact_ids: Sequence[str], *, now: datetime) -> int:
+        """Одобрить черновики как есть. Возвращает, сколько одобрено."""
+        approved = 0
+        try:
+            with self._write() as conn:
+                facts = self._bot_facts(conn)
+                for contact_id in dict.fromkeys(contact_ids):
+                    row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
+                    text = (row["draft_text"] or "").strip() if row is not None else ""
+                    if row is None or _status(row["status"]) is not CampaignStatus.DRAFT or not text:
+                        continue
+                    conn.execute(
+                        f"UPDATE {TABLE} SET status = ?, status_reason = ?, approved_text = ?, approved_at = ?,"
+                        " updated_at = ? WHERE id = ?",
+                        (CampaignStatus.APPROVED.value, "Одобрен — уйдёт по очереди", text, _stamp(now),
+                         _stamp(now), contact_id),
+                    )
+                    fresh = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
+                    self._reconcile_row(conn, fresh, facts, now)
+                    approved += int(_status(conn.execute(
+                        f"SELECT status FROM {TABLE} WHERE id = ?", (contact_id,)
+                    ).fetchone()["status"]) is CampaignStatus.APPROVED)
+        except sqlite3.Error as exc:
+            _log.error("campaign_approve_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return approved
+
+    def redraft(self, contact_ids: Sequence[str], *, now: datetime) -> int:
+        """Написать черновик заново: бот возьмётся за него на следующем проходе."""
+        changed = 0
+        try:
+            with self._write() as conn:
+                for contact_id in dict.fromkeys(contact_ids):
+                    changed += conn.execute(
+                        f"UPDATE {TABLE} SET status = ?, status_reason = ?, draft_text = NULL, draft_source = NULL,"
+                        " approved_text = NULL, approved_at = NULL, updated_at = ? WHERE id = ? AND status IN (?, ?)",
+                        (
+                            CampaignStatus.READY.value, "Черновик пишется заново", _stamp(now), contact_id,
+                            CampaignStatus.DRAFT.value, CampaignStatus.APPROVED.value,
+                        ),
+                    ).rowcount
+        except sqlite3.Error as exc:
+            _log.error("campaign_redraft_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return changed
+
+    def template_drafts(self) -> list[str]:
+        """Черновики по шаблону — их стоит переписать, когда модель снова отвечает."""
+        rows = self._query(
+            f"SELECT id FROM {TABLE} WHERE status = ? AND draft_source = 'template'",
+            (CampaignStatus.DRAFT.value,),
+        )
+        return [str(row["id"]) for row in rows]
+
+    def unapprove(self, contact_id: str, *, now: datetime) -> bool:
+        """Вернуть одобренное в черновики, пока оно не ушло."""
+        try:
+            with self._write() as conn:
+                changed = conn.execute(
+                    f"UPDATE {TABLE} SET status = ?, status_reason = ?, approved_text = NULL, approved_at = NULL,"
+                    " updated_at = ? WHERE id = ? AND status = ?",
+                    (CampaignStatus.DRAFT.value, "Возвращён на правку", _stamp(now), contact_id,
+                     CampaignStatus.APPROVED.value),
+                ).rowcount
+        except sqlite3.Error as exc:
+            _log.error("campaign_unapprove_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return bool(changed)
+
+    def set_result(self, contact_id: str, result: CampaignResult, *, now: datetime, note: str | None = None) -> ContactRow | None:
+        """Итог после сообщения по отметке человека: записался, купил, отказался."""
+        try:
+            with self._write() as conn:
+                row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (contact_id,)).fetchone()
+                if row is None:
+                    return None
+                decision = apply_result(result, _status(row["status"]), _segment(row["segment"]))
+                if decision is None:
+                    return None
+                conn.execute(
+                    f"UPDATE {TABLE} SET status = ?, status_reason = ?, note = COALESCE(?, note), updated_at = ?"
+                    " WHERE id = ?",
+                    (decision.status.value, decision.reason, note, _stamp(now), contact_id),
+                )
+        except sqlite3.Error as exc:
+            _log.error("campaign_result_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return self.contact(contact_id)
+
+    def funnel(self, *, since: datetime) -> Funnel:
+        """Цифры раздела: статусы, ответившие, отправлено с ``since`` (начала дня школы)."""
+        statuses = self.counts()
+        replied = self._query(f"SELECT COUNT(*) AS n FROM {TABLE} WHERE replied_at IS NOT NULL")
+        stamp = _stamp(since)
+        today = self._query(
+            f"SELECT (SELECT COUNT(*) FROM {TABLE} WHERE sent_at >= ?)"
+            f" + (SELECT COUNT(*) FROM {TABLE} WHERE reminder_sent_at >= ?) AS n",
+            (stamp, stamp),
+        )
+        last = self._query(f"SELECT MAX(sent_at) AS a, MAX(reminder_sent_at) AS b FROM {TABLE}")
+        moments = [_parse_ts(last[0][name]) for name in ("a", "b")] if last else []
+        last_sent = max((moment for moment in moments if moment), default=None)
+        return Funnel(
+            statuses=statuses,
+            replied=int(replied[0]["n"]) if replied else 0,
+            sent_today=int(today[0]["n"] or 0) if today else 0,
+            last_sent_at=last_sent.astimezone(self._tz) if last_sent else None,
+            template_drafts=len(self.template_drafts()),
+        )
+
     # -------------------------------------------------------------- база бота
     def _facts_for(self, facts: dict[str, BotFacts], chat_id: str) -> BotFacts:
         """Что бот знает о номере; сотрудники и рабочие номера — из настроек владельца."""
-        known = facts.get(tail(chat_id), BotFacts())
-        if is_ignored(self._silent, chat_id=chat_id, phone=None):
-            known = replace(known, ignored=True)
-        return known
+        return facts_for(facts, chat_id, silent=self._silent)
 
     def _bot_facts(self, conn: sqlite3.Connection) -> dict[str, BotFacts]:
-        """Что бот знает о номерах WhatsApp — по всем диалогам номера сразу.
-
-        Диалогов у одного номера бывает несколько (сменился канал Wazzup): стоп-слово,
-        сказанное в старом, действует и в новом, поэтому сведения складываются, а не
-        берутся из последнего. Номер сравнивается по последним десяти цифрам.
-        """
+        """Что бот знает о номерах WhatsApp — по всем диалогам номера сразу (см. :mod:`app.campaign.facts`)."""
         try:
-            rows = conn.execute(
-                "SELECT c.id, c.chat_id, c.last_inbound_at, c.last_outbound_at, c.followup_blocked,"
-                " e.paused, e.pause_reason, e.paused_until,"
-                " (SELECT l.status FROM lead l WHERE l.conversation_id = c.id"
-                "  ORDER BY l.updated_at DESC LIMIT 1) AS lead_status,"
-                " (SELECT l.trial_slot FROM lead l WHERE l.conversation_id = c.id"
-                "  ORDER BY l.updated_at DESC LIMIT 1) AS trial_slot"
-                " FROM conversation c LEFT JOIN escalation_state e ON e.conversation_id = c.id"
-                " WHERE c.chat_type = 'whatsapp'"
-            ).fetchall()
+            rows = conn.execute(FACTS_SQL).fetchall()
         except sqlite3.Error as exc:
             # Таблиц бота ещё нет (бот ни разу не запускался) — сверять не с чем.
             _log.warning("campaign_bot_facts_unavailable", error=str(exc))
             return {}
-        now = datetime.now(tz=UTC)
-        facts: dict[str, BotFacts] = {}
-        for row in rows:
-            key = tail(str(row["chat_id"]))
-            if not key:
-                continue
-            inbound, outbound = _parse_ts(row["last_inbound_at"]), _parse_ts(row["last_outbound_at"])
-            activity = max((moment for moment in (inbound, outbound) if moment), default=None)
-            until = _parse_ts(row["paused_until"])
-            one = BotFacts(
-                conversation_id=str(row["id"]),
-                last_activity_at=activity,
-                last_inbound_at=inbound,
-                stop_word=bool(row["followup_blocked"]),
-                lead_status=row["lead_status"],
-                trial_at=_parse_ts(row["trial_slot"]),
-                human_pause=bool(row["paused"])
-                and row["pause_reason"] in _HUMAN_PAUSES
-                and (until is None or until > now),
-            )
-            facts[key] = _merge(facts.get(key), one)
-        return facts
+        return facts_from_rows(rows, now=datetime.now(tz=UTC))
 
     # --------------------------------------------------------------- строки
     def _row(self, row: sqlite3.Row) -> ContactRow:
@@ -508,33 +688,14 @@ class CampaignStore:
             checked_at=local("checked_at"),
             note=row["note"],
             conversation_id=row["conversation_id"],
+            draft_text=row["draft_text"],
+            draft_source=row["draft_source"] if "draft_source" in row.keys() else None,
+            approved_text=row["approved_text"],
+            approved_at=local("approved_at"),
+            sent_at=local("sent_at"),
+            reminder_sent_at=local("reminder_sent_at"),
+            replied_at=local("replied_at"),
         )
-
-
-def _merge(before: BotFacts | None, one: BotFacts) -> BotFacts:
-    """Сведения о номере из нескольких диалогов: запреты — из любого, запись и ссылка — из свежего."""
-    if before is None:
-        return one
-    newer = one if (one.last_activity_at or datetime.min.replace(tzinfo=UTC)) >= (
-        before.last_activity_at or datetime.min.replace(tzinfo=UTC)
-    ) else before
-    # Пробное впереди в любом из диалогов важнее записи в последнем.
-    trial_source = max(
-        (facts for facts in (before, one) if facts.lead_status == "trial_booked" and facts.trial_at),
-        key=lambda facts: facts.trial_at,
-        default=newer,
-    )
-    converted = before.lead_status == "converted" or one.lead_status == "converted"
-    return BotFacts(
-        conversation_id=newer.conversation_id,
-        last_activity_at=newer.last_activity_at,
-        last_inbound_at=max((m for m in (before.last_inbound_at, one.last_inbound_at) if m), default=None),
-        stop_word=before.stop_word or one.stop_word,
-        lead_status="converted" if converted else trial_source.lead_status,
-        trial_at=trial_source.trial_at,
-        human_pause=before.human_pause or one.human_pause,
-        ignored=before.ignored or one.ignored,
-    )
 
 
 def _status(value: str) -> CampaignStatus:

@@ -7,7 +7,9 @@
 
 Правило всего модуля: решения только **в сторону осторожности**. Сверка с ботом может
 отложить или исключить контакт, но никогда не делает «можно писать» сама — это решает
-человек отметкой исхода или чистый разбор («интерес затих», проверка не нужна).
+человек отметкой исхода или чистый разбор («интерес затих», проверка не нужна). Первое
+сообщение уходит только после одобрения человеком (:func:`send_check` — последняя
+проверка перед ним), дальше статус ведёт переписка (:func:`progress`).
 """
 
 from __future__ import annotations
@@ -22,18 +24,29 @@ __all__ = [
     "RECENT_DAYS",
     "BotFacts",
     "CampaignOutcome",
+    "CampaignResult",
     "CampaignSegment",
     "CampaignStatus",
     "Decision",
+    "IN_PLAY",
+    "Progress",
     "apply_outcome",
+    "apply_result",
     "initial_decision",
+    "progress",
     "reconcile",
     "segment_for",
+    "send_check",
 ]
 
 
 class CampaignStatus(str, Enum):
-    """Где контакт в работе. Отправки на этапе 1 нет: дальше ``READY`` ничто не двигает."""
+    """Где контакт в работе.
+
+    Путь: проверка → можно писать → черновик (пишет бот) → одобрен (человеком) →
+    отправлено → ответил → записался → купил. В сторону: отказ, не ответил, стоп,
+    не доставлено, не пишем.
+    """
 
     NEEDS_CHECK = "needs_check"
     READY = "ready"
@@ -42,9 +55,11 @@ class CampaignStatus(str, Enum):
     SENT = "sent"
     REPLIED = "replied"
     BOOKED = "booked"
+    BOUGHT = "bought"
     DECLINED = "declined"
     NO_ANSWER = "no_answer"
     OPTED_OUT = "opted_out"
+    UNDELIVERED = "undelivered"
     EXCLUDED = "excluded"
 
 
@@ -79,16 +94,46 @@ class CampaignOutcome(str, Enum):
     NOT_CLIENT = "not_client"  # сотрудник, служебный или чужой номер
 
 
+class CampaignResult(str, Enum):
+    """Чем кончилось, по отметке человека — уже после сообщения."""
+
+    BOOKED = "booked"      # записался на пробное
+    BOUGHT = "bought"      # купил абонемент — это и есть продажа
+    DECLINED = "declined"  # отказался
+
+
 #: После этих статусов контакт ведёт отправка или он закрыт: сверка и импорт их не трогают.
 _SETTLED: Final[frozenset[CampaignStatus]] = frozenset(
     {
         CampaignStatus.SENT,
         CampaignStatus.REPLIED,
         CampaignStatus.BOOKED,
+        CampaignStatus.BOUGHT,
         CampaignStatus.DECLINED,
         CampaignStatus.NO_ANSWER,
         CampaignStatus.OPTED_OUT,
+        CampaignStatus.UNDELIVERED,
         CampaignStatus.EXCLUDED,
+    }
+)
+
+#: Сообщение ушло, а разговор ещё может сдвинуть статус: ответ, запись, покупка, стоп.
+#: «Не ответил» — тоже: родитель, ответивший через две недели, ответил на рассылку.
+IN_PLAY: Final[frozenset[CampaignStatus]] = frozenset(
+    {CampaignStatus.SENT, CampaignStatus.REPLIED, CampaignStatus.BOOKED, CampaignStatus.NO_ANSWER}
+)
+
+#: Откуда человек может отметить итог: и после тишины, и после недоставки — он мог
+#: дозвониться сам.
+_RESULT_FROM: Final[frozenset[CampaignStatus]] = frozenset(
+    {
+        CampaignStatus.SENT,
+        CampaignStatus.REPLIED,
+        CampaignStatus.BOOKED,
+        CampaignStatus.BOUGHT,
+        CampaignStatus.DECLINED,
+        CampaignStatus.NO_ANSWER,
+        CampaignStatus.UNDELIVERED,
     }
 )
 
@@ -267,6 +312,114 @@ def apply_outcome(
             raise ValueError("для «позже» нужна дата")
         return Decision(CampaignStatus.READY, segment, f"Написать не раньше {_local_day(not_before)}")
     return Decision(CampaignStatus.READY, segment, "Проверено: писать можно")
+
+
+def send_check(
+    status: CampaignStatus,
+    segment: CampaignSegment,
+    facts: BotFacts,
+    *,
+    now: datetime,
+    checked_at: datetime | None,
+    approved_at: datetime | None,
+    recent_days: int = RECENT_DAYS,
+) -> Decision | None:
+    """Последняя сверка перед первым сообщением. ``None`` — отправлять можно.
+
+    Между одобрением черновика и отправкой проходят часы и дни: клиент мог за это время
+    записаться сам, написать «стоп» или заговорить с администратором. Здесь те же правила,
+    что и в сверке CRM, и ещё два, важных именно в момент отправки: администратор
+    отвечает в диалоге прямо сейчас — и клиент писал боту уже после одобрения (тогда
+    черновик «вы интересовались у нас…» мог устареть).
+    """
+    decision = reconcile(status, segment, facts, now=now, checked_at=checked_at, recent_days=recent_days)
+    if decision is not None:
+        return decision
+    if facts.human_pause:
+        return Decision(CampaignStatus.NEEDS_CHECK, segment, "В диалоге с ботом сейчас отвечает администратор")
+    if approved_at is not None and facts.last_inbound_at is not None and facts.last_inbound_at > approved_at:
+        return Decision(
+            CampaignStatus.NEEDS_CHECK,
+            segment,
+            f"Писал боту {_local_day(facts.last_inbound_at)}, уже после одобрения — черновик мог устареть",
+        )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class Progress:
+    """Что сделать с контактом, которому уже написали."""
+
+    decision: Decision | None = None
+    #: Пора одно напоминание: клиент молчит, первое сообщение доставлено.
+    remind: bool = False
+    #: Когда клиент ответил впервые после сообщения — для воронки.
+    replied_at: datetime | None = None
+
+
+def progress(
+    status: CampaignStatus,
+    segment: CampaignSegment,
+    facts: BotFacts,
+    *,
+    now: datetime,
+    sent_at: datetime | None,
+    reminder_sent_at: datetime | None,
+    delivered: bool,
+    undelivered: str | None,
+    remind_after: timedelta,
+    give_up_after: timedelta,
+) -> Progress:
+    """Статус после сообщения — по переписке, которую дальше ведёт сам бот.
+
+    Ответ клиента, запись и покупку видно в базе бота, отдельной отметки они не ждут.
+    Запись засчитывается, только если пробное позже сообщения: старая запись, о которой
+    человек знал, проверяя контакт, — не результат рассылки. Покупка до сообщения
+    сюда не доходит: такой контакт сверка исключила бы ещё до отправки.
+    """
+    if status not in IN_PLAY or sent_at is None:
+        return Progress()
+    inbound = facts.last_inbound_at
+    replied_at = inbound if inbound is not None and inbound > sent_at else None
+    if facts.stop_word:
+        return Progress(Decision(CampaignStatus.OPTED_OUT, segment, "Попросил больше не писать"), replied_at=replied_at)
+    if facts.lead_status == "converted":
+        return Progress(Decision(CampaignStatus.BOUGHT, segment, "Купил абонемент — отметка в боте"), replied_at=replied_at)
+    if status is CampaignStatus.BOOKED:
+        return Progress(replied_at=replied_at)
+    if facts.lead_status == "trial_booked" and facts.trial_at is not None and facts.trial_at > sent_at:
+        return Progress(
+            Decision(CampaignStatus.BOOKED, segment, f"Записался на пробное {_local_day(facts.trial_at)}"),
+            replied_at=replied_at,
+        )
+    if status is CampaignStatus.REPLIED:
+        return Progress()
+    if replied_at is not None:
+        return Progress(Decision(CampaignStatus.REPLIED, segment, "Ответил — разговор ведёт бот"), replied_at=replied_at)
+    if status is CampaignStatus.NO_ANSWER:
+        return Progress()
+    if undelivered:
+        return Progress(Decision(CampaignStatus.UNDELIVERED, segment, undelivered))
+    if reminder_sent_at is None:
+        if now - sent_at >= remind_after + give_up_after:
+            # Напоминание так и не ушло (рассылку выключали, бот молчал): спустя такой срок
+            # «напомню о себе» читалось бы как новая рассылка, а не как одно напоминание.
+            return Progress(Decision(CampaignStatus.NO_ANSWER, segment, "Не ответил на сообщение"))
+        return Progress(remind=delivered and now - sent_at >= remind_after)
+    if now - reminder_sent_at >= give_up_after:
+        return Progress(Decision(CampaignStatus.NO_ANSWER, segment, "Не ответил ни на сообщение, ни на напоминание"))
+    return Progress()
+
+
+def apply_result(result: CampaignResult, status: CampaignStatus, segment: CampaignSegment) -> Decision | None:
+    """Итог, отмеченный человеком после сообщения. ``None`` — из этого статуса нельзя."""
+    if status not in _RESULT_FROM:
+        return None
+    if result is CampaignResult.BOOKED:
+        return Decision(CampaignStatus.BOOKED, segment, "Записался — отметка администратора")
+    if result is CampaignResult.BOUGHT:
+        return Decision(CampaignStatus.BOUGHT, segment, "Купил абонемент — отметка администратора")
+    return Decision(CampaignStatus.DECLINED, segment, "Отказался — отметка администратора")
 
 
 def _local_day(value: datetime) -> str:

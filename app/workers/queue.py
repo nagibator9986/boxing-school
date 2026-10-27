@@ -32,6 +32,7 @@ from app.config import Settings, get_settings
 from app.logging_conf import get_logger
 from app.observability import metrics
 from app.types import JobQueue
+from app.workers.tasks_campaign import campaign_cron
 from app.workers.tasks_followup import followup_sweep_cron, send_followup_job
 from app.workers.tasks_inbound import process_inbound_job
 from app.workers.tasks_outbound import (
@@ -67,6 +68,10 @@ REFRESH_CHANNELS_MINUTES: Final[set[int]] = {0, 15, 30, 45}
 #: привязаны к секундам, а лишние проходы бьют по БД.
 FOLLOWUP_SWEEP_MINUTES: Final[set[int]] = {0, 10, 20, 30, 40, 50}
 
+#: Рассылка «Возврат клиентов»: раз в минуту, на 30-й секунде — не вместе со сметкой
+#: outbox. Пустой список стоит одного запроса; темп отправки задаёт сама рассылка.
+CAMPAIGN_SECOND: Final[int] = 30
+
 #: Сколько раз arq повторит упавшую задачу (первая попытка + три повтора).
 MAX_TRIES: Final[int] = 4
 
@@ -84,6 +89,7 @@ _INLINE_PERIODIC: Final[tuple[tuple[str, float], ...]] = (
     ("outbox_sweep_cron", 60.0),
     ("followup_sweep_cron", 600.0),
     ("refresh_channels_cron", 900.0),
+    ("campaign_cron", 60.0),
 )
 
 
@@ -99,6 +105,7 @@ TASKS: Final[dict[str, Callable[..., Any]]] = {
     "outbox_sweep_cron": outbox_sweep_cron,
     "followup_sweep_cron": followup_sweep_cron,
     "refresh_channels_cron": refresh_channels_cron,
+    "campaign_cron": campaign_cron,
 }
 
 
@@ -211,8 +218,8 @@ class InlineJobQueue(JobQueue):
 
     Отложенные задачи (backoff отправки, напоминания) держит отдельный планировщик,
     чтобы ожидание не занимало слот воркера. Периодические задания повторяют
-    cron-расписание arq: ``outbox_sweep`` раз в минуту, ``followup_sweep`` раз в
-    10 минут, ``refresh_channels`` раз в 15 минут.
+    cron-расписание arq: ``outbox_sweep`` и ``campaign`` раз в минуту, ``followup_sweep``
+    раз в 10 минут, ``refresh_channels`` раз в 15 минут.
 
     Расписанием владеет очередь и только она — признак ``owns_periodic_jobs``.
     По нему ``app.main`` понимает, что свой цикл периодических задач поднимать не
@@ -595,6 +602,8 @@ class WorkerSettings:
         cron(followup_sweep_cron, minute=FOLLOWUP_SWEEP_MINUTES, second=0),
         # Раз в минуту: строки outbox, не попавшие в очередь, и метрика её глубины.
         cron(outbox_sweep_cron, second=0),
+        # Раз в минуту: черновики, отправка и статусы «Возврата клиентов».
+        cron(campaign_cron, second=CAMPAIGN_SECOND),
     ]
     on_startup = startup
     on_shutdown = shutdown
@@ -629,6 +638,7 @@ def _aware(value: datetime) -> datetime:
 
 __all__ = [
     "ArqJobQueue",
+    "CAMPAIGN_SECOND",
     "FOLLOWUP_SWEEP_MINUTES",
     "INLINE_DRAIN_TIMEOUT_S",
     "InlineJobQueue",

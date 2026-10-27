@@ -2,13 +2,58 @@
 {% block title %}Возврат клиентов{% endblock %}
 {% block content %}
 <h1 class="page-title">Возврат клиентов</h1>
-<p class="page-note">Клиенты из старых переписок, которым, возможно, стоит написать снова. Сейчас здесь только список
-  и проверка: рассылки нет. Сначала отметьте, кто уже занимается, кто был на пробном, кто не пришёл, — бот не должен
-  предлагать пробное тому, кто уже ходит.</p>
+<p class="page-note">Клиенты из старых переписок, которым стоит написать снова. Порядок: отметьте исход
+  (кто уже занимается, кто был на пробном, кто не пришёл) → бот пишет черновик первого сообщения → вы правите
+  и одобряете → бот отправляет по одному и дальше ведёт разговор сам. Без одобрения не уходит ни одно сообщение.</p>
 
 {% if not ready %}
   <div class="flash error">Таблица возврата ещё не создана: она появится после перезапуска бота с новой версией.</div>
 {% else %}
+
+<div class="card">
+  <div class="inline" style="justify-content:space-between">
+    <div>
+      <h2 style="margin:0 0 4px">Рассылка {% if pult.enabled %}<span class="tag ok">включена</span>{% else %}<span class="tag">выключена</span>{% endif %}</h2>
+      <div class="mini">До {{ pult.limit }} сообщений в день (вместе с напоминаниями), с {{ pult.hours }} по часам школы,
+        по одному с паузой в несколько минут. Сегодня отправлено: {{ funnel.sent_today }}{% if funnel.last_sent_at %},
+        последнее — {{ funnel.last_sent_at | dt }}{% endif %}.
+        <a href="{{ url_for('settings.index') }}">Лимит и часы — в настройках</a>.</div>
+    </div>
+    <form method="post" action="{{ url_for('campaign.switch') }}" class="inline">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      {% if pult.enabled %}
+        <button class="btn" type="submit" name="state" value="off">Выключить рассылку</button>
+      {% else %}
+        <button class="btn primary" type="submit" name="state" value="on">Включить рассылку</button>
+      {% endif %}
+    </form>
+  </div>
+  {% for problem in pult.problems %}<div class="flash error" style="margin:10px 0 0">{{ problem }}</div>{% endfor %}
+</div>
+
+<div class="grid cols-4" style="margin-bottom:14px">
+  <div class="metric">
+    <div class="value">{{ funnel.count('needs_check') }}</div>
+    <div class="label">проверить исход</div>
+    <div class="sub">черновиков {{ funnel.count('ready', 'draft') }} · одобрено {{ funnel.count('approved') }}</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ funnel.sent }}</div>
+    <div class="label">написали</div>
+    <div class="sub">не доставлено {{ funnel.count('undelivered') }} · не ответили {{ funnel.count('no_answer') }}</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ funnel.replied }}</div>
+    <div class="label">ответили</div>
+    <div class="sub">отказ {{ funnel.count('declined') }} · стоп {{ funnel.count('opted_out') }}</div>
+  </div>
+  <div class="metric">
+    <div class="value">{{ funnel.count('booked', 'bought') }}</div>
+    <div class="label">записались</div>
+    <div class="sub">из них купили абонемент: {{ funnel.count('bought') }}</div>
+  </div>
+</div>
+
 <div class="card">
   <form method="post" action="{{ url_for('campaign.upload') }}" enctype="multipart/form-data" class="inline">
     <input type="file" name="file" accept=".xlsx" required>
@@ -41,18 +86,107 @@
   {% endif %}
 </div>
 
+{% macro who(c) %}
+  <a href="{{ url_for('campaign.show', contact_id=c.id) }}"><strong>{{ c.parent_name or c.wa_name or 'Без имени' }}</strong></a>
+  <div class="mini nowrap">{{ c.phone }}</div>
+  {% if c.child_name %}<div class="mini">ребёнок: {{ c.child_name }}</div>{% endif %}
+  {% if c.conversation_id %}<div class="mini"><a href="{{ url_for('clients.show', conv_id=c.conversation_id) }}">переписка с ботом</a></div>{% endif %}
+{% endmacro %}
+
+{% macro hidden(c) %}<input type="hidden" name="back" value="list"><input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="segment" value="{{ segment }}">{% endmacro %}
+
+{% if tab == 'drafts' %}
+  {% set drafts = contacts | selectattr('status', 'equalto', 'draft') | list %}
+  {% if drafts or funnel.template_drafts %}
+  <div class="card inline">
+    {% if drafts %}
+    <form method="post" action="{{ url_for('campaign.approve_all') }}" class="inline">
+      <input type="hidden" name="segment" value="{{ segment }}">
+      {% for c in drafts %}<input type="hidden" name="ids" value="{{ c.id }}">{% endfor %}
+      <button class="btn primary" type="submit">Одобрить все черновики на странице ({{ drafts | length }})</button>
+      <span class="mini">как есть — несохранённые правки в полях ниже не учитываются</span>
+    </form>
+    {% endif %}
+    {% if funnel.template_drafts %}
+    <form method="post" action="{{ url_for('campaign.redraft_templates') }}" class="inline">
+      <button class="btn" type="submit">Переписать моделью шаблонные ({{ funnel.template_drafts }})</button>
+      <span class="mini">когда модель снова отвечает: сделает текст личным по итогу переписки</span>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+
 <div class="card">
 <table>
+  {% if tab == 'drafts' %}
+  <thead><tr><th>Контакт</th><th>Итог переписки</th><th>Первое сообщение</th></tr></thead>
+  {% elif tab == 'approved' %}
+  <thead><tr><th>Контакт</th><th>Сообщение</th><th>Когда</th><th></th></tr></thead>
+  {% elif tab == 'sent' %}
+  <thead><tr><th>Контакт</th><th>Статус</th><th>Сообщение</th><th>Когда</th><th>Итог</th></tr></thead>
+  {% else %}
   <thead><tr><th>Контакт</th><th>Сегмент</th><th>Итог переписки</th><th>Что проверить / почему</th><th>Последний контакт</th><th></th></tr></thead>
+  {% endif %}
   <tbody>
   {% for c in contacts %}
+    {% if tab == 'drafts' %}
     <tr>
-      <td>
-        <a href="{{ url_for('campaign.show', contact_id=c.id) }}"><strong>{{ c.parent_name or c.wa_name or 'Без имени' }}</strong></a>
-        <div class="mini nowrap">{{ c.phone }}</div>
-        {% if c.child_name %}<div class="mini">ребёнок: {{ c.child_name }}</div>{% endif %}
-        {% if c.conversation_id %}<div class="mini"><a href="{{ url_for('clients.show', conv_id=c.conversation_id) }}">переписка с ботом</a></div>{% endif %}
+      <td>{{ who(c) }}<div class="mini">{{ segment_titles.get(c.segment, c.segment) }}</div></td>
+      <td class="mini">{{ (c.summary or '—') | truncate(200) }}{% if c.obstacle %}<div><b>Препятствие:</b> {{ c.obstacle | truncate(100) }}</div>{% endif %}
+        {% if c.not_before %}<div>Писать не раньше {{ c.not_before | dt('%d.%m.%Y') }}</div>{% endif %}</td>
+      <td style="min-width:340px">
+        {% if c.status == 'ready' %}
+          <span class="tag warn">черновик пишется</span>
+          <div class="mini">Бот напишет его в ближайшие минуты — обновите страницу.</div>
+        {% else %}
+          <form method="post" action="{{ url_for('campaign.message', contact_id=c.id) }}">
+            {{ hidden(c) }}
+            <textarea name="text" rows="6" maxlength="{{ max_chars }}">{{ c.draft_text }}</textarea>
+            <div class="mini">{% if c.draft_source == 'model' %}написан по итогу переписки{% elif c.draft_source == 'edited' %}исправлен вручную{% else %}шаблон: модель была недоступна{% endif %}</div>
+            <div class="inline" style="margin-top:6px">
+              <button class="btn small primary" type="submit" name="action" value="approve">Одобрить</button>
+              <button class="btn small" type="submit" name="action" value="save">Сохранить</button>
+              <button class="btn small" type="submit" name="action" value="redraft">Переписать</button>
+            </div>
+          </form>
+        {% endif %}
       </td>
+    </tr>
+    {% elif tab == 'approved' %}
+    <tr>
+      <td>{{ who(c) }}</td>
+      <td class="mini" style="white-space:pre-wrap">{{ c.approved_text }}</td>
+      <td class="mini">{% if c.not_before %}не раньше {{ c.not_before | dt('%d.%m.%Y') }}{% else %}в порядке очереди{% endif %}
+        <div>одобрено {{ c.approved_at | dt }}</div></td>
+      <td>
+        <form method="post" action="{{ url_for('campaign.message', contact_id=c.id) }}">
+          {{ hidden(c) }}
+          <button class="btn small" type="submit" name="action" value="unapprove">Вернуть в черновики</button>
+        </form>
+      </td>
+    </tr>
+    {% elif tab == 'sent' %}
+    <tr>
+      <td>{{ who(c) }}</td>
+      <td><span class="tag {{ status_tones.get(c.status, 'warn') }}">{{ status_titles.get(c.status, c.status) }}</span>
+        {% if c.status_reason %}<div class="mini">{{ c.status_reason }}</div>{% endif %}</td>
+      <td class="mini">{{ (c.approved_text or '') | truncate(160) }}</td>
+      <td class="mini nowrap">отправлено {{ c.sent_at | dt }}
+        {% if c.reminder_sent_at %}<div>напомнили {{ c.reminder_sent_at | dt }}</div>{% endif %}
+        {% if c.replied_at %}<div>ответил {{ c.replied_at | dt }}</div>{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('campaign.result', contact_id=c.id) }}" class="actions" style="margin-top:0">
+          {{ hidden(c) }}
+          {% for value, title in result_titles.items() %}
+            {% if value != c.status %}<button class="btn small" type="submit" name="result" value="{{ value }}">{{ title }}</button>{% endif %}
+          {% endfor %}
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td>{{ who(c) }}</td>
       <td class="mini">{{ segment_titles.get(c.segment, c.segment) }}</td>
       <td class="mini">{{ (c.summary or '—') | truncate(220) }}{% if c.obstacle %}<div><b>Препятствие:</b> {{ c.obstacle | truncate(120) }}</div>{% endif %}</td>
       <td class="mini">
@@ -64,19 +198,20 @@
       <td>
         {% if tab == 'check' %}
           <form method="post" action="{{ url_for('campaign.outcome', contact_id=c.id) }}" class="actions">
-            <input type="hidden" name="back" value="list"><input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="segment" value="{{ segment }}">
+            {{ hidden(c) }}
             {% for value in ('bought', 'came', 'no_show', 'write', 'refused') %}
               <button class="btn small" type="submit" name="outcome" value="{{ value }}">{{ outcome_titles[value] }}</button>
             {% endfor %}
           </form>
         {% else %}
           <form method="post" action="{{ url_for('campaign.restore', contact_id=c.id) }}" class="inline">
-            <input type="hidden" name="back" value="list"><input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="segment" value="{{ segment }}">
+            {{ hidden(c) }}
             {% if c.status != 'opted_out' %}<button class="btn small" type="submit">Вернуть на проверку</button>{% endif %}
           </form>
         {% endif %}
       </td>
     </tr>
+    {% endif %}
   {% else %}
     <tr><td colspan="6" class="empty">{{ 'Список пуст — загрузите Excel разбора' if not total else 'В этой вкладке никого' }}</td></tr>
   {% endfor %}

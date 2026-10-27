@@ -37,15 +37,29 @@ class DeadLLM:
         raise LLMQuotaError("квота Gemini исчерпана")
 
 
+#: Движки тестов этого файла: закрываются после каждого теста. Незакрытый движок держит
+#: соединения aiosqlite до сборки мусора, а она приходит уже после закрытия цикла событий —
+#: поток соединения падает «Event loop is closed» посреди чужого теста.
+_ENGINES: list = []
+
+
 @pytest.fixture
 def bot_db(tmp_path: Path) -> Path:
     return tmp_path / "bot.db"
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_engines():
+    yield
+    while _ENGINES:
+        await _ENGINES.pop().dispose()
 
 
 async def build(kb, state, settings, bot_db: Path, llm) -> PipelineDeps:
     """Пайплайн поверх файловой базы: строки должны пережить закрытие сессии."""
     kb_loader.swap(kb)
     engine = storage_db.build_engine(f"sqlite+aiosqlite:///{bot_db}")
+    _ENGINES.append(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     return PipelineDeps(

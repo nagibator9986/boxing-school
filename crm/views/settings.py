@@ -13,7 +13,7 @@ from typing import Any
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
-from app.admin.admin_store import SETTING_SPECS, AdminStore
+from app.admin.admin_store import COUNT_MAX, SETTING_SPECS, AdminStore
 from app.admin.runtime_settings import load_runtime_settings
 from crm.app import config, login_required
 from crm.forms import flag, integer, text
@@ -59,6 +59,13 @@ def index() -> Any:
                         )
                         continue
                     value = str(minutes)
+                elif spec.kind == "count":
+                    raw = text(request.form, spec.key)
+                    count = integer(request.form, spec.key, default=-1)
+                    if not raw.isdigit() or not 0 <= count <= COUNT_MAX:
+                        problems.append(f"{spec.title}: нужно число от 0 до {COUNT_MAX}, получено «{raw}»")
+                        continue
+                    value = str(count)
                 elif spec.kind in ("phones", "text"):
                     # Номера сохраняются как их ввёл владелец: пробелы, скобки и
                     # плюсы ему привычнее, а сравнение всё равно идёт по цифрам.
