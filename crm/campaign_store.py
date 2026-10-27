@@ -604,6 +604,14 @@ class CampaignStore:
             raise StoreBusy(str(exc)) from exc
         return changed
 
+    def drafts_to_rewrite(self) -> list[str]:
+        """Черновики, которые человек не правил: их можно переписать, ничего не потеряв."""
+        rows = self._query(
+            f"SELECT id FROM {TABLE} WHERE status = ? AND (draft_source IS NULL OR draft_source <> 'edited')",
+            (CampaignStatus.DRAFT.value,),
+        )
+        return [str(row["id"]) for row in rows]
+
     def template_drafts(self) -> list[str]:
         """Черновики по шаблону — их стоит переписать, когда модель снова отвечает."""
         rows = self._query(

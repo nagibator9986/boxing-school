@@ -736,3 +736,41 @@ def test_an_undelivered_contact_shows_what_wazzup_answered(client, sandbox: CrmC
     assert "Ответ Wazzup: postmessageerror: Wazzup 400: postMessageError: chat busy" in client.get(
         "/campaign/?tab=sent").get_data(as_text=True)
     assert "chat busy" in client.get(f"/campaign/{contact}").get_data(as_text=True)
+
+
+def test_all_drafts_but_the_edited_ones_are_rewritten_on_request(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    _draft(client, sandbox, "77015550893")
+    _draft(client, sandbox, "77015550894")
+    _set(sandbox, "77015550894", draft_source="edited")
+
+    assert "Переписать все черновики (1)" in client.get("/campaign/?tab=drafts").get_data(as_text=True)
+    client.post("/campaign/redraft-all")
+
+    assert _get(sandbox, "77015550893", "status", "draft_text") == ("ready", None)
+    assert _get(sandbox, "77015550894", "status")[0] == "draft"
+
+
+def test_the_unclear_sheet_goes_to_a_human_check(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    from openpyxl import load_workbook
+
+    # Тот же файл, что даёт разбор: оба листа рядом, загружается выбранный.
+    book = load_workbook(io.BytesIO(_xlsx([_row("77015550896", "Интерес затих до записи", check="Нет")])))
+    other = load_workbook(io.BytesIO(_xlsx([_row("77015550895", "Не хватает контекста", check="Нет")],
+                                           sheet="Проверить контекст")))["Проверить контекст"]
+    page = book.create_sheet("Проверить контекст")
+    for values in other.iter_rows(values_only=True):
+        page.append(values)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    book = buffer.getvalue()
+    page = client.post(
+        "/campaign/import", data={"file": (io.BytesIO(book), "разбор.xlsx"), "sheet": "Проверить контекст"},
+        content_type="multipart/form-data", follow_redirects=True,
+    ).get_data(as_text=True)
+
+    assert "Лист «Проверить контекст»: новых 1" in page
+    assert _status(sandbox, "77015550895")[:2] == ("needs_check", "unclear")
+    assert _status(sandbox, "77015550896") is None  # лист «Потенциальные» не загружался
+    check = client.get("/campaign/?tab=check").get_data(as_text=True)
+    assert "Не хватает контекста (голосовые)" in check and "посмотрите чат" in check
+    assert "нет листа «Отказы»" in parse_workbook(io.BytesIO(book), sheet="Отказы").errors[0]

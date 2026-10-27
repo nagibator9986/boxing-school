@@ -859,3 +859,46 @@ async def test_a_campaign_refusal_raises_no_alert_per_message(deps, monkeypatch)
     await tasks_outbound._react_terminal(deps, message, WazzupSpamError("x", error_code="MESSAGES_IS_SPAM"),
                                          code="messagesisspam", reason="needs_human", conversation_id=None)
     assert raised == ["wazzup_spam"]
+
+
+# --------------------------------------------------------------------------- #
+# Тексты, написанные до исправления 27.10, не уходят
+# --------------------------------------------------------------------------- #
+async def test_texts_written_before_the_fix_are_rewritten(deps) -> None:
+    old_draft = await _contact(deps, status=CampaignStatus.DRAFT, draft_source="model",
+                               text="Здравствуйте! Вы интересовались индивидуальными тренировками. Подобрать время?")
+    old_approved = await _contact(deps, chat_id=OTHER, draft_source="model",
+                                  text="Здравствуйте! Подскажите, подходят ли вам наши тарифы?")
+    human = await _contact(deps, chat_id="77015550998", draft_source="edited",
+                           text="Здравствуйте! Есть и индивидуальные занятия — подобрать время?")
+    clean = await _contact(deps, chat_id="77015550997", status=CampaignStatus.DRAFT, draft_source="model",
+                           text=f"Здравствуйте, Анна! {MODEL_DRAFT}")
+
+    assert await campaign.recheck(deps, kb=deps.kb()) == 2
+
+    for contact, reason in ((old_draft, "пишется заново"), (old_approved, "одобрите снова")):
+        row = await _row(deps, contact)
+        assert (row.status, row.draft_text, row.approved_text) == ("ready", None, None) and reason in row.status_reason
+    assert (await _row(deps, human)).status == "approved"
+    assert (await _row(deps, clean)).status == "draft"
+
+
+async def test_an_approved_text_with_an_extra_offer_is_not_sent_even_without_recheck(deps) -> None:
+    contact = await _contact(deps, draft_source="model", text="Здравствуйте! Абонемент со скидкой — подобрать зал?")
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is False
+
+    assert (await _row(deps, contact)).status == "ready" and await _outbox(deps) == []
+
+
+async def test_the_pass_rewrites_an_old_text_and_writes_a_new_one(deps, monkeypatch) -> None:
+    monkeypatch.setattr(campaign, "_now", lambda: NOW)
+    deps.llm.push(FakeTurn.answer(MODEL_DRAFT))
+    contact = await _contact(deps, status=CampaignStatus.DRAFT, draft_source="model",
+                             text="Здравствуйте! Вы интересовались индивидуальными тренировками. Подобрать время?")
+
+    await campaign.campaign_cron({"deps": deps})
+
+    row = await _row(deps, contact)
+    assert row.status == "draft" and row.draft_text == f"Здравствуйте, Анна! {MODEL_DRAFT}"

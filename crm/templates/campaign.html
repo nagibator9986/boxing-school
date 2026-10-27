@@ -57,8 +57,11 @@
 <div class="card">
   <form method="post" action="{{ url_for('campaign.upload') }}" enctype="multipart/form-data" class="inline">
     <input type="file" name="file" accept=".xlsx" required>
+    <select name="sheet" style="width:auto">
+      {% for title, hint in sheets.items() %}<option value="{{ title }}">Лист «{{ title }}» — {{ hint }}</option>{% endfor %}
+    </select>
     <button class="btn primary" type="submit">Загрузить Excel разбора</button>
-    <span class="mini">Лист «Потенциальные». Повторная загрузка обновит описание, но не отменит ваши отметки.</span>
+    <span class="mini">Повторная загрузка обновит описание, но не отменит ваши отметки.</span>
   </form>
   <form method="post" action="{{ url_for('campaign.recheck') }}" class="inline">
     <input type="hidden" name="tab" value="{{ tab }}">
@@ -97,7 +100,7 @@
 
 {% if tab == 'drafts' %}
   {% set drafts = contacts | selectattr('status', 'equalto', 'draft') | list %}
-  {% if drafts or funnel.template_drafts %}
+  {% if drafts or funnel.template_drafts or drafts_to_rewrite %}
   <div class="card inline">
     {% if drafts %}
     <form method="post" action="{{ url_for('campaign.approve_all') }}" class="inline">
@@ -105,6 +108,13 @@
       {% for c in drafts %}<input type="hidden" name="ids" value="{{ c.id }}">{% endfor %}
       <button class="btn primary" type="submit">Одобрить все черновики на странице ({{ drafts | length }})</button>
       <span class="mini">как есть — несохранённые правки в полях ниже не учитываются</span>
+    </form>
+    {% endif %}
+    {% if drafts_to_rewrite %}
+    <form method="post" action="{{ url_for('campaign.redraft_all') }}" class="inline"
+          onsubmit="return confirm('Переписать заново {{ drafts_to_rewrite }} черновиков? Исправленные вами не тронутся.')">
+      <button class="btn" type="submit">Переписать все черновики ({{ drafts_to_rewrite }})</button>
+      <span class="mini">кроме исправленных вручную</span>
     </form>
     {% endif %}
     {% if funnel.template_drafts %}

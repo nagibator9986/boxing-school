@@ -15,10 +15,18 @@ from typing import IO, Any, Final
 
 from app.campaign.contacts import CampaignSegment, segment_for
 
-__all__ = ["ImportRow", "ParsedFile", "parse_workbook"]
+__all__ = ["IMPORTABLE_SHEETS", "ImportRow", "ParsedFile", "parse_workbook"]
 
 #: Лист со списком к работе. Если его нет — первый лист с нужными колонками.
 PREFERRED_SHEET: Final[str] = "Потенциальные"
+
+#: Листы, которые можно загрузить, и что в них. «Проверить контекст» — переписки, которые
+#: разбор не понял (голосовые, вложения, звонки): всё уходит на проверку человеку. Лист «Все
+#: контакты» не загружается: там и действующие клиенты, и отказы, и сотрудники.
+IMPORTABLE_SHEETS: Final[dict[str, str]] = {
+    PREFERRED_SHEET: "потенциальные клиенты",
+    "Проверить контекст": "разбор не понял переписку — всё на проверку",
+}
 
 #: Время в файле — по часам Костаная (колонки помечены «UTC+5»).
 _FILE_ZONE: Final[timezone] = timezone(timedelta(hours=5))
@@ -88,8 +96,12 @@ class ParsedFile:
     duplicates: int = 0
 
 
-def parse_workbook(source: str | IO[bytes]) -> ParsedFile:
-    """Читает файл Excel. Ошибки формата — в ``errors``, а не исключением."""
+def parse_workbook(source: str | IO[bytes], *, sheet: str | None = None) -> ParsedFile:
+    """Читает файл Excel. Ошибки формата — в ``errors``, а не исключением.
+
+    ``sheet`` — какой лист читать; без него — «Потенциальные», а нет его — первый лист с
+    нужными колонками.
+    """
     from openpyxl import load_workbook
 
     result = ParsedFile()
@@ -99,13 +111,19 @@ def parse_workbook(source: str | IO[bytes]) -> ParsedFile:
         result.errors.append(f"Файл не читается как Excel: {type(exc).__name__}")
         return result
     try:
-        sheets = sorted(book.worksheets, key=lambda sheet: sheet.title != PREFERRED_SHEET)
-        for sheet in sheets:
-            rows = sheet.iter_rows(values_only=True)
+        if sheet is not None:
+            sheets = [page for page in book.worksheets if page.title == sheet]
+            if not sheets:
+                result.errors.append(f"В файле нет листа «{sheet}».")
+                return result
+        else:
+            sheets = sorted(book.worksheets, key=lambda page: page.title != PREFERRED_SHEET)
+        for page in sheets:
+            rows = page.iter_rows(values_only=True)
             header_at, columns = _find_header(rows)
             if columns is None:
                 continue
-            result.sheet = sheet.title
+            result.sheet = page.title
             seen: set[str] = set()
             for offset, values in enumerate(rows, start=header_at + 2):
                 record = {name: values[index] for name, index in columns.items() if index < len(values)}

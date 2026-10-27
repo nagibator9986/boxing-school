@@ -79,6 +79,7 @@ class CampaignSegment(str, Enum):
     CURRENT_CLIENT = "current_client"  # уже занимается
     REFUSED = "refused"                # отказался
     NOT_CLIENT = "not_client"          # не клиентский диалог
+    UNCLEAR = "unclear"                # разбор не понял переписку: голосовые, вложения
     UNKNOWN = "unknown"                # этап, которого разбор не знал
 
 
@@ -160,6 +161,8 @@ _STAGE_SEGMENTS: Final[dict[str, CampaignSegment]] = {
     "действующий клиент / сообщил об оплате": CampaignSegment.CURRENT_CLIENT,
     "отказ / предложение не подходит": CampaignSegment.REFUSED,
     "не клиентский диалог": CampaignSegment.NOT_CLIENT,
+    # Лист «Проверить контекст»: разбор не смог прочитать переписку.
+    "не хватает контекста": CampaignSegment.UNCLEAR,
 }
 
 #: Сегменты, которым не пишем вовсе, и почему.
@@ -208,6 +211,12 @@ def initial_decision(segment: CampaignSegment, *, check_required: bool) -> Decis
     """
     if segment in _CLOSED_SEGMENTS:
         return Decision(CampaignStatus.EXCLUDED, segment, _CLOSED_SEGMENTS[segment])
+    if segment is CampaignSegment.UNCLEAR:
+        return Decision(
+            CampaignStatus.NEEDS_CHECK,
+            segment,
+            "Разбор не понял переписку (голосовые, вложения, звонки) — посмотрите чат и решите сами",
+        )
     if segment in (CampaignSegment.FADED, CampaignSegment.NO_REPLY) and not check_required:
         return Decision(CampaignStatus.READY, segment)
     return Decision(CampaignStatus.NEEDS_CHECK, segment)

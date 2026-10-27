@@ -20,7 +20,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, u
 from app.campaign.contacts import CampaignOutcome, CampaignResult, CampaignStatus
 from app.logging_conf import get_logger
 from crm.app import config, login_required
-from crm.campaign_excel import parse_workbook
+from crm.campaign_excel import IMPORTABLE_SHEETS, PREFERRED_SHEET, parse_workbook
 from crm.campaign_store import MAX_MESSAGE_CHARS, CampaignStore, ContactRow, StoreBusy
 from crm.forms import choice, opt_text, text
 
@@ -65,6 +65,7 @@ SEGMENT_TITLES: Final[dict[str, str]] = {
     "current_client": "Уже занимается",
     "refused": "Отказался",
     "not_client": "Не клиент",
+    "unclear": "Не хватает контекста (голосовые)",
     "unknown": "Этап не распознан",
 }
 
@@ -164,6 +165,8 @@ def index() -> Any:
         outcome_titles=OUTCOME_TITLES,
         result_titles=RESULT_TITLES,
         max_chars=MAX_MESSAGE_CHARS,
+        sheets=IMPORTABLE_SHEETS,
+        drafts_to_rewrite=len(store.drafts_to_rewrite()) if tab == "drafts" else 0,
     )
 
 
@@ -263,7 +266,9 @@ def upload() -> Any:
     if Path(upload_file.filename).suffix.lower() != ".xlsx":
         flash("Нужен файл Excel (.xlsx) из разбора переписок.", "error")
         return redirect(url_for("campaign.index"))
-    parsed = parse_workbook(io.BytesIO(upload_file.read()))
+    sheet = choice(request.form, "sheet", IMPORTABLE_SHEETS, default=PREFERRED_SHEET)
+    # Лист по умолчанию — с прежней поблажкой: нет его в файле — первый лист с нужными колонками.
+    parsed = parse_workbook(io.BytesIO(upload_file.read()), sheet=None if sheet == PREFERRED_SHEET else sheet)
     if not parsed.rows:
         flash(" ".join(parsed.errors) or "В файле нет ни одного контакта.", "error")
         return redirect(url_for("campaign.index"))
@@ -319,6 +324,20 @@ def approve_all() -> Any:
             message += f" Не одобрено {skipped}: их уже отправили, вернули на проверку или бот увидел запрет."
         flash(message, "ok" if approved else "error")
     return redirect(url_for("campaign.index", tab="drafts", segment=text(request.form, "segment") or None))
+
+
+@bp.route("/redraft-all", methods=["POST"])
+@login_required
+def redraft_all() -> Any:
+    """Переписать все черновики, которые человек не правил: после смены правил или текстов."""
+    store = _store()
+    try:
+        changed = store.redraft(store.drafts_to_rewrite(), now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+    else:
+        flash(f"Пишутся заново: {changed}. Бот напишет их в ближайшие минуты, по три в минуту.", "ok")
+    return redirect(url_for("campaign.index", tab="drafts"))
 
 
 @bp.route("/redraft-templates", methods=["POST"])

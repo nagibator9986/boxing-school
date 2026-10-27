@@ -48,6 +48,7 @@ from app.campaign.messages import (
     draft_prompt,
     first_message_id,
     history_note,
+    offers_beyond_template,
     other_sport,
     reminder_message_id,
     reminder_text,
@@ -131,6 +132,7 @@ async def campaign_cron(ctx: dict[str, Any]) -> None:
                 log.warning("campaign_track_failed", error=type(exc).__name__)
         if kb is not None:
             try:
+                await recheck(deps, kb=kb)
                 await draft(deps, kb=kb, settings=settings)
             except Exception as exc:  # noqa: BLE001 - черновики подождут следующего прохода
                 log.warning("campaign_draft_failed", error=type(exc).__name__)
@@ -152,7 +154,7 @@ async def _has_work(deps: Any) -> bool:
                     sa.select(CampaignContact.id)
                     .where(
                         CampaignContact.status.in_(
-                            (CampaignStatus.READY.value, CampaignStatus.APPROVED.value, *_TRACKED)
+                            (CampaignStatus.READY.value, CampaignStatus.DRAFT.value, CampaignStatus.APPROVED.value, *_TRACKED)
                         )
                     )
                     .limit(1)
@@ -345,6 +347,54 @@ async def _stop_campaign(deps: Any, text: str, *, code: str) -> None:
 # --------------------------------------------------------------------------- #
 # 2. Черновики
 # --------------------------------------------------------------------------- #
+async def recheck(deps: Any, *, kb: Any) -> int:
+    """Готовые тексты, которые предлагают лишнее, — на переписку. Возвращает их число.
+
+    Правила черновика ужесточались после живой рассылки 27.10.2026, а написанные раньше
+    тексты уже лежали в «Черновиках» и «Одобренных». Они проверяются тем же правилом и,
+    если предлагают индивидуальные занятия, тарифы или чужой спорт, пишутся заново.
+    Текст, который поправил человек (``edited``), остаётся: это его решение.
+    """
+    changed = 0
+    async with deps.sessionmaker() as session:
+        rows = (
+            await session.execute(
+                sa.select(CampaignContact).where(
+                    CampaignContact.status.in_((CampaignStatus.DRAFT.value, CampaignStatus.APPROVED.value)),
+                    sa.or_(CampaignContact.draft_source.is_(None), CampaignContact.draft_source != "edited"),
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            approved = row.status == CampaignStatus.APPROVED.value
+            text = row.approved_text if approved else row.draft_text
+            template = template_body(kb, _segment(row.segment), Language.RU)
+            if not offers_beyond_template(text, template=template):
+                continue
+            result = await session.execute(
+                sa.update(CampaignContact)
+                .where(CampaignContact.id == row.id, CampaignContact.status == row.status)
+                .values(
+                    status=CampaignStatus.READY.value,
+                    status_reason=(
+                        "Одобренный текст предлагал то, чего нет в приглашении, — пишется заново, одобрите снова"
+                        if approved
+                        else "Текст предлагал то, чего нет в приглашении, — пишется заново"
+                    ),
+                    draft_text=None,
+                    draft_source=None,
+                    approved_text=None,
+                    approved_at=None,
+                    updated_at=utcnow(),
+                )
+            )
+            changed += int(result.rowcount or 0)
+        await session.commit()
+    if changed:
+        log.info("campaign_texts_rewritten", count=changed)
+    return changed
+
+
 async def draft(deps: Any, *, kb: Any, settings: Any) -> int:
     """Пишет черновики тем, кого человек пустил в работу. Возвращает, сколько написано.
 
@@ -530,6 +580,15 @@ async def send_first(
         text = (row.approved_text or "").strip()
         if blocked is None and not text:
             blocked = Decision(CampaignStatus.DRAFT, _segment(row.segment), "Одобрен пустой текст — одобрите заново")
+        if (
+            blocked is None
+            and row.draft_source != "edited"
+            and offers_beyond_template(text, template=template_body(kb, _segment(row.segment), Language.RU))
+        ):
+            # Вторая страховка после recheck(): лишнее предложение не уходит ни при каком сбое.
+            blocked = Decision(
+                CampaignStatus.READY, _segment(row.segment), "Текст предлагал то, чего нет в приглашении, — пишется заново"
+            )
         if blocked is not None:
             await session.execute(
                 sa.update(CampaignContact)
@@ -881,6 +940,7 @@ __all__ = [
     "draft",
     "first_message_id",
     "pause_after",
+    "recheck",
     "reminder_message_id",
     "send",
     "send_first",

@@ -29,6 +29,7 @@ __all__ = [
     "draft_prompt",
     "first_message_id",
     "history_note",
+    "offers_beyond_template",
     "other_sport",
     "reminder_message_id",
     "reminder_text",
@@ -145,6 +146,19 @@ def first_message_id(contact_id: str) -> UUID:
 def reminder_message_id(contact_id: str) -> UUID:
     """``crm_message_id`` напоминания контакту."""
     return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:reminder")
+
+
+def offers_beyond_template(text: str | None, *, template: str | None) -> bool:
+    """Предлагает ли текст то, чего нет в шаблоне: индивидуальные занятия, тарифы, чужой спорт.
+
+    Нужна и для готовых текстов: черновики, написанные до 27.10.2026 (тогда совет разбора
+    уходил модели), уже лежали в CRM и даже были одобрены.
+    """
+    body = text or ""
+    return any(
+        len(pattern.findall(body)) > len(pattern.findall(template or ""))
+        for pattern in (_FOREIGN_OFFERS, _OTHER_SPORTS)
+    )
 
 
 def other_sport(brief: Brief) -> str | None:
@@ -283,10 +297,7 @@ def _unknown_names(body: str, *, allowed: Sequence[str]) -> tuple[str, ...]:
 def _invented_details(body: str, *, template: str, facts: str) -> bool:
     """Назвал ли черновик сына, дочь или вид спорта, о которых итог переписки молчит, —
     или предложил то, чего нет в шаблоне, о чём бы ни говорил итог."""
-    if any(
-        len(pattern.findall(body)) > len(pattern.findall(template))
-        for pattern in (_FOREIGN_OFFERS, _OTHER_SPORTS)
-    ):
+    if offers_beyond_template(body, template=template):
         return True
     return any(
         len(pattern.findall(body)) > len(pattern.findall(template)) and not pattern.search(facts)
