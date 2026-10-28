@@ -326,6 +326,31 @@ def approve_all() -> Any:
     return redirect(url_for("campaign.index", tab="drafts", segment=text(request.form, "segment") or None))
 
 
+@bp.route("/retry", methods=["POST"])
+@login_required
+def retry() -> Any:
+    """Отправить недоставленные заново: одного (``contact_id``) или всех сразу."""
+    store = _store()
+    one = text(request.form, "contact_id")
+    ids = [one] if one else store.undelivered()
+    try:
+        changed = store.retry(ids, now=_now())
+    except StoreBusy:
+        flash(BUSY, "error")
+        return _back(one) if one else redirect(url_for("campaign.index", tab="sent"))
+    if not changed:
+        flash("Отправлять заново некого: недоставленных нет или у них нет одобренного текста.", "error")
+    else:
+        on = _pult()["enabled"]
+        flash(
+            f"Отправятся заново: {changed}, по одному с паузой."
+            + ("" if on else " Рассылка сейчас выключена — включите её, и сообщения пойдут.")
+            + " Если вы перед этим писали клиенту с номера бота, бот сам вернётся в диалог.",
+            "ok" if on else "error",
+        )
+    return _back(one) if one else redirect(url_for("campaign.index", tab="sent"))
+
+
 @bp.route("/redraft-all", methods=["POST"])
 @login_required
 def redraft_all() -> Any:

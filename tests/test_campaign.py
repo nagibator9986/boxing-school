@@ -774,3 +774,32 @@ def test_the_unclear_sheet_goes_to_a_human_check(client, sandbox: CrmConfig) -> 
     check = client.get("/campaign/?tab=check").get_data(as_text=True)
     assert "Не хватает контекста (голосовые)" in check and "посмотрите чат" in check
     assert "нет листа «Отказы»" in parse_workbook(io.BytesIO(book), sheet="Отказы").errors[0]
+
+
+def test_undelivered_contacts_are_sent_again_on_request(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    from app.campaign.messages import first_message_id
+
+    first = _draft(client, sandbox, "77015550897")
+    second = _draft(client, sandbox, "77015550898")
+    _draft(client, sandbox, "77015550899")
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    for chat_id in ("77015550897", "77015550898"):
+        _set(sandbox, chat_id, status="undelivered", approved_text="Текст?", sent_at=stamp)
+    _set(sandbox, "77015550899", status="sent", approved_text="Текст?", sent_at=stamp)
+
+    page = client.get("/campaign/?tab=sent").get_data(as_text=True)
+    assert "Отправить снова всем недоставленным (2)" in page and page.count(">Отправить снова<") == 2
+
+    client.post("/campaign/retry", data={"contact_id": first})
+    assert _get(sandbox, "77015550897", "status", "send_attempt", "sent_at") == ("approved", 2, None)
+    third = _contact_id(sandbox, "77015550899")
+    client.post("/campaign/retry", data={"contact_id": third})  # уже отправлено — повторять нечего
+    assert _get(sandbox, "77015550899", "status", "send_attempt") == ("sent", None)
+    assert _get(sandbox, "77015550898", "status")[0] == "undelivered"
+
+    page = client.post("/campaign/retry", follow_redirects=True).get_data(as_text=True)
+    assert "Отправятся заново: 1" in page and "Рассылка сейчас выключена" in page
+    assert _get(sandbox, "77015550898", "status", "send_attempt") == ("approved", 2)
+    assert _get(sandbox, "77015550899", "status")[0] == "sent"
+    # Ответ Wazzup ищется по номеру попытки: у второй — свой идентификатор.
+    assert first_message_id(second, 2) != first_message_id(second)

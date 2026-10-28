@@ -57,6 +57,13 @@
       <p class="mini">Отправлено {{ contact.sent_at | dt }}{% if contact.reminder_sent_at %}, напомнили {{ contact.reminder_sent_at | dt }}{% endif %}{% if contact.replied_at %}, ответил {{ contact.replied_at | dt }}{% endif %}.
         {% if contact.status_reason %}<b>{{ contact.status_reason }}</b>{% endif %}</p>
       {% if contact.delivery_error %}<p class="mini">Ответ Wazzup: {{ contact.delivery_error }}</p>{% endif %}
+      {% if contact.status == 'undelivered' %}
+      <form method="post" action="{{ url_for('campaign.retry') }}" class="inline">
+        <input type="hidden" name="back" value="contact"><input type="hidden" name="contact_id" value="{{ contact.id }}">
+        <button class="btn primary" type="submit">Отправить снова</button>
+        <span class="mini">Сначала напишите клиенту с номера бота хотя бы «.» — бот сам вернётся в диалог.</span>
+      </form>
+      {% endif %}
       {% if contact.status != 'opted_out' %}
       <form method="post" action="{{ url_for('campaign.result', contact_id=contact.id) }}">
         <input type="hidden" name="back" value="contact">

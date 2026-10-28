@@ -902,3 +902,83 @@ async def test_the_pass_rewrites_an_old_text_and_writes_a_new_one(deps, monkeypa
 
     row = await _row(deps, contact)
     assert row.status == "draft" and row.draft_text == f"Здравствуйте, Анна! {MODEL_DRAFT}"
+
+
+# --------------------------------------------------------------------------- #
+# «Отправить снова» после недоставки (28.10): точка с номера бота, затем повтор
+# --------------------------------------------------------------------------- #
+async def _first_attempt_failed(deps: PipelineDeps) -> tuple[UUID, UUID]:
+    """Первая попытка ушла в очередь и вернулась POST_MESSAGE_ERROR; человек нажал «снова»."""
+    contact = await _contact(deps, text="Здравствуйте! Подобрать зал рядом с домом?")
+    assert await campaign.send_first(deps, contact.hex, now=NOW - timedelta(days=1), kb=deps.kb(),
+                                     settings=deps.settings, silent=frozenset()) is True
+    async with deps.sessionmaker() as session:
+        await session.execute(sa.update(OutboxMessage).values(state="failed", last_error="postmessageerror: x"))
+        await session.execute(sa.update(CampaignContact).where(CampaignContact.id == contact).values(
+            status="approved", send_attempt=2, sent_at=None, approved_at=NOW - timedelta(minutes=30)))
+        await session.commit()
+        conv_id = UUID((await session.get(CampaignContact, contact)).conversation_id)
+    return contact, conv_id
+
+
+async def _operator_dot(deps: PipelineDeps, conv_id: UUID) -> None:
+    """Администратор написал «.» с номера бота — бот принял это за ответ человека."""
+    async with deps.sessionmaker() as session:
+        session.add(EscalationState(conversation_id=conv_id, paused=True, pause_reason="operator_reply",
+                                    escalation_count=0, resume_policy="manual_only",
+                                    operator_last_seen_at=NOW - timedelta(minutes=10)))
+        await session.commit()
+
+
+async def test_a_retry_goes_out_as_a_new_message_and_returns_the_bot(deps) -> None:
+    contact, conv_id = await _first_attempt_failed(deps)
+    await _operator_dot(deps, conv_id)
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is True
+
+    rows = await _outbox(deps)
+    assert [row.crm_message_id for row in rows] == [campaign.first_message_id(contact.hex),
+                                                    campaign.first_message_id(contact.hex, 2)]
+    async with deps.sessionmaker() as session:
+        pause_row = await session.get(EscalationState, conv_id)
+        models = [m for m in (await session.execute(sa.select(Message).where(Message.conversation_id == conv_id)))
+                  .scalars() if m.gemini_content and m.gemini_content.get("role") == "model"]
+    assert pause_row.paused is False  # на ответ клиента бот ответит сам
+    assert len(models) == 1           # текст в истории модели — один раз, с первой попытки
+    assert (await _row(deps, contact)).status == "sent"
+
+    # Статус ведёт новая попытка: старая недоставка его не перебивает.
+    async with deps.sessionmaker() as session:
+        await session.execute(sa.update(OutboxMessage).where(
+            OutboxMessage.crm_message_id == campaign.first_message_id(contact.hex, 2)).values(state="sent"))
+        await session.commit()
+    await _track(deps, now=NOW + timedelta(minutes=5))
+    assert (await _row(deps, contact)).status == "sent"
+
+    # А не дошёл и повтор — это видно по нему же.
+    async with deps.sessionmaker() as session:
+        await session.execute(sa.update(OutboxMessage).where(
+            OutboxMessage.crm_message_id == campaign.first_message_id(contact.hex, 2)).values(
+            state="failed", last_error="badcontact: x"))
+        await session.commit()
+    await _track(deps, now=NOW + timedelta(minutes=10))
+    assert (await _row(deps, contact)).status == "undelivered"
+
+
+async def test_a_retry_does_not_step_into_a_live_conversation(deps) -> None:
+    """Клиент сам написал после одобрения — с ним говорит человек: паузу не снимаем, не пишем."""
+    contact, conv_id = await _first_attempt_failed(deps)
+    await _operator_dot(deps, conv_id)
+    async with deps.sessionmaker() as session:
+        await session.execute(sa.update(Conversation).where(Conversation.id == conv_id)
+                              .values(last_inbound_at=NOW - timedelta(minutes=5)))
+        await session.commit()
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is False
+
+    async with deps.sessionmaker() as session:
+        assert (await session.get(EscalationState, conv_id)).paused is True
+    assert len(await _outbox(deps)) == 1
+    assert (await _row(deps, contact)).status == "needs_check"

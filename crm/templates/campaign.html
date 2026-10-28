@@ -127,6 +127,17 @@
   {% endif %}
 {% endif %}
 
+{% if tab == 'sent' and funnel.count('undelivered') %}
+<div class="card">
+  <form method="post" action="{{ url_for('campaign.retry') }}" class="inline"
+        onsubmit="return confirm('Отправить заново всем недоставленным ({{ funnel.count('undelivered') }})?')">
+    <button class="btn primary" type="submit">Отправить снова всем недоставленным ({{ funnel.count('undelivered') }})</button>
+    <span class="mini">Если WhatsApp не даёт номеру бота писать первым: сначала напишите каждому с номера бота хотя бы
+      «.» — так откроется чат, — потом нажмите. Бот сам вернётся в эти диалоги и отправит своё сообщение.</span>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
 <table>
   {% if tab == 'drafts' %}
@@ -187,6 +198,12 @@
         {% if c.reminder_sent_at %}<div>напомнили {{ c.reminder_sent_at | dt }}</div>{% endif %}
         {% if c.replied_at %}<div>ответил {{ c.replied_at | dt }}</div>{% endif %}</td>
       <td>
+        {% if c.status == 'undelivered' %}
+        <form method="post" action="{{ url_for('campaign.retry') }}" style="margin-bottom:8px">
+          {{ hidden(c) }}<input type="hidden" name="contact_id" value="{{ c.id }}">
+          <button class="btn small primary" type="submit">Отправить снова</button>
+        </form>
+        {% endif %}
         <form method="post" action="{{ url_for('campaign.result', contact_id=c.id) }}" class="actions" style="margin-top:0">
           {{ hidden(c) }}
           {% for value, title in result_titles.items() %}

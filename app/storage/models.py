@@ -575,6 +575,9 @@ class CampaignContact(Base):
     approved_text: Mapped[str | None] = mapped_column(sa.Text(), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
+    #: Какая это попытка первого сообщения (пусто — первая). «Отправить снова» после
+    #: недоставки — следующая: у неё свой ``crm_message_id``, иначе Wazzup счёл бы её дублем.
+    send_attempt: Mapped[int | None] = mapped_column(sa.Integer(), nullable=True)
     reminder_sent_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
     replied_at: Mapped[datetime | None] = mapped_column(TS, nullable=True)
 

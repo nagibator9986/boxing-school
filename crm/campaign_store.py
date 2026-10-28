@@ -87,6 +87,7 @@ class ContactRow:
     sent_at: datetime | None = None
     reminder_sent_at: datetime | None = None
     replied_at: datetime | None = None
+    send_attempt: int | None = None
     #: Ответ Wazzup на недоставленное первое сообщение — как есть, для разбора причины.
     delivery_error: str | None = None
 
@@ -262,7 +263,9 @@ class CampaignStore:
 
     def _with_delivery_errors(self, contacts: list[ContactRow]) -> list[ContactRow]:
         """Недоставленным — ответ Wazzup из очереди отправки бота (только чтение)."""
-        failed = {first_message_id(item.id).hex: item.id for item in contacts if item.status == "undelivered"}
+        failed = {
+            first_message_id(item.id, item.send_attempt).hex: item.id for item in contacts if item.status == "undelivered"
+        }
         if not failed:
             return contacts
         marks = ", ".join("?" for _ in failed)
@@ -604,6 +607,35 @@ class CampaignStore:
             raise StoreBusy(str(exc)) from exc
         return changed
 
+    def retry(self, contact_ids: Sequence[str], *, now: datetime) -> int:
+        """Отправить недоставленное заново — следующей попыткой. Возвращает, скольким.
+
+        Текст прежний, одобрение — заново сейчас: «писал ли клиент после одобрения»
+        отсчитывается от повтора. Уйдёт по очереди, когда рассылка включена.
+        """
+        changed = 0
+        try:
+            with self._write() as conn:
+                for contact_id in dict.fromkeys(contact_ids):
+                    changed += conn.execute(
+                        f"UPDATE {TABLE} SET status = ?, status_reason = ?, send_attempt = COALESCE(send_attempt, 1) + 1,"
+                        " sent_at = NULL, reminder_sent_at = NULL, approved_at = ?, updated_at = ?"
+                        " WHERE id = ? AND status = ? AND approved_text IS NOT NULL AND TRIM(approved_text) <> ''",
+                        (
+                            CampaignStatus.APPROVED.value, "Отправка заново — уйдёт по очереди", _stamp(now),
+                            _stamp(now), contact_id, CampaignStatus.UNDELIVERED.value,
+                        ),
+                    ).rowcount
+        except sqlite3.Error as exc:
+            _log.error("campaign_retry_failed", error=str(exc))
+            raise StoreBusy(str(exc)) from exc
+        return changed
+
+    def undelivered(self) -> list[str]:
+        """Все недоставленные — для «Отправить снова всем»."""
+        rows = self._query(f"SELECT id FROM {TABLE} WHERE status = ?", (CampaignStatus.UNDELIVERED.value,))
+        return [str(row["id"]) for row in rows]
+
     def drafts_to_rewrite(self) -> list[str]:
         """Черновики, которые человек не правил: их можно переписать, ничего не потеряв."""
         rows = self._query(
@@ -727,6 +759,7 @@ class CampaignStore:
             sent_at=local("sent_at"),
             reminder_sent_at=local("reminder_sent_at"),
             replied_at=local("replied_at"),
+            send_attempt=row["send_attempt"] if "send_attempt" in row.keys() else None,
         )
 
 

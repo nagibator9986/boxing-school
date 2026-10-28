@@ -138,9 +138,15 @@ class Brief:
     last_contact_at: datetime | None = None
 
 
-def first_message_id(contact_id: str) -> UUID:
-    """``crm_message_id`` первого сообщения контакту. ``contact_id`` — 32 знака без дефисов."""
-    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:first")
+def first_message_id(contact_id: str, attempt: int | None = None) -> UUID:
+    """``crm_message_id`` первого сообщения контакту. ``contact_id`` — 32 знака без дефисов.
+
+    У каждой попытки свой: повтор с прежним Wazzup отклонил бы как дубль. Первая попытка
+    — прежний вид, без номера: так находятся сообщения, ушедшие до повторов.
+    """
+    if attempt is None or attempt <= 1:
+        return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:first")
+    return uuid5(_MESSAGE_NS, f"campaign:{contact_id}:first:{attempt}")
 
 
 def reminder_message_id(contact_id: str) -> UUID:

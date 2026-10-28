@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from typing import Any, Final
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -183,7 +184,7 @@ async def track(deps: Any, *, now: datetime, policy: Any, silent: frozenset[str]
         if not rows:
             return []
         facts = await _bot_facts(session, now)
-        ids = [first_message_id(row.id.hex) for row in rows]
+        ids = [first_message_id(row.id.hex, row.send_attempt) for row in rows]
         ids += [reminder_message_id(row.id.hex) for row in rows if row.reminder_sent_at is not None]
         deliveries = await _deliveries(session, ids)
         # Спам — по любому сообщению рассылки, и первому, и напоминанию, но только свежий.
@@ -194,7 +195,7 @@ async def track(deps: Any, *, now: datetime, policy: Any, silent: frozenset[str]
         streak = await _failure_streak(session, now=now, size=int(policy.stop_after_failures))
         for row in rows:
             known = facts_for(facts, row.chat_id, silent=silent)
-            state, reason, _, _ = deliveries.get(first_message_id(row.id.hex), (None, None, "", None))
+            state, reason, _, _ = deliveries.get(first_message_id(row.id.hex, row.send_attempt), (None, None, "", None))
             step = progress(
                 _status(row.status),
                 _segment(row.segment),
@@ -285,15 +286,15 @@ async def _failure_streak(session: AsyncSession, *, now: datetime, size: int) ->
         return None
     contacts = (
         await session.execute(
-            sa.select(CampaignContact.id)
+            sa.select(CampaignContact.id, CampaignContact.send_attempt)
             .where(CampaignContact.sent_at.is_not(None))
             .order_by(CampaignContact.sent_at.desc())
             .limit(size)
         )
-    ).scalars().all()
+    ).all()
     if len(contacts) < size:
         return None
-    found = await _deliveries(session, [first_message_id(contact.hex) for contact in contacts])
+    found = await _deliveries(session, [first_message_id(contact.hex, attempt) for contact, attempt in contacts])
     failed = [
         (code, updated)
         for _, reason, code, updated in found.values()
@@ -567,8 +568,17 @@ async def send_first(
         row = await session.get(CampaignContact, cid)
         if row is None or row.status != CampaignStatus.APPROVED.value:
             return False
+        attempt = int(row.send_attempt or 1)
         facts = await _bot_facts(session, now)
         known = facts_for(facts, row.chat_id, silent=silent)
+        lift_pause = False
+        if attempt > 1 and known.human_pause:
+            # Повтор после недоставки: администратор открыл чат своим сообщением с номера
+            # бота («.»), и бот принял его за ответ человека. Повтор заказал тот же человек —
+            # паузу снимаем, но только если без неё отправка проходит: ответил ли клиент,
+            # не записался ли, проверяется как обычно, и в живой разговор бот не влезет.
+            known = replace(known, human_pause=False)
+            lift_pause = True
         blocked = send_check(
             _status(row.status),
             _segment(row.segment),
@@ -610,8 +620,15 @@ async def send_first(
             await session.rollback()
             log.warning("campaign_no_whatsapp_channel")
             return False
+        if lift_pause:
+            from app.core import pause
+
+            # Снимается до постановки в очередь: отметка «человек был в диалоге» остаётся
+            # раньше строки отправки, и отправщик не сочтёт её устаревшей.
+            await pause.resume(deps.state, session, conv.id, conv.conv_key, by="admin")
+            log.info("campaign_retry_pause_lifted")
         message = OutboundMessage(
-            crm_message_id=first_message_id(contact_id),
+            crm_message_id=first_message_id(contact_id, attempt),
             conversation_id=conv.id,
             channel_id=conv.channel_id,
             channel=ChannelKind.WHATSAPP,
@@ -621,12 +638,15 @@ async def send_first(
             text=text,
         )
         outbox_id = await repo_outbox.enqueue(session, message)
-        note = history_note(_brief(row), tz_name=settings.timezone)
-        await conv_session.save_turn(
-            session,
-            conv,
-            [{"role": "user", "parts": [{"text": note}]}, {"role": "model", "parts": [{"text": text}]}],
-        )
+        if attempt <= 1 or row.conversation_id != conv.id.hex:
+            # Повтор в тот же диалог историю не дублирует: заметка и текст легли туда
+            # при первой попытке, и модель видела бы сообщение дважды.
+            note = history_note(_brief(row), tz_name=settings.timezone)
+            await conv_session.save_turn(
+                session,
+                conv,
+                [{"role": "user", "parts": [{"text": note}]}, {"role": "model", "parts": [{"text": text}]}],
+            )
         claimed = await session.execute(
             sa.update(CampaignContact)
             .where(CampaignContact.id == cid, CampaignContact.status == CampaignStatus.APPROVED.value)
