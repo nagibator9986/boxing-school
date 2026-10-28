@@ -281,29 +281,17 @@ async def calculate_price(
     if not isinstance(children_count, int) or children_count < 1:
         return ToolResult.invalid_input("children_count обязан быть целым числом не меньше 1")
 
-    parsed_scope = _scope_of(scope)
-    # Посёлок клиента решает цену надёжнее, чем scope от модели: живой прогон
-    # 10.09.2026 — модель посчитала Тобыл райцентром и назвала 10 000 ₸, хотя он
-    # идёт по городскому прайсу.
+    # Цена — костанайская, пока клиент сам не назвал райцентр области. Владелец 28.10.2026:
+    # «уберите районные центры в абонементах — они только путают». Раньше без посёлка
+    # калькулятор не считал вовсе, и бот на каждое «сколько стоит» спрашивал «в каком
+    # городе или посёлке?», показывая рядом районный прайс. Догадке модели (scope) тоже
+    # не верим: живой прогон 10.09.2026 — модель посчитала Тобыл райцентром и назвала
+    # 10 000 ₸. Решают только слова клиента: посёлок из аргумента или из его реплик.
     by_place = scope_by_place(kb, settlement) or scope_by_texts(kb, ctx.client_texts)
-    if by_place is not None:
-        parsed_scope = by_place
+    parsed_scope = Scope.REGION if by_place is Scope.REGION else Scope.CITY
     parsed_plan = _plan_of(plan)
     if parsed_plan is None:
         return ToolResult.invalid_input(f"неизвестный тариф '{plan}'")
-
-    # --- география не определена: считать нельзя, показываем обе витрины ---- #
-    if parsed_scope is None:
-        return ToolResult.no_data(
-            say=say_no_data(kb, GapRef.C4),
-            data={
-                "status": "need_scope",
-                "currency": pricing.currency,
-                "reason": "не определено: Костанай или райцентр области",
-                "city": _city_showcase(kb),
-                "region": _region_showcase(kb),
-            },
-        )
 
     if parsed_scope is Scope.CITY:
         return _with_special_prices(kb, _calc_city(
@@ -643,7 +631,13 @@ def _calc_region(
             "честно скажи, что уточнит администратор."
         )
     caveats.append(
-        "Городские цены к райцентру не применяй: это другой прайс, разница более чем вдвое."
+        "Городские цены и условия к райцентру не применяй: это другой прайс, разница более чем вдвое."
+    )
+    # Живой прогон 28.10.2026: жителю Житикары модель написала «12 занятий на 30 дней» —
+    # перенесла из городского прайса. Для райцентров эти числа не подтверждены.
+    caveats.append(
+        "Сколько занятий в районном абонементе и на какой срок, база не знает: число занятий и "
+        "срок не называй, при вопросе скажи, что уточнит администратор."
     )
     meta["gap_g10"] = pricing.region_plans.get(Plan.FLEXIBLE.value) is None
     return ToolResult.success(data=base, render_hint=RenderHint.NUMBERS_ONLY, caveats=caveats, meta=meta)

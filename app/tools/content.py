@@ -265,7 +265,9 @@ def _price_card_for_place(ctx: ToolContext, artifact: Artifact) -> Artifact:
     """
     if not artifact.id.startswith("price_") or artifact.scope not in (Scope.CITY, Scope.REGION):
         return artifact
-    wanted = scope_by_texts(ctx.kb, ctx.client_texts)
+    # Посёлок не назван — Костанай: районную карточку получает только житель райцентра
+    # (владелец 28.10.2026: «районные центры в абонементах только путают»).
+    wanted = scope_by_texts(ctx.kb, ctx.client_texts) or Scope.CITY
     suffix = f"_{artifact.scope.value}"
     if wanted is None or wanted is artifact.scope or not artifact.id.endswith(suffix):
         return artifact

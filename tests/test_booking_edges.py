@@ -394,3 +394,13 @@ async def test_degraded_price_after_a_blocked_reply_keeps_the_clients_city(kb, s
     client = "\n".join(out.text or "" for d in second for out in d.outbound)
     assert render_price_card(kb, scope=Scope.REGION, lang=Language.RU).splitlines()[0] not in client, client
     assert render_price_card(kb, scope=Scope.CITY, lang=Language.RU).splitlines()[0] not in client, client
+
+
+def test_prompt_neither_asks_for_the_city_nor_shows_district_prices(kb) -> None:
+    """Владелец 28.10.2026: «уберите районные центры в абонементах — они только путают»."""
+    from app.kb import render
+
+    showcase = render_pricing_showcase(kb)
+    assert "10 000" not in showcase and "Райцентры области" not in showcase
+    assert "Сначала выясни город" not in showcase and "не спрашивай" in showcase
+    assert "В каком городе или посёлке" not in render._FEWSHOT_BLOCK

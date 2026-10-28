@@ -50,20 +50,18 @@ async def dead_deps(kb, state, sessionmaker, settings) -> PipelineDeps:
 # --------------------------------------------------------------------------- #
 # Что база знаний отвечает сама
 # --------------------------------------------------------------------------- #
-def test_price_answer_carries_both_scopes(kb: KBSnapshot) -> None:
-    """Город и районные центры в одном ответе.
+def test_price_answer_is_the_city_price(kb: KBSnapshot) -> None:
+    """Только прайс Костаная: владелец 28.10.2026 — районные центры «только путают».
 
-    Какой тариф нужен клиенту, обычно выясняет модель вопросом про район — а её
-    в этот момент нет. Городская цена в ответ жителю райцентра ошибается в два с
-    половиной раза, и это уже не деградация, а дезинформация.
+    Раньше при неизвестном посёлке уходили оба прайса. Житель райцентра почти всегда
+    называет посёлок сам — тогда он получает свой (``test_named_district_gets_its_price``).
     """
     answer = degraded.kb_answer(kb, intents=(IntentHint.PRICE,), lang=Language.RU)
 
     assert answer is not None
-    city = kb.text("card.price_city_title", Language.RU)
-    region = kb.text("card.price_region_title", Language.RU)
-    assert city in answer
-    assert region in answer
+    assert kb.text("card.price_city_title", Language.RU) in answer
+    assert kb.text("card.price_region_title", Language.RU) not in answer
+    assert "10 000" not in answer
 
 
 def test_schedule_answer_is_a_statement_not_a_question(kb: KBSnapshot) -> None:
@@ -240,7 +238,7 @@ async def test_owner_is_told_what_to_pay_for(dead_deps, monkeypatch) -> None:
 
 
 def test_degraded_price_follows_the_clients_settlement(kb) -> None:
-    """Посёлок назван — только его прайс; не назван — оба, как раньше."""
+    """Посёлок назван — только его прайс; не назван — Костанай (владелец 28.10.2026)."""
     from app.core.degraded import kb_answer
     from app.kb.render import render_price_card
     from app.types import IntentHint, Language, Scope
@@ -249,8 +247,8 @@ def test_degraded_price_follows_the_clients_settlement(kb) -> None:
     region = render_price_card(kb, scope=Scope.REGION, lang=Language.RU).strip()
     price = (IntentHint.PRICE,)
 
-    both = kb_answer(kb, intents=price, lang=Language.RU)
-    assert city in both and region in both
+    unnamed = kb_answer(kb, intents=price, lang=Language.RU)
+    assert city in unnamed and region not in unnamed
     only_city = kb_answer(kb, intents=price, lang=Language.RU, scope=Scope.CITY)
     assert city in only_city and region not in only_city
     only_region = kb_answer(kb, intents=price, lang=Language.RU, scope=Scope.REGION)
