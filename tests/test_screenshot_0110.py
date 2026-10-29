@@ -184,7 +184,7 @@ def test_age_from_the_bots_own_words_does_not_count(kb) -> None:
     assert _age_from_dialog(contents, "8", kb=kb, now=now) == 8, "а вот ответ на вопрос — возраст"
 
 
-async def test_real_booking_without_a_schedule_keeps_its_words(deps, monkeypatch) -> None:
+async def test_real_booking_without_a_schedule_keeps_its_words(deps, monkeypatch, kb_with_regions) -> None:
     """Райцентр без расписания: подтверждения от кода нет, «Записал…» модели — правда.
 
     Подменять его нельзя, даже если чтение сохранённой заявки не удалось: запись
@@ -196,6 +196,7 @@ async def test_real_booking_without_a_schedule_keeps_its_words(deps, monkeypatch
         return False
 
     monkeypatch.setattr(pipeline, "_already_booked", lookup_failed)
+    kb_loader.swap(kb_with_regions)  # райцентры выключены владельцем 29.10.2026
     claim = "Записал Айназарова Али на пробное в Карабалыке, время подберёт администратор."
 
     await say(deps, 1, "Айназаров Али, 8 лет, Карабалык, запишите", FakeTurn.tool(

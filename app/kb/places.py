@@ -31,7 +31,8 @@ def _stem(name: str) -> str:
 def scope_by_place(kb: KBSnapshot, text: str | None) -> Scope | None:
     """``CITY`` для города и его пригородов, ``REGION`` для райцентра, иначе ``None``."""
     city = [_stem(place) for place in (kb.pricing.city_settlement, *kb.gyms.city_suburbs)]
-    region = [_stem(place) for place in kb.pricing.region_settlements]
+    # Райцентры выключены — районного прайса нет ни для кого, даже для назвавшего посёлок.
+    region = [_stem(place) for place in kb.pricing.region_settlements] if kb.has_region_gyms() else []
     for word in _WORD_RE.findall(text or ""):
         lowered = _norm(word)
         if len(lowered) < 4:

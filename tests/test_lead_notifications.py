@@ -130,7 +130,9 @@ async def test_work_chat_gets_one_line_without_the_clients_phone(kb, state, sess
     assert "НОВАЯ ЗАПИСЬ" in "".join(sent.get(ADMIN, [])), "карточка администратору остаётся полной"
 
 
-async def test_a_booking_without_a_time_is_not_announced_as_booked(kb, state, sessionmaker, settings) -> None:
+async def test_a_booking_without_a_time_is_not_announced_as_booked(
+    kb_with_regions, state, sessionmaker, settings
+) -> None:
     """Райцентр без расписания: время подбирает администратор, значит и «записался» рано.
 
     Администратор карточку получает — иначе заявка потеряется; в общий чат уходит
@@ -146,7 +148,8 @@ async def test_a_booking_without_a_time_is_not_announced_as_booked(kb, state, se
         })),
         FakeTurn.answer("Записал, администратор подберёт время"),
     ])
-    deps = await _deps(kb, state, sessionmaker, settings, llm, runtime)
+    # Райцентры выключены владельцем 29.10.2026 — зал без расписания есть только в копии базы.
+    deps = await _deps(kb_with_regions, state, sessionmaker, settings, llm, runtime)
 
     await process_inbound(
         deps, webhook_payload("ln-5", "Айназаров Али, 8 лет, Карабалык, запишите", chat_id="77015559203")

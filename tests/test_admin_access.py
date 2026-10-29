@@ -198,12 +198,30 @@ def test_admins_section_lists_people(console, store) -> None:
     assert "Зарина" in reply and "42" in reply
 
 
-def test_gaps_section_names_gyms_without_schedule(console) -> None:
-    """Раздел «что бот не знает» показывает залы без расписания поимённо."""
+def test_gaps_section_names_gyms_without_schedule(kb_dir, media_dir, store, kb_with_regions) -> None:
+    """Раздел «что бот не знает» показывает залы без расписания поимённо.
+
+    Залы без расписания — райцентры: в настоящей базе они с 29.10.2026 выключены, поэтому
+    здесь копия базы, где их включили обратно.
+    """
+    from app.admin.telegram_admin import AdminConsole
+
+    console = AdminConsole(
+        kb_dir=kb_dir, media_dir=media_dir, schema_version=1,
+        snapshot=lambda: kb_with_regions, store=store,
+    )
     console.handle("c", "/admin")
     reply = console.handle("c", "4")
     assert "Нет расписания" in reply
     assert "Карабалык" in reply
+
+
+def test_gaps_section_skips_switched_off_gyms(console) -> None:
+    """Выключенный зал — не пробел базы: владельца не просят дописать ему расписание."""
+    console.handle("c", "/admin")
+    reply = console.handle("c", "4")
+    assert "Расписание есть во всех залах" in reply
+    assert "Карабалык" not in reply
 
 
 def _setting_number(key: str) -> str:

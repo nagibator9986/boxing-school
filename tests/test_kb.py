@@ -72,9 +72,12 @@ def test_real_kb_loads(kb) -> None:
     # Седьмой городской — Западный микрорайон, Полевая 7/3: данные владельца от
     # 02.09.2026. Тобыл 10.09.2026 перешёл в городские: «у нас одна цена».
     # Каирбекова 24 и Полевую владелец закрыл 12.10.2026, зал на КЖБИ добавил 13.10.2026.
-    assert len(kb.active_gyms(Scope.ALL)) == 13
+    # Райцентры владелец выключил 29.10.2026 («путают людей»): записи остались, чтобы их
+    # можно было включить обратно в CRM.
+    assert len(kb.active_gyms(Scope.ALL)) == 7
     assert len(kb.active_gyms(Scope.CITY)) == 7
-    assert len(kb.active_gyms(Scope.REGION)) == 6
+    assert len(kb.active_gyms(Scope.REGION)) == 0
+    assert len([gym for gym in kb.gyms.gyms if gym.scope is Scope.REGION]) == 6
     # Конфликт C-3 (КЖБИ) владелец закрыл 01.10.2026, а 13.10.2026 открыл там свой зал.
     assert len(list(kb.unresolved_gyms())) == 0
     assert kb.pricing.city_plans["standard"].price == 25_000
@@ -282,9 +285,23 @@ def test_system_prompt_contains_registry_and_gaps(kb) -> None:
     prompt = render_system_prompt(kb)
 
     assert "ksk_kairbekova_334" in prompt
-    assert "Житикара" in prompt
+    assert "region_tobyl" in prompt
     # Самый важный блок: чего в базе нет и о чём модель обязана молчать.
     assert "ЧЕГО В БАЗЕ НЕТ" in prompt
+
+
+def test_switched_off_district_centres_leave_the_prompt(kb, kb_with_regions) -> None:
+    """Владелец 29.10.2026: «уберите районные центры. Путают людей».
+
+    Клиент из Тобыла спросил цену и получил список шести райцентров с «адрес подскажет
+    администратор». Выключенные райцентры исчезают из промпта целиком: реестр, районный
+    прайс, материалы и пробелы про их адреса — даже запрет «не упоминай» о них не говорит.
+    """
+    prompt = render_system_prompt(kb).lower()
+    for word in ("райцентр", "житикар", "карабалык", "gyms_list_region", "price_card_region"):
+        assert word not in prompt, word
+
+    assert "Житикара" in render_system_prompt(kb_with_regions)
 
 
 def test_system_prompt_hides_internal_notes(kb) -> None:

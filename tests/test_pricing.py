@@ -175,6 +175,19 @@ async def test_fractional_and_wrong_typed_children_rejected(ctx, children) -> No
 # --------------------------------------------------------------------------- #
 # Райцентры
 # --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def region_ctx(ctx, kb_with_regions):
+    """Районный прайс — на копии базы, где райцентры включены.
+
+    Владелец 29.10.2026 выключил их («уберите районные центры. Путают людей»), но прайс
+    и правила для них остаются: включат залы в CRM — районная цена вернётся такой же.
+    """
+    from dataclasses import replace
+
+    return replace(ctx, kb=kb_with_regions, kb_hash=kb_with_regions.kb_hash)
+
+
 @pytest.mark.parametrize(
     ("children", "expected_total", "tariff"),
     [
@@ -184,11 +197,11 @@ async def test_fractional_and_wrong_typed_children_rejected(ctx, children) -> No
     ],
 )
 async def test_region_family_price_is_fixed_not_percent(
-    ctx, children, expected_total, tariff
+    region_ctx, children, expected_total, tariff
 ) -> None:
     """Райцентры: 8 000 ₸ за КАЖДОГО ребёнка при двух и более (конфликт C-2)."""
     result = await calculate_price(
-        ctx, scope="region", plan="standard", children_count=children, settlement="Карабалык"
+        region_ctx, scope="region", plan="standard", children_count=children, settlement="Карабалык"
     )
 
     assert result.ok
@@ -199,9 +212,9 @@ async def test_region_family_price_is_fixed_not_percent(
         assert all(row["price"] == REGION_FAMILY for row in result.data["per_child"])
 
 
-async def test_region_never_uses_city_price(ctx) -> None:
+async def test_region_never_uses_city_price(region_ctx) -> None:
     """Городская цена в райцентре — потерянный лид: разница более чем вдвое."""
-    result = await calculate_price(ctx, scope="region", plan="standard", children_count=1, settlement="Карабалык")
+    result = await calculate_price(region_ctx, scope="region", plan="standard", children_count=1, settlement="Карабалык")
 
     assert result.data["total"] == REGION_STANDARD
     assert result.data["total"] != CITY_STANDARD
@@ -209,9 +222,9 @@ async def test_region_never_uses_city_price(ctx) -> None:
 
 
 @pytest.mark.parametrize("plan", ["flexible", "single"])
-async def test_region_missing_plans_say_no_data(ctx, plan) -> None:
+async def test_region_missing_plans_say_no_data(region_ctx, plan) -> None:
     """Гибкого тарифа и разовых в райцентрах в базе нет (G-10) — не выдумывать."""
-    result = await calculate_price(ctx, scope="region", plan=plan, children_count=1, settlement="Карабалык")
+    result = await calculate_price(region_ctx, scope="region", plan=plan, children_count=1, settlement="Карабалык")
 
     assert result.ok is False
     assert result.status is ToolStatus.NO_DATA
@@ -220,9 +233,9 @@ async def test_region_missing_plans_say_no_data(ctx, plan) -> None:
     assert "total" not in result.data
 
 
-async def test_region_unknown_plan_falls_back_to_standard_with_caveat(ctx) -> None:
+async def test_region_unknown_plan_falls_back_to_standard_with_caveat(region_ctx) -> None:
     """Тариф не назван: по райцентрам подтверждён только абонемент."""
-    result = await calculate_price(ctx, scope="region", plan="unknown", children_count=1, settlement="Карабалык")
+    result = await calculate_price(region_ctx, scope="region", plan="unknown", children_count=1, settlement="Карабалык")
 
     assert result.ok
     assert result.data["plan"] == Plan.STANDARD.value
@@ -250,11 +263,11 @@ async def test_without_a_named_district_the_price_is_kostanay(ctx, scope) -> Non
     assert "region" not in result.data and "10000" not in str(result.data)
 
 
-async def test_a_district_named_by_the_client_keeps_its_own_price(ctx) -> None:
+async def test_a_district_named_by_the_client_keeps_its_own_price(region_ctx) -> None:
     """Житель райцентра называет посёлок сам — и получает свою цену, а не городскую."""
     from dataclasses import replace
 
-    named = replace(ctx, client_texts=("Мы из Житикары, сколько стоит?",))
+    named = replace(region_ctx, client_texts=("Мы из Житикары, сколько стоит?",))
 
     result = await calculate_price(named, scope=None, plan="standard", children_count=1)
 
@@ -342,9 +355,20 @@ def test_zero_percent_returns_price_from_pricelist_untouched() -> None:
     assert apply_discount(25_001, 0, mode="half_up", step=10) == 25_001
 
 
-async def test_a_district_price_does_not_borrow_the_city_terms(ctx) -> None:
+async def test_a_district_price_does_not_borrow_the_city_terms(region_ctx) -> None:
     """Живой прогон 28.10.2026: жителю Житикары — «12 занятий на 30 дней» из городского прайса."""
-    result = await calculate_price(ctx, scope=None, plan="standard", children_count=1, settlement="Житикара")
+    result = await calculate_price(region_ctx, scope=None, plan="standard", children_count=1, settlement="Житикара")
 
     assert result.data["scope"] == Scope.REGION.value and result.data["sessions_included"] is None
     assert any("число занятий" in caveat for caveat in result.caveats)
+
+
+async def test_switched_off_district_named_by_the_client_gets_the_kostanay_price(ctx) -> None:
+    """Райцентры выключены (владелец 29.10.2026) — районной цены нет и назвавшему посёлок."""
+    from dataclasses import replace
+
+    named = replace(ctx, client_texts=("Мы из Житикары, сколько стоит?",))
+
+    result = await calculate_price(named, scope="region", plan="standard", children_count=1, settlement="Житикара")
+
+    assert result.ok and result.data["scope"] == Scope.CITY.value, result.data

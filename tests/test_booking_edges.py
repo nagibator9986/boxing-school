@@ -113,15 +113,26 @@ async def test_tobyl_gets_the_city_price_even_if_asked_as_a_region(kb) -> None:
     assert "25000" in str(result.data)
 
 
-async def test_real_district_centre_keeps_its_own_price(kb) -> None:
+async def test_real_district_centre_keeps_its_own_price(kb_with_regions) -> None:
     """Райцентр остаётся райцентром, даже если модель по ошибке спросила город."""
     from app.tools.pricing import calculate_price
 
     result = await calculate_price(
-        _price_ctx(kb), scope="city", plan="standard", children_count=1, settlement="Карабалык"
+        _price_ctx(kb_with_regions), scope="city", plan="standard", children_count=1, settlement="Карабалык"
     )
 
     assert result.ok and result.data["scope"] == "region", result.data
+
+
+async def test_switched_off_district_centres_get_the_city_price(kb) -> None:
+    """Райцентры выключены (владелец 29.10.2026) — районного прайса нет даже назвавшему посёлок."""
+    from app.tools.pricing import calculate_price
+
+    result = await calculate_price(
+        _price_ctx(kb), scope="region", plan="standard", children_count=1, settlement="Карабалык"
+    )
+
+    assert result.ok and result.data["scope"] == "city", result.data
 
 
 async def test_time_invented_by_the_model_is_not_booked(kb, state, sessionmaker, settings) -> None:

@@ -303,8 +303,10 @@ def test_phone_normalisation_guards_the_lead(raw: str, expected: str | None) -> 
     assert normalize_phone_kz(raw) == expected
 
 
-async def test_escalation_reaches_manager_with_reason(deps, llm) -> None:
+async def test_escalation_reaches_manager_with_reason(deps, llm, kb_with_regions) -> None:
     """Вопрос без данных уходит человеку: у карточки есть причина, бот не выдумывает."""
+    # Зал без расписания есть только среди райцентров, выключенных владельцем 29.10.2026.
+    kb_loader.swap(kb_with_regions)
     decisions = await say(
         deps,
         llm,

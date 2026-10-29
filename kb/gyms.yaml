@@ -579,7 +579,7 @@ gyms:
   scope: region
   settlement: Карабалык
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Карабалык
@@ -611,13 +611,13 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []
 - id: region_fedorovka
   scope: region
   settlement: Фёдоровка
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Фёдоровка
@@ -649,13 +649,13 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []
 - id: region_sarykol
   scope: region
   settlement: Сарыколь
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Сарыколь
@@ -687,13 +687,13 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []
 - id: region_auliekol
   scope: region
   settlement: Аулиеколь
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Аулиеколь
@@ -725,13 +725,13 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []
 - id: region_uzynkol
   scope: region
   settlement: Узынколь
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Узынколь
@@ -763,13 +763,13 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []
 - id: region_zhitikara
   scope: region
   settlement: Житикара
   is_head: false
-  active: true
+  active: false
   status: open
   title:
     ru: Житикара
@@ -801,5 +801,5 @@ gyms:
   - G-2
   - G-3
   - G-8
-  internal_note: null
+  internal_note: "Выключен 29.10.2026 по слову владельца: «уберите районные центры. Путают людей». Вернуть — включить зал в CRM."
   serves_districts: []

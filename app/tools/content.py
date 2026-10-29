@@ -275,6 +275,22 @@ def _price_card_for_place(ctx: ToolContext, artifact: Artifact) -> Artifact:
     return counterpart if counterpart is not None else artifact
 
 
+def _without_region(kb: KBSnapshot, artifact: Artifact) -> Artifact:
+    """Районный материал, когда райцентры выключены, — его городской вариант.
+
+    Владелец 29.10.2026: клиент из Тобыла спросил цену и получил список шести райцентров
+    с «адрес подскажет администратор» — «уберите районные центры. Путают людей». Без
+    городской пары материал считается выключенным: отправлять клиенту заглушку нельзя.
+    """
+    suffix = f"_{Scope.REGION.value}"
+    if artifact.scope is not Scope.REGION or kb.has_region_gyms():
+        return artifact
+    counterpart = None
+    if artifact.id.endswith(suffix):
+        counterpart = kb.artifact(artifact.id[: -len(suffix)] + f"_{Scope.CITY.value}")
+    return counterpart if counterpart is not None else artifact.model_copy(update={"enabled": False})
+
+
 def _resolve(kb: KBSnapshot, artifact_id: str, gym_id: str | None) -> Artifact | None:
     """Артефакт по id; при заданном ``gym_id`` — его вариант для конкретного зала."""
     if gym_id:
@@ -307,6 +323,7 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
         return ToolResult.invalid_input(f"в kb/gyms.yaml нет зала '{gym_id}'")
 
     artifact = _price_card_for_place(ctx, artifact)
+    artifact = _without_region(kb, artifact)
 
     # Выключенный артефакт = данных нет (фото прайса, расписание, реквизиты).
     if not artifact.enabled:

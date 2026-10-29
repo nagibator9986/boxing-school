@@ -437,16 +437,16 @@ def _faq_answered(snapshot: KBSnapshot, *ids: str) -> bool:
 _PROBES: Final[Mapping[GapRef, object]] = {
     GapRef.G1: lambda s: any(gym.schedule for gym in s.active_gyms()),
     GapRef.G2: lambda s: any(gym.phone for gym in s.active_gyms()),
-    GapRef.G3: lambda s: all(
-        gym.address.filled for gym in s.active_gyms(Scope.REGION)
-    ) and bool(s.active_gyms(Scope.REGION)),
+    # Райцентры выключены — спрашивать про их адреса и тарифы не о чем: пробел закрыт.
+    GapRef.G3: lambda s: all(gym.address.filled for gym in s.active_gyms(Scope.REGION)),
     GapRef.G4: lambda s: _faq_answered(s, "trial_conditions"),
     GapRef.G5: lambda s: _faq_answered(s, "gear_first_lesson", "gear_cost"),
     GapRef.G6: lambda s: _faq_answered(s, "docs_medical"),
     GapRef.G7: lambda s: _faq_answered(s, "girls_groups", "adults_groups"),
     GapRef.G8: lambda s: any(gym.coaches for gym in s.active_gyms()),
     GapRef.G9: lambda s: bool(s.pricing.payment_methods),
-    GapRef.G10: lambda s: s.pricing.region_plans.get(Plan.FLEXIBLE.value) is not None
+    GapRef.G10: lambda s: not s.has_region_gyms()
+    or s.pricing.region_plans.get(Plan.FLEXIBLE.value) is not None
     or s.pricing.region_single is not None,
     GapRef.G11: lambda s: _faq_answered(s, "enrollment_now", "summer_schedule"),
     GapRef.G12: lambda s: _faq_answered(s, "results_achievements", "competitions_participation"),

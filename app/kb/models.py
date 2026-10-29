@@ -1192,6 +1192,15 @@ class KBSnapshot(BaseModel):
         ]
         return tuple(sorted(selected, key=lambda gym: gym.id))
 
+    def has_region_gyms(self) -> bool:
+        """Работает ли школа в райцентрах: есть хотя бы один включённый районный зал.
+
+        Владелец 29.10.2026 про список райцентров в ответе клиенту из Тобыла: «уберите
+        районные центры. Путают людей». Выключенные залы райцентров гасят всё районное
+        разом — список, прайс, пробелы базы про их адреса. Включил зал обратно — вернулось.
+        """
+        return bool(self.active_gyms(Scope.REGION))
+
     def gym_ids(self) -> tuple[str, ...]:
         """Enum для схем инструментов: id активных и открытых залов, отсортированы."""
         return tuple(gym.id for gym in self.active_gyms(Scope.ALL))
@@ -1220,8 +1229,18 @@ class KBSnapshot(BaseModel):
         return self._artifact_index.get(artifact_id)
 
     def artifact_ids(self) -> tuple[str, ...]:
-        """Только ``enabled=True``, отсортированы. Из них строится enum ``artifact_id``."""
-        return tuple(sorted(artifact.id for artifact in self.media if artifact.enabled))
+        """Только ``enabled=True``, отсортированы. Из них строится enum ``artifact_id``.
+
+        Районные материалы (список райцентров, их прайс) — только пока райцентры работают.
+        """
+        region = self.has_region_gyms()
+        return tuple(
+            sorted(
+                artifact.id
+                for artifact in self.media
+                if artifact.enabled and (region or artifact.scope is not Scope.REGION)
+            )
+        )
 
     # --- FAQ -------------------------------------------------------------- #
     def faq_topics(self) -> tuple[str, ...]:

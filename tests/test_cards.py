@@ -49,10 +49,9 @@ def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
 
     assert "7. Тобыл" in text, text
     assert "цены" not in text.lower()
-    # Райцентры в нумерованный список не попадают — они одной строкой ниже.
+    # Райцентры владелец выключил 29.10.2026 («путают людей»): ни в списке, ни строкой ниже.
     assert "Житикара" not in text
-    region_left = len({gym.settlement for gym in kb.active_gyms(Scope.REGION) if gym.settlement})
-    assert f"ещё в {region_left} " in text
+    assert "области" not in text
 
 
 def test_gyms_list_does_not_repeat_itself(kb: KBSnapshot) -> None:
@@ -187,11 +186,11 @@ def test_landmark_keeps_its_case(kb: KBSnapshot) -> None:
 
 
 @pytest.mark.parametrize("scope", [Scope.CITY, Scope.REGION])
-def test_no_wall_of_text(kb: KBSnapshot, scope: Scope) -> None:
+def test_no_wall_of_text(kb_with_regions: KBSnapshot, scope: Scope) -> None:
     """Ни одна карточка не приходит сплошной простынёй без пустых строк."""
     for text in (
-        render_gyms_list_card(kb, scope=scope, lang=Language.RU),
-        render_price_card(kb, scope=scope, lang=Language.RU),
+        render_gyms_list_card(kb_with_regions, scope=scope, lang=Language.RU),
+        render_price_card(kb_with_regions, scope=scope, lang=Language.RU),
     ):
         assert "\n\n" in text, f"нет ни одного разделителя блоков:\n{text}"
         longest = max(len(line) for line in text.splitlines())
@@ -421,13 +420,14 @@ async def test_schedule_after_an_earlier_route_video_comes_in_words(kb: KBSnapsh
     assert not [message for message in services.outbound if message.text], "второй блок расписания"
 
 
-def test_city_card_mentions_the_rest_of_the_region(kb: KBSnapshot) -> None:
+def test_city_card_mentions_the_rest_of_the_region(kb_with_regions: KBSnapshot) -> None:
     """Список по городу не выдаёт себя за весь список школы.
 
     Владелец считает залы вместе с Тобылом и райцентрами, и карточка «6 залов»
     выглядела так, будто часть точек потеряли. Смешивать их в один нумерованный
-    список нельзя: районный прайс отличается втрое.
+    список нельзя: районный прайс отличается втрое. Пока райцентры включены.
     """
+    kb = kb_with_regions
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
     assert "населённых пунктах области" in text
 
@@ -624,3 +624,34 @@ async def test_schedule_card_is_not_sent_twice_in_one_dialogue(kb: KBSnapshot) -
     assert not [message for message in services.outbound if message.text]
     assert result.render_hint is RenderHint.SUMMARIZE, "клиент останется без ответа"
     assert result.data["slots"] or result.data["card"], "модели нечем ответить словами"
+
+
+@pytest.mark.parametrize("asked", ["gyms_list_region", "price_card_region"])
+async def test_switched_off_district_material_goes_out_as_the_city_one(
+    make_ctx, services, asked: str
+) -> None:
+    """Скриншот 29.10.2026: клиент из Тобыла спросил «Сколько стоит?» и получил список шести
+    райцентров с «адрес подскажет администратор». Владелец: «уберите районные центры. Путают
+    людей». Районный материал, если модель всё же его попросит, уходит городским.
+    """
+    from app.tools.content import send_content
+
+    ctx = make_ctx(client_texts=("Мы из Тобыла", "Сколько стоит ?"))
+    result = await send_content(ctx, artifact_id=asked)
+
+    assert result.ok, result.data
+    assert result.meta["artifact_id"] == asked.replace("_region", "_city")
+    sent = "\n".join(message.text or "" for message in services.outbound)
+    assert sent and "райцентр" not in sent.lower() and "области" not in sent and "Житикара" not in sent
+
+
+def test_switched_off_districts_close_their_gaps_and_materials(kb: KBSnapshot, kb_with_regions: KBSnapshot) -> None:
+    """Выключенные райцентры — не пробел базы: владельца не просят дописать их адреса и тарифы."""
+    from app.kb import gaps
+    from app.types import GapRef
+
+    assert not {GapRef.G3, GapRef.G10} & set(gaps.open_gaps(kb))
+    assert not [artifact for artifact in kb.artifact_ids() if artifact.endswith("_region")]
+
+    assert GapRef.G3 in gaps.open_gaps(kb_with_regions)
+    assert "gyms_list_region" in kb_with_regions.artifact_ids()

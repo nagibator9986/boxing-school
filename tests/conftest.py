@@ -119,6 +119,19 @@ def kb_with_closed_gyms(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
 
 
 @pytest.fixture(scope="session")
+def kb_with_regions(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
+    """Копия базы, где шесть райцентров снова включены.
+
+    Владелец 29.10.2026 выключил их: «уберите районные центры. Путают людей». Районный
+    прайс, список райцентров и поиск по посёлку остаются на случай, если залы включат
+    обратно в CRM: проверяются они здесь, а выключенный режим — на настоящей базе (``kb``).
+    """
+    return _kb_variant(
+        tmp_path_factory, "kb_regions", lambda text: text.replace("  active: false\n", "  active: true\n")
+    )
+
+
+@pytest.fixture(scope="session")
 def kb_with_closed_gym_records(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
     """Копия базы, где Рахат и «Кеме» есть, но закрыты (``status: closed``).
 

@@ -287,6 +287,9 @@ async def get_gyms(
     parsed = _scope_of(scope)
     if parsed is None:
         return ToolResult.invalid_input(f"неизвестный scope '{scope}'")
+    if parsed is Scope.REGION and not kb.has_region_gyms():
+        # Райцентры выключены (владелец 29.10.2026: «путают людей») — залы школы городские.
+        parsed = Scope.CITY
 
     try:
         limit_value = int(limit)

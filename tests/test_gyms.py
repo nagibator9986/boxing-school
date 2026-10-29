@@ -70,14 +70,6 @@ def ids_of(result) -> list[str]:
         ("6мкр", "mkr6_arystanbekova_6"),
         ("шестой микрорайон", "mkr6_arystanbekova_6"),
         ("арыстанбекова", "mkr6_arystanbekova_6"),
-        # райцентры, в том числе транслитом
-        ("житикара", "region_zhitikara"),
-        ("zhitikara", "region_zhitikara"),
-        ("федоровка", "region_fedorovka"),
-        ("фёдоровка", "region_fedorovka"),
-        ("карабалык", "region_karabalyk"),
-        ("сарыколь", "region_sarykol"),
-        ("сарыкөл", "region_sarykol"),
     ],
 )
 async def test_conversational_forms_find_the_right_gym(ctx, query, expected) -> None:
@@ -89,13 +81,50 @@ async def test_conversational_forms_find_the_right_gym(ctx, query, expected) -> 
     assert len(result.data["gyms"]) <= MAX_DISTRICT_MATCHES
 
 
+@pytest.fixture
+def region_ctx(ctx, kb_with_regions):
+    """Контекст на копии базы, где райцентры, выключенные владельцем 29.10.2026, включены."""
+    from dataclasses import replace
+
+    return replace(ctx, kb=kb_with_regions, kb_hash=kb_with_regions.kb_hash)
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # райцентры, в том числе транслитом
+        ("житикара", "region_zhitikara"),
+        ("zhitikara", "region_zhitikara"),
+        ("федоровка", "region_fedorovka"),
+        ("фёдоровка", "region_fedorovka"),
+        ("карабалык", "region_karabalyk"),
+        ("сарыколь", "region_sarykol"),
+        ("сарыкөл", "region_sarykol"),
+        ("житикора", "region_zhitikara"),  # опечатка
+        ("карабалик", "region_karabalyk"),
+    ],
+)
+async def test_district_centres_are_found_while_switched_on(region_ctx, query, expected) -> None:
+    """Включённый райцентр находится и по транслиту, и по казахскому написанию, и с опечаткой."""
+    result = await find_gym_by_district(region_ctx, district_text=query)
+
+    assert result.ok, f"{query!r}: инструмент вернул {result.status}"
+    assert ids_of(result)[0] == expected, f"{query!r} -> {ids_of(result)}"
+
+
+@pytest.mark.parametrize("query", ["житикара", "карабалык", "фёдоровка"])
+async def test_switched_off_district_centre_is_not_offered(ctx, query) -> None:
+    """Владелец 29.10.2026: «уберите районные центры. Путают людей» — выключенный не предлагается."""
+    result = await find_gym_by_district(ctx, district_text=query)
+
+    assert not [gym for gym in ids_of(result) if gym.startswith("region_") and gym != "region_tobyl"]
+
+
 @pytest.mark.parametrize(
     ("query", "expected"),
     [
         ("плаzа", "plaza_szm_70"),          # смешанная раскладка
         ("жанакола", "center_kasymkhanova_10"),  # опечатка
-        ("житикора", "region_zhitikara"),
-        ("карабалик", "region_karabalyk"),
     ],
 )
 async def test_typos_are_forgiven(ctx, query, expected) -> None:
@@ -321,13 +350,13 @@ async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
 
-async def test_get_gyms_region_returns_all_settlements(ctx) -> None:
+async def test_get_gyms_region_returns_all_settlements(region_ctx) -> None:
     """Райцентров шесть, адрес внутри посёлка ни у одного не передан (пробел G-3).
 
     Тобыл среди них больше не числится: 10.09.2026 владелец подтвердил, что цена у
     школы одна, и Тобыл идёт по городскому прайсу и в городском списке.
     """
-    result = await get_gyms(ctx, scope="region")
+    result = await get_gyms(region_ctx, scope="region")
 
     assert result.ok
     region = {"Карабалык", "Фёдоровка", "Сарыколь", "Аулиеколь", "Узынколь", "Житикара"}
@@ -359,9 +388,17 @@ async def test_get_gyms_unknown_settlement_does_not_offer_another_town(ctx) -> N
     assert result.meta["settlement_matched"] is False
 
 
-async def test_get_gyms_known_settlement_filters(ctx) -> None:
+async def test_switched_off_region_lists_the_city_gyms(ctx) -> None:
+    """Райцентры выключены (владелец 29.10.2026) — «залы в районах» отвечаются залами школы."""
+    result = await get_gyms(ctx, scope="region")
+
+    assert result.ok and result.data["gyms"]
+    assert {gym["scope"] for gym in result.data["gyms"]} == {Scope.CITY.value}
+
+
+async def test_get_gyms_known_settlement_filters(region_ctx) -> None:
     """Названный посёлок сужает выдачу до него одного."""
-    result = await get_gyms(ctx, scope="region", settlement="житикара")
+    result = await get_gyms(region_ctx, scope="region", settlement="житикара")
 
     assert ids_of(result) == ["region_zhitikara"]
     assert result.data["settlement_filtered"] is True
@@ -396,17 +433,17 @@ async def test_city_gyms_carry_map_links(ctx) -> None:
     assert all(str(url).startswith("https://2gis.kz/kostanay/geo/") for url in links)
 
 
-async def test_region_gyms_have_map_link_only_with_address(ctx) -> None:
+async def test_region_gyms_have_map_link_only_with_address(region_ctx) -> None:
     """Ссылка на карту есть ровно там, где есть адрес.
 
     В большинстве райцентров адрес внутри посёлка не передан (G-3), и ссылка вела
     бы в никуда. У Тобыла адрес есть — и ссылка тоже.
     """
-    region = await get_gyms(ctx, scope="region")
+    region = await get_gyms(region_ctx, scope="region")
     for gym in region.data["gyms"]:
         assert gym["map_url"] is None, f'{gym["id"]}: ссылка без адреса'
 
-    city = await get_gyms(ctx, scope="city")
+    city = await get_gyms(region_ctx, scope="city")
     tobyl = next(gym for gym in city.data["gyms"] if gym["id"] == "region_tobyl")
     assert tobyl["map_url"], "у Тобыла есть адрес — должна быть и ссылка"
 
@@ -440,7 +477,8 @@ async def test_get_gyms_respects_limit(ctx) -> None:
     result = await get_gyms(ctx, scope="all", limit=2)
 
     assert len(result.data["gyms"]) == 2
-    assert result.data["total_in_scope"] == 13
+    # Город и Тобыл: шесть райцентров владелец выключил 29.10.2026.
+    assert result.data["total_in_scope"] == 7
     assert any("не все" in caveat.lower() for caveat in result.caveats)
 
 
