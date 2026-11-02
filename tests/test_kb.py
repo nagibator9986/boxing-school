@@ -74,8 +74,9 @@ def test_real_kb_loads(kb) -> None:
     # Каирбекова 24 и Полевую владелец закрыл 12.10.2026, зал на КЖБИ добавил 13.10.2026.
     # Райцентры владелец выключил 29.10.2026 («путают людей»): записи остались, чтобы их
     # можно было включить обратно в CRM.
-    assert len(kb.active_gyms(Scope.ALL)) == 7
-    assert len(kb.active_gyms(Scope.CITY)) == 7
+    # Арыстанбекова 6 владелец убрал 02.11.2026.
+    assert len(kb.active_gyms(Scope.ALL)) == 6
+    assert len(kb.active_gyms(Scope.CITY)) == 6
     assert len(kb.active_gyms(Scope.REGION)) == 0
     assert len([gym for gym in kb.gyms.gyms if gym.scope is Scope.REGION]) == 6
     # Конфликт C-3 (КЖБИ) владелец закрыл 01.10.2026, а 13.10.2026 открыл там свой зал.

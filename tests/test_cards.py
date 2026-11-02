@@ -47,7 +47,7 @@ def test_suburb_gym_is_listed_with_the_city(kb: KBSnapshot) -> None:
     """
     text = render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU)
 
-    assert "7. Тобыл" in text, text
+    assert "6. Тобыл" in text, text
     assert "цены" not in text.lower()
     # Райцентры владелец выключил 29.10.2026 («путают людей»): ни в списке, ни строкой ниже.
     assert "Житикара" not in text
@@ -516,14 +516,14 @@ def test_route_caption_can_skip_the_schedule(kb: KBSnapshot) -> None:
     """
     from app.kb.render import render_route_caption, schedule_heading
 
-    gym_id = "mkr6_arystanbekova_6"
+    gym_id = "plaza_szm_70"
     full = render_route_caption(kb, gym_id=gym_id, lang=Language.RU)
     short = render_route_caption(kb, gym_id=gym_id, lang=Language.RU, with_schedule=False)
     heading = schedule_heading(kb, gym_id=gym_id, lang=Language.RU)
 
     assert heading in full, "опора теста: обычная подпись расписание содержит"
     assert heading not in short
-    assert "Арыстанбекова 6" in short, "адрес обязан остаться — за ним и шлют видео"
+    assert "Северо-Западный микрорайон 70" in short, "адрес обязан остаться — за ним и шлют видео"
     assert "2gis.kz" in short
 
 
@@ -531,7 +531,7 @@ def test_schedule_heading_matches_the_card(kb: KBSnapshot) -> None:
     """Заголовок собирается одним рендером — иначе сравнение однажды разойдётся."""
     from app.kb.render import schedule_heading
 
-    gym = kb.gym("mkr6_arystanbekova_6")
+    gym = kb.gym("plaza_szm_70")
     card = render_schedule_card(kb, gym_id=gym.id, slots=gym.schedule, lang=Language.RU)
 
     assert card.startswith(schedule_heading(kb, gym_id=gym.id, lang=Language.RU))

@@ -40,7 +40,7 @@ def test_both_sections_at_one_time_are_one_class(kb) -> None:
     session = _choose(kb, TOBYL, day="mon").session
 
     assert session is not None and session.discipline == "boxing_kickboxing"
-    assert (session.starts_at.astimezone(ALMATY).day, session.time_start) == (19, "19:30")
+    assert (session.starts_at.astimezone(ALMATY).day, session.time_start) == (19, "20:00")
 
 
 def test_a_section_the_parent_named_is_kept(kb) -> None:
@@ -63,7 +63,7 @@ async def test_booking_in_tobyl_goes_through_without_the_section_question(make_c
     assert result.data["booked"] is True, result.data
     confirmation = next(m.text for m in ctx.services.outbound if "Мы записали вас" in (m.text or ""))
     assert "🥊 Бокс и кикбоксинг" in confirmation, confirmation
-    assert "В понедельник, 19.10 в 19:30" in confirmation
+    assert "В понедельник, 19.10 в 20:00" in confirmation
 
 
 def test_confirmation_names_tobyl_once(kb) -> None:
@@ -78,7 +78,7 @@ def test_schedule_card_writes_them_together(kb) -> None:
     tobyl = render_schedule_card(kb, gym_id=TOBYL, slots=kb.gym(TOBYL).schedule, lang=Language.RU)
     ksk = render_schedule_card(kb, gym_id=KSK, slots=kb.gym(KSK).schedule, lang=Language.RU)
 
-    assert "🥊 Бокс и кикбоксинг\n🕒 Пн, Ср, Пт · 19:30–21:00" in tobyl, tobyl
+    assert "🥊 Бокс и кикбоксинг\n🕒 Пн, Ср, Пт · 20:00–21:00" in tobyl, tobyl
     assert "🥊 Бокс\n" not in tobyl and "🥊 Кикбоксинг\n" not in tobyl
     assert "🥊 Кикбоксинг\n" in ksk and "🥊 Бокс\n" in ksk, "в КСК секции в разные дни"
     assert "Бокс и кикбоксинг" not in ksk
@@ -94,7 +94,7 @@ def test_options_merge_only_the_same_class(kb) -> None:
     assert pipeline._numbered_options(kb, Language.RU, options) == (
         "1. Бокс и кикбоксинг — Вт, Чт, Сб 09:00\n2. Кикбоксинг — Пн, Ср, Пт 17:00"
     )
-    assert _options_line(kb, kb.gym(TOBYL).schedule) == "Бокс и кикбоксинг — Пн, Ср, Пт 19:30"
+    assert _options_line(kb, kb.gym(TOBYL).schedule) == "Бокс и кикбоксинг — Пн, Ср, Пт 20:00"
 
 
 async def test_pipeline_books_tobyl_without_asking_the_section(kb, state, sessionmaker, settings) -> None:

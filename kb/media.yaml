@@ -265,26 +265,6 @@ artifacts:
   max_send_per_dialog: 1
   gap_ref: G-15
   render_from: gyms
-- id: gym_location_mkr6_arystanbekova_6
-  kind: location_text
-  enabled: true
-  scope: city
-  gym_id: mkr6_arystanbekova_6
-  title:
-    ru: Как найти зал в 6-м микрорайоне
-    kk: 6-шағын аудандағы залды қалай табуға болады
-  when_to_send_ru: когда просят локацию зала в 6-м микрорайоне, Арыстанбекова 6, у школы №10
-  body: null
-  file_path: null
-  file_mime: null
-  file_bytes: null
-  file_sha256: null
-  channels:
-    whatsapp: allow
-    instagram: allow
-  max_send_per_dialog: 1
-  gap_ref: G-15
-  render_from: gyms
 - id: schedule_ksk_kairbekova_334
   kind: image
   enabled: false
@@ -488,29 +468,6 @@ artifacts:
   file_path: route_magazin15_voinov_8b.mp4
   file_bytes: 2836825
   file_sha256: 8ab0d2714a4c01ce43821c5cc97b39ab9f953746e7baeef7b173816af9eeba26
-  channels:
-    telegram: allow
-    whatsapp: allow
-    instagram: deny
-  max_send_per_dialog: 1
-  gap_ref: null
-  render_from: route
-- id: route_mkr6_arystanbekova_6
-  kind: video
-  enabled: true
-  scope: any
-  gym_id: mkr6_arystanbekova_6
-  title:
-    ru: Как добраться — 6-й микрорайон, Арыстанбекова 6
-    kk: Қалай жетуге болады — 6-шағын аудан, Арыстанбеков 6
-  when_to_send_ru: "как только разговор дошёл до этого зала: назвали его адрес, клиент выбрал этот зал, спрашивает где находится, как добраться, где вход или просит показать дорогу. Видео с подписью заменяет объяснение словами"
-  body:
-    ru: null
-    kk: null
-  file_mime: video/mp4
-  file_path: route_mkr6_arystanbekova_6.mp4
-  file_bytes: 2667542
-  file_sha256: e340329dce2ef292edc6f112579343cfc927f1a30d8152e87b6197eed7243561
   channels:
     telegram: allow
     whatsapp: allow

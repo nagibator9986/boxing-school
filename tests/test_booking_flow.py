@@ -25,7 +25,7 @@ from app.types import DecisionAction, ManagerCardKind, PipelineDecision
 from tests.conftest import RecordingQueue, webhook_payload
 
 CHAT_ID = "77015550101"
-GYM_ID = "mkr6_arystanbekova_6"
+GYM_ID = "plaza_szm_70"
 
 
 @pytest.fixture
@@ -119,9 +119,9 @@ async def test_full_booking_flow_creates_lead_and_notifies_manager(deps, llm) ->
         deps,
         llm,
         "wz-book-2",
-        "Мы живём в 6 микрорайоне",
+        "Мы живём у Плазы",
         [
-            FakeTurn.tool(FakeCall("find_gym_by_district", {"district_text": "6 микрорайон"})),
+            FakeTurn.tool(FakeCall("find_gym_by_district", {"district_text": "плаза"})),
             FakeTurn.answer(
                 "У нас есть зал в вашем районе. Записать ребёнка на бесплатное пробное занятие?"
             ),
@@ -573,11 +573,11 @@ async def test_route_video_reaches_whatsapp(deps, llm, kb) -> None:
         correlation_id="test",
         services=RecordingServices(),
     )
-    result = await send_content(ctx, artifact_id="route_mkr6_arystanbekova_6")
+    result = await send_content(ctx, artifact_id="route_plaza_szm_70")
 
     assert result.ok
     queued = result.data["queued"]
-    assert [item["artifact_id"] for item in queued] == ["route_mkr6_arystanbekova_6"], (
+    assert [item["artifact_id"] for item in queued] == ["route_plaza_szm_70"], (
         "видео не ушло в WhatsApp"
     )
     assert queued[0]["kind"] == "video"
@@ -641,7 +641,7 @@ async def test_route_video_reaches_telegram(deps, llm, kb) -> None:
         correlation_id="test",
         services=services,
     )
-    result = await send_content(ctx, artifact_id="route_mkr6_arystanbekova_6")
+    result = await send_content(ctx, artifact_id="route_plaza_szm_70")
 
     assert result.ok and result.data["queued"], "видео не поставлено в отправку"
     # Файл и подпись — ДВА сообщения: Wazzup запрещает text и contentUri вместе.
@@ -655,7 +655,7 @@ async def test_route_video_reaches_telegram(deps, llm, kb) -> None:
     # школа: адрес, ссылка на 2ГИС и расписание. Статичный текст здесь жил бы
     # своей жизнью — владелец правит расписание, а под видео старое время.
     text = caption[0].text
-    assert "Арыстанбекова 6" in text, "в подписи нет адреса"
+    assert "Северо-Западный микрорайон 70" in text, "в подписи нет адреса"
     assert "2gis.kz" in text, "в подписи нет ссылки на карту"
     assert "🕒" in text and "19:00–20:30" in text, "в подписи нет расписания"
 

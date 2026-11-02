@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 
@@ -120,9 +121,11 @@ async def test_reminder_right_after_booking_is_not_scheduled(kb, sessionmaker) -
 
 async def test_reminders_for_tomorrows_trial_are_kept(kb, sessionmaker) -> None:
     """Пробное завтра — оба напоминания на месте: они и есть защита от неявки."""
-    conv_id = await _booked_conversation(
-        sessionmaker, "77015559003", datetime.now(tz=UTC) + timedelta(hours=26)
-    )
+    # Завтра в 19:00 по часам школы, а не «через 26 часов»: поздним вечером это уже ночь
+    # послезавтра, и утреннего напоминания к ночному занятию нет.
+    school = ZoneInfo("Asia/Almaty")
+    tomorrow = (datetime.now(tz=school) + timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+    conv_id = await _booked_conversation(sessionmaker, "77015559003", tomorrow)
 
     kinds = await _pending_kinds(sessionmaker, conv_id, kb)
 

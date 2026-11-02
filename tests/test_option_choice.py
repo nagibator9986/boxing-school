@@ -1,7 +1,7 @@
 """Цифра в ответ на список бота — выбор варианта; запись не уходит администратору.
 
-Скриншот владельца 12.09.2026: бот предложил «— Кикбоксинг — Вт, Чт, Сб 19:00 /
-— Бокс — Вт, Чт, Сб 19:00», клиент ответил «2», и бот передал запись
+Скриншот владельца 12.09.2026: бот предложил «— Кикбоксинг — Вт, Чт, Сб 18:45 /
+— Бокс — Вт, Чт, Сб 18:45», клиент ответил «2», и бот передал запись
 администратору. Воспроизведение на боевом ключе: модель цифру не поняла,
 переспросила, а на второе «2» вызвала эскалацию «не смог помочь».
 """
@@ -19,16 +19,16 @@ from app.types import ChannelKind, Language, ToolContext
 
 from tests.conftest import RecordingQueue, RecordingServices, webhook_payload
 
-#: Бокс и кикбоксинг Вт·Чт·Сб в 19:00.
-MKR6 = "mkr6_arystanbekova_6"
+#: Бокс и кикбоксинг Вт·Чт·Сб в 18:45.
+ROMANTIK = "magazin15_voinov_8b"
 #: Бокс и кикбоксинг Пн·Ср·Пт в 09:00 и в 19:00.
 #: Бокс Вт·Чт·Сб в 09:00 и в 18:45 — два времени у одной секции.
 VOINOV = "magazin15_voinov_8b"
 SECTION_LIST = (
     "В это время в зале проходят и бокс, и кикбоксинг.\n\n"
     "На какую секцию записать Али?\n\n"
-    "— Кикбоксинг — Вт, Чт, Сб 19:00\n"
-    "— Бокс — Вт, Чт, Сб 19:00\n\n"
+    "— Кикбоксинг — Вт, Чт, Сб 18:45\n"
+    "— Бокс — Вт, Чт, Сб 18:45\n\n"
     "Напишите цифру или своими словами."
 )
 
@@ -54,7 +54,7 @@ async def _deps(kb, state, sessionmaker, settings, llm) -> PipelineDeps:
 # Разбор списка
 # --------------------------------------------------------------------------- #
 def test_options_are_read_from_dashes_and_from_numbers() -> None:
-    assert offered_options(SECTION_LIST) == ["Кикбоксинг — Вт, Чт, Сб 19:00", "Бокс — Вт, Чт, Сб 19:00"]
+    assert offered_options(SECTION_LIST) == ["Кикбоксинг — Вт, Чт, Сб 18:45", "Бокс — Вт, Чт, Сб 18:45"]
     assert offered_options("Какую?\n1. Бокс\n2) Кикбоксинг") == ["Бокс", "Кикбоксинг"]
     assert offered_options("Какую?\n1. Бокс\n3. Кикбоксинг") == [], "номера не подряд — это не список выбора"
     assert offered_options("Одна строка?\n— Бокс") == []
@@ -63,7 +63,7 @@ def test_options_are_read_from_dashes_and_from_numbers() -> None:
 def test_digit_becomes_the_chosen_option() -> None:
     chosen = with_choice("2", SECTION_LIST)
 
-    assert chosen_option(chosen) == "Бокс — Вт, Чт, Сб 19:00"
+    assert chosen_option(chosen) == "Бокс — Вт, Чт, Сб 18:45"
     assert split_agreement(chosen) == ("2", None), "выбранный вариант — не собственные слова клиента"
     assert with_choice("3", SECTION_LIST) == "3", "номера вне списка нет"
     assert with_choice("2", "Итак:\n— Бокс\n— Кикбоксинг") == "2", "без вопроса это не выбор"
@@ -76,7 +76,7 @@ def test_chosen_option_counts_for_section_and_time_but_not_for_age() -> None:
     chosen = with_choice("2", SECTION_LIST)
     assert client_named_discipline("boxing", [chosen])
     assert not client_named_discipline("kickboxing", [chosen])
-    assert client_named_time("19:00", [chosen])
+    assert client_named_time("18:45", [chosen])
     assert not client_named_day("tue", [chosen]), "«Вт, Чт, Сб» — расписание, а не выбор дня"
     assert not client_named_age(9, [with_choice("1", "Какую группу?\n1. Дети 9 лет\n2. Подростки")])
 
@@ -90,7 +90,7 @@ async def test_digit_choice_books_the_chosen_section(kb) -> None:
     ctx = _ctx(kb, "Айназаров Али, 8 лет, мы в 6 микрорайоне", with_choice("2", SECTION_LIST))
 
     result = await create_trial_lead(
-        ctx, child_name="Айназаров Али", child_age=8, gym_id=MKR6, parent_agreed=True, discipline="boxing"
+        ctx, child_name="Айназаров Али", child_age=8, gym_id=ROMANTIK, parent_agreed=True, discipline="boxing"
     )
 
     assert result.data["booked"] is True, result.data
@@ -136,11 +136,11 @@ async def test_screenshot_digit_after_the_section_list_books_the_child(kb, state
     deps = await _deps(kb, state, sessionmaker, settings, llm)
     chat = "77015558201"
 
-    llm.reset([FakeTurn.tool(FakeCall("get_schedule", {"gym_id": MKR6})), FakeTurn.answer(SECTION_LIST)])
+    llm.reset([FakeTurn.tool(FakeCall("get_schedule", {"gym_id": ROMANTIK})), FakeTurn.answer(SECTION_LIST)])
     await process_inbound(deps, webhook_payload(f"{chat}-1", "Хочу записать Айназарова Али, 8 лет, в 6-й микрорайон", chat_id=chat))
     llm.reset([
         FakeTurn.tool(FakeCall("create_trial_lead", {
-            "child_name": "Айназаров Али", "child_age": 8, "gym_id": MKR6, "parent_agreed": True,
+            "child_name": "Айназаров Али", "child_age": 8, "gym_id": ROMANTIK, "parent_agreed": True,
             "discipline": "boxing",
         })),
         FakeTurn.answer(""),
@@ -206,12 +206,12 @@ def test_option_list_is_not_stripped_as_a_repeat_of_the_schedule_card(kb) -> Non
     from app.core.reply_dedup import strip_card_repeats
     from app.kb.render import render_schedule_card
 
-    gym = kb.gym(MKR6)
-    card = render_schedule_card(kb, gym_id=MKR6, slots=gym.schedule, lang=Language.RU)
+    gym = kb.gym(ROMANTIK)
+    card = render_schedule_card(kb, gym_id=ROMANTIK, slots=gym.schedule, lang=Language.RU)
 
     cleaned = strip_card_repeats(SECTION_LIST, [card])
 
-    assert "— Кикбоксинг — Вт, Чт, Сб 19:00" in cleaned and "— Бокс — Вт, Чт, Сб 19:00" in cleaned, cleaned
+    assert "— Кикбоксинг — Вт, Чт, Сб 18:45" in cleaned and "— Бокс — Вт, Чт, Сб 18:45" in cleaned, cleaned
 
 
 #: Дословно из живого прогона 12.09.2026: список без вопросительного знака.

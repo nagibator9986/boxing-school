@@ -26,7 +26,7 @@ from app.tools.gyms import (
     normalize_text,
     translit_to_cyrillic,
 )
-from app.types import Scope, ToolStatus
+from app.types import Language, Scope, ToolStatus
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -65,11 +65,6 @@ def ids_of(result) -> list[str]:
         ("15-й магазин", "magazin15_voinov_8b"),
         ("15 магазин", "magazin15_voinov_8b"),
         ("романтик", "magazin15_voinov_8b"),
-        # 6-й микрорайон
-        ("6 мкр", "mkr6_arystanbekova_6"),
-        ("6мкр", "mkr6_arystanbekova_6"),
-        ("шестой микрорайон", "mkr6_arystanbekova_6"),
-        ("арыстанбекова", "mkr6_arystanbekova_6"),
     ],
 )
 async def test_conversational_forms_find_the_right_gym(ctx, query, expected) -> None:
@@ -262,17 +257,17 @@ async def test_known_district_without_gym_is_named_honestly(ctx, query) -> None:
 
 
 KZHBI = "kzhbi_gasheka_9_3"
-NEAR_KZHBI = ["magazin15_voinov_8b", "mkr6_arystanbekova_6"]
+NEAR_KZHBI = ["magazin15_voinov_8b"]
 
 
 @pytest.mark.parametrize("query", ["кжби", "kzhbi", "КЖБИ", "на кжби"])
-async def test_kzhbi_offers_its_own_gym_and_the_two_nearest(ctx, query) -> None:
+async def test_kzhbi_offers_its_own_gym_and_the_nearest(ctx, query) -> None:
     """Владелец 01.10.2026: «на КЖБИ зала нет, но есть на 15-м магазине и в 6-м
     микрорайоне — это шаговая доступность. Почему бот их не предлагает?»
 
     Раньше КЖБИ был нерешённым конфликтом C-3, и бот отвечал «уточню у
     администратора и гадать не стану». С 13.10.2026 на КЖБИ свой зал (Гашека 9/3,
-    с 01.11.2026) — он первый, а два зала рядом остаются: до открытия ходят в них.
+    с 01.11.2026) — он первый, 15-й магазин рядом остаётся; 6-й микрорайон убран 02.11.2026.
     """
     result = await find_gym_by_district(ctx, district_text=query)
 
@@ -298,7 +293,16 @@ async def test_kzhbi_offers_its_own_gym_and_the_two_nearest(ctx, query) -> None:
         ("береке", ["plaza_szm_70"]),
         ("военный городок", ["magazin15_voinov_8b"]),
         ("2-й подъём", ["magazin15_voinov_8b"]),
-        ("автовокзал", ["mkr6_arystanbekova_6"]),
+        # Районы зала на Арыстанбекова 6, убранного владельцем 02.11.2026, и он сам.
+        ("автовокзал", ["magazin15_voinov_8b"]),
+        ("5 микрорайон", ["magazin15_voinov_8b"]),
+        ("солнечный", ["magazin15_voinov_8b"]),
+        ("6 мкр", ["magazin15_voinov_8b"]),
+        ("6мкр", ["magazin15_voinov_8b"]),
+        ("шестой микрорайон", ["magazin15_voinov_8b"]),
+        ("школа №10", ["magazin15_voinov_8b"]),
+        ("арыстанбекова", ["magazin15_voinov_8b"]),
+        ("Арыстанбекова 6", ["magazin15_voinov_8b"]),
         ("центральный рынок", ["ksk_kairbekova_334"]),
     ],
 )
@@ -313,10 +317,7 @@ async def test_owner_districts_lead_to_the_gyms_that_serve_them(ctx, query, expe
     ("query", "expected"),
     [
         # Зал, который стоит в самом месте, — первым; чужой номер школы не цепляется.
-        ("школа №10", ["mkr6_arystanbekova_6", "magazin15_voinov_8b"]),
         ("возле 9 школы", ["ksk_kairbekova_334"]),
-        ("6 мкр", ["mkr6_arystanbekova_6"]),
-        ("шестой микрорайон", ["mkr6_arystanbekova_6"]),
         ("15 магазин", ["magazin15_voinov_8b"]),
     ],
 )
@@ -343,9 +344,9 @@ async def test_get_gyms_city_returns_all_open_city_gyms(ctx) -> None:
     result = await get_gyms(ctx, scope="city")
 
     assert result.ok
-    # Шесть залов Костаная и Тобыл: Каирбекова 24 и Полевую владелец закрыл 12.10.2026,
+    # Пять залов Костаная и Тобыл (Арыстанбекова 6 убрана 02.11.2026): Каирбекова 24 и Полевую владелец закрыл 12.10.2026,
     # зал на КЖБИ добавил 13.10.2026.
-    assert result.data["total_in_scope"] == 7
+    assert result.data["total_in_scope"] == 6
     assert all(gym["scope"] == Scope.CITY.value for gym in result.data["gyms"])
     assert sum(1 for gym in result.data["gyms"] if gym["is_head"]) == 1
 
@@ -478,7 +479,7 @@ async def test_get_gyms_respects_limit(ctx) -> None:
 
     assert len(result.data["gyms"]) == 2
     # Город и Тобыл: шесть райцентров владелец выключил 29.10.2026.
-    assert result.data["total_in_scope"] == 7
+    assert result.data["total_in_scope"] == 6
     assert any("не все" in caveat.lower() for caveat in result.caveats)
 
 
@@ -593,11 +594,11 @@ async def test_generic_word_does_not_match_a_gym(kb) -> None:
     )
     result = await find_gym_by_district(ctx, district_text="Западный микрорайон")
     found = {gym["id"] for gym in result.data.get("gyms", [])}
-    assert "mkr6_arystanbekova_6" not in found, "6-й микрорайон приехал по слову «микрорайон»"
+    assert "magazin15_voinov_8b" not in found, "6-й микрорайон приехал по слову «микрорайон»"
 
     # А точный запрос по-прежнему находит нужный зал.
     exact = await find_gym_by_district(ctx, district_text="6 микрорайон")
-    assert exact.data["gyms"][0]["id"] == "mkr6_arystanbekova_6"
+    assert exact.data["gyms"][0]["id"] == "magazin15_voinov_8b"
 
 
 async def test_unknown_district_offers_the_whole_list(kb) -> None:
@@ -678,7 +679,7 @@ def test_greeting_offers_the_manager_option(kb) -> None:
     assert "4." not in kb.text("greeting.first", Language.RU), "в меню осталось четыре пункта"
 
 
-async def test_kzhbi_question_in_faq_names_the_two_gyms(ctx) -> None:
+async def test_kzhbi_question_in_faq_names_the_gym_nearby(ctx) -> None:
     """«Есть зал на КЖБИ?» модель может спросить и у базы фактов, а не у поиска зала.
 
     Живой прогон 01.10.2026: поиск уже предлагал два зала, а запись FAQ по КЖБИ
@@ -690,5 +691,29 @@ async def test_kzhbi_question_in_faq_names_the_two_gyms(ctx) -> None:
 
     assert result.ok, result
     answer = result.data["answer_ru"]
-    assert "Воинов-интернационалистов 8Б" in answer and "Арыстанбекова 6" in answer
+    assert "Воинов-интернационалистов 8Б" in answer and "Арыстанбеков" not in answer
     assert result.data["gap_ref"] is None
+
+
+async def test_removed_address_is_gone_but_its_clients_are_not_lost(ctx, kb) -> None:
+    """Владелец 02.11.2026: «Адрес Арыстанбекова 6 надо убрать».
+
+    Адреса нет нигде, что видит клиент или модель, и видео тоже. А родителю, который назвал
+    улицу по старой рекламе, — ближайший зал как «рядом», а не «по вашему адресу».
+    """
+    from app.kb.render import render_gyms_list_card, render_system_prompt
+
+    assert kb.gym("mkr6_arystanbekova_6") is None
+    assert not [item.id for item in kb.media if "mkr6" in item.id]
+    assert not (Path(__file__).parent.parent / "media" / "route_mkr6_arystanbekova_6.mp4").exists()
+    for text in (
+        render_system_prompt(kb),
+        render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.RU),
+        render_gyms_list_card(kb, scope=Scope.CITY, lang=Language.KK),
+    ):
+        assert "рыстанбеков" not in text and "6-й микрорайон" not in text
+
+    result = await find_gym_by_district(ctx, district_text="на Арыстанбекова 6")
+
+    assert ids_of(result) == ["magazin15_voinov_8b"] and result.data["nearby_only"] is True
+    assert "рыстанбеков" not in result.data["gyms"][0]["address"]

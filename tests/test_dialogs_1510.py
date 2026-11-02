@@ -1105,15 +1105,15 @@ async def test_an_invented_name_costs_one_sentence_not_the_reply(kb, state, sess
     deps = _deps(kb, state, sessionmaker, settings)
 
     decisions = await _say(
-        deps, "77015551526", 1, "Здравствуйте, какое расписание в 6 микрорайоне? Сыну 8 лет",
-        FakeTurn.tool(FakeCall("get_schedule", {"gym_id": "mkr6_arystanbekova_6", "child_age": 8})),
+        deps, "77015551526", 1, "Здравствуйте, какое расписание на Плазе? Сыну 8 лет",
+        FakeTurn.tool(FakeCall("get_schedule", {"gym_id": "plaza_szm_70", "child_age": 8})),
         FakeTurn.answer("Занятия по вторникам, четвергам и субботам. Записать Айсултана на пробное?"),
     )
 
     text = _client_text(decisions)
     assert decisions[0].action is DecisionAction.REPLY, decisions[0].reason
     assert "Айсултан" not in text and "Наши залы" not in text, text
-    assert "Расписание — 6-й микрорайон" in text and "Костанай Плаза" not in text, text
+    assert "Расписание — Костанай Плаза" in text and "15-й магазин" not in text, text
 
 
 def test_a_request_is_not_a_lead_in() -> None:

@@ -755,7 +755,7 @@ def test_gym_address_from_kb_is_not_prompt_leak(kb) -> None:
     """Адрес зала — факт для клиента, а не устройство системы."""
     from app.core.postcheck import has_prompt_leak
 
-    answer = "Зал в 6-м микрорайоне: Арыстанбекова 6, возле школы №10."
+    answer = "Зал на 15-м магазине: Воинов-интернационалистов 8Б, магазин «Романтик»."
     assert not has_prompt_leak(answer, _leak_ngrams(kb))
 
 
@@ -1007,7 +1007,7 @@ def test_the_old_age_limit_is_blocked(text: str, kb) -> None:
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "text",
-    ["Наш зал в Тобыле работает по будням.", "Зал на Арыстанбекова ждёт вас.", "Ближайший зал на Плазе."],
+    ["Наш зал в Тобыле работает по будням.", "Зал на Касымханова ждёт вас.", "Ближайший зал на Плазе."],
 )
 def test_place_from_the_knowledge_base_passes(text: str, kb) -> None:
     """Посёлок и улица из базы — правда, даже если инструмент их не возвращал.

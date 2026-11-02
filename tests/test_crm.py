@@ -587,18 +587,18 @@ def test_schedule_paste_garbage_rejected(client: Any, editor: KBEditor) -> None:
 
 def test_backup_and_restore(client: Any, editor: KBEditor) -> None:
     """Откат возвращает базу знаний к состоянию до правки."""
-    page = client.get("/kb/gyms/mkr6_arystanbekova_6").data.decode()
+    page = client.get("/kb/gyms/plaza_szm_70").data.decode()
     fields = form_fields(page)
     original = fields["title_ru"]
     fields["title_ru"] = "Изменённое название"
-    client.post("/kb/gyms/mkr6_arystanbekova_6", data=fields, follow_redirects=True)
+    client.post("/kb/gyms/plaza_szm_70", data=fields, follow_redirects=True)
 
     backups = editor.backups()
     assert backups, "копия обязана создаваться перед каждой правкой"
     client.post(f"/kb/backups/{backups[0].stamp}/restore", follow_redirects=True)
 
     gym = next(
-        gym for gym in editor.load("gyms.yaml")["gyms"] if gym["id"] == "mkr6_arystanbekova_6"
+        gym for gym in editor.load("gyms.yaml")["gyms"] if gym["id"] == "plaza_szm_70"
     )
     assert gym["title"]["ru"] == original
 
