@@ -92,6 +92,11 @@
 {% macro who(c) %}
   <a href="{{ url_for('campaign.show', contact_id=c.id) }}"><strong>{{ c.parent_name or c.wa_name or 'Без имени' }}</strong></a>
   <div class="mini nowrap">{{ c.phone }}</div>
+  {% if opener and c.status in ('approved', 'undelivered') %}
+  <a class="btn small wa" href="{{ whatsapp_web }}?phone={{ c.chat_id | urlencode }}&amp;text={{ opener | urlencode }}"
+     target="whatsapp-web" referrerpolicy="no-referrer"
+     title="Открыть чат в WhatsApp Web: «{{ opener }}» уже в поле, нажмите Enter">WhatsApp ↗</a>
+  {% endif %}
   {% if c.child_name %}<div class="mini">ребёнок: {{ c.child_name }}</div>{% endif %}
   {% if c.conversation_id %}<div class="mini"><a href="{{ url_for('clients.show', conv_id=c.conversation_id) }}">переписка с ботом</a></div>{% endif %}
 {% endmacro %}
@@ -127,13 +132,24 @@
   {% endif %}
 {% endif %}
 
+{% if tab == 'approved' and contacts and opener %}
+<div class="card mini">
+  Рассылка пишет сверху вниз — номер в очереди в колонке «Когда». Если WhatsApp не даёт номеру бота писать первым, откройте
+  чат кнопкой <b>WhatsApp ↗</b> у первых в очереди — не больше {{ pult.limit }} за день: сотни сообщений с нового
+  номера подряд WhatsApp считает спамом. Откроется WhatsApp Web с «{{ opener }}» в поле — нажмите Enter.
+  <b>WhatsApp Web должен быть открыт под номером бота</b>, а не основным. Открытые чаты кнопка помечает зелёным.
+  Такое сообщение бот не считает ответом администратора и сам отправит своё.
+</div>
+{% endif %}
+
 {% if tab == 'sent' and funnel.count('undelivered') %}
 <div class="card">
   <form method="post" action="{{ url_for('campaign.retry') }}" class="inline"
         onsubmit="return confirm('Отправить заново всем недоставленным ({{ funnel.count('undelivered') }})?')">
     <button class="btn primary" type="submit">Отправить снова всем недоставленным ({{ funnel.count('undelivered') }})</button>
-    <span class="mini">Если WhatsApp не даёт номеру бота писать первым: сначала напишите каждому с номера бота хотя бы
-      «.» — так откроется чат, — потом нажмите. Бот сам вернётся в эти диалоги и отправит своё сообщение.</span>
+    <span class="mini">Если WhatsApp не даёт номеру бота писать первым: сначала откройте каждому чат кнопкой
+      <b>WhatsApp ↗</b> (WhatsApp Web под номером бота, «{{ opener }}» уже в поле — нажмите Enter), потом нажмите
+      здесь. Бот сам вернётся в эти диалоги и отправит своё сообщение.</span>
   </form>
 </div>
 {% endif %}
@@ -178,7 +194,8 @@
     <tr>
       <td>{{ who(c) }}</td>
       <td class="mini" style="white-space:pre-wrap">{{ c.approved_text }}</td>
-      <td class="mini">{% if c.not_before %}не раньше {{ c.not_before | dt('%d.%m.%Y') }}{% else %}в порядке очереди{% endif %}
+      <td class="mini">{% if c.id in queue %}<b class="nowrap">№ {{ queue[c.id] }} в очереди</b>{% endif %}
+        {% if c.not_before %}<div>не раньше {{ c.not_before | dt('%d.%m.%Y') }}</div>{% endif %}
         <div>одобрено {{ c.approved_at | dt }}</div></td>
       <td>
         <form method="post" action="{{ url_for('campaign.message', contact_id=c.id) }}">

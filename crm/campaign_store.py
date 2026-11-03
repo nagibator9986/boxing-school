@@ -244,8 +244,14 @@ class CampaignStore:
             for row in self._query(f"SELECT status, COUNT(*) AS n FROM {TABLE} GROUP BY status")
         }
 
-    def contacts(self, *, statuses: Sequence[str], segment: str = "", limit: int = 500) -> list[ContactRow]:
-        """Контакты в этих статусах: свежие разговоры — первыми."""
+    def contacts(
+        self, *, statuses: Sequence[str], segment: str = "", limit: int = 500, queue_order: bool = False
+    ) -> list[ContactRow]:
+        """Контакты в этих статусах: свежие разговоры — первыми.
+
+        ``queue_order`` — в том порядке, в каком одобренных отправляет воркер
+        (``tasks_campaign.send``: по времени одобрения): кому писать первым, видно сверху.
+        """
         if not statuses:
             return []
         marks = ", ".join("?" for _ in statuses)
@@ -254,11 +260,12 @@ class CampaignStore:
         if segment:
             clause += " AND segment = ?"
             params.append(segment)
-        rows = self._query(
-            f"SELECT * FROM {TABLE} WHERE {clause}"
-            " ORDER BY last_contact_at IS NULL, last_contact_at DESC LIMIT ?",
-            [*params, int(limit)],
+        order = (
+            "approved_at IS NULL, approved_at, id"
+            if queue_order
+            else "last_contact_at IS NULL, last_contact_at DESC"
         )
+        rows = self._query(f"SELECT * FROM {TABLE} WHERE {clause} ORDER BY {order} LIMIT ?", [*params, int(limit)])
         return self._with_delivery_errors([self._row(row) for row in rows])
 
     def _with_delivery_errors(self, contacts: list[ContactRow]) -> list[ContactRow]:

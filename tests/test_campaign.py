@@ -803,3 +803,38 @@ def test_undelivered_contacts_are_sent_again_on_request(client, sandbox: CrmConf
     assert _get(sandbox, "77015550899", "status")[0] == "sent"
     # Ответ Wazzup ищется по номеру попытки: у второй — свой идентификатор.
     assert first_message_id(second, 2) != first_message_id(second)
+
+
+def test_contacts_to_write_open_straight_into_whatsapp_web(client, sandbox: CrmConfig) -> None:  # noqa: F811
+    """Кнопка «WhatsApp ↗» — у тех, кому рассылка напишет: открыть чат точкой с номера бота."""
+    for chat_id in ("77015550881", "77015550882", "77015550883", "77015550884", "77015550885"):
+        _draft(client, sandbox, chat_id)
+    tomorrow = (datetime.now(tz=UTC) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    _set(sandbox, "77015550881", status="approved", approved_text="Текст?", approved_at="2026-11-03 06:10:00.000000")
+    _set(sandbox, "77015550882", status="approved", approved_text="Текст?", approved_at="2026-11-03 06:05:00.000000")
+    # Одобрен раньше всех, но «не раньше завтра» — в сегодняшнюю очередь не встаёт.
+    _set(sandbox, "77015550885", status="approved", approved_text="Текст?", approved_at="2026-11-03 06:00:00.000000",
+         not_before=tomorrow)
+    _set(sandbox, "77015550883", status="undelivered", approved_text="Текст?", sent_at="2026-11-02 06:00:00.000000")
+
+    approved = client.get("/campaign/?tab=approved").get_data(as_text=True)
+    link = 'href="https://web.whatsapp.com/send?phone=77015550882&amp;text=."'
+    assert link in approved and 'target="whatsapp-web"' in approved
+    # Сверху — кому рассылка напишет первым, как в воркере: по времени одобрения.
+    order = [approved.index(f"phone={chat_id}") for chat_id in ("77015550885", "77015550882", "77015550881")]
+    assert order == sorted(order)
+    assert (approved.index("phone=77015550882") < approved.index("№ 1 в очереди")
+            < approved.index("phone=77015550881") < approved.index("№ 2 в очереди"))
+    assert "№ 3 в очереди" not in approved
+    assert "под номером бота" in approved
+
+    sent = client.get("/campaign/?tab=sent").get_data(as_text=True)
+    assert "send?phone=77015550883&amp;text=." in sent
+    # Черновику ещё рано: точка без сообщения следом — просто «.» от незнакомого номера.
+    drafts = client.get("/campaign/?tab=drafts").get_data(as_text=True)
+    assert "web.whatsapp.com" not in drafts
+
+    # Чем открывать чат — из базы знаний, тот же список, что читает бот.
+    policies = sandbox.bot_db.parent / "kb" / "policies.yaml"
+    policies.write_text(policies.read_text().replace('chat_openers: [".", "..", "...", "…"]', 'chat_openers: ["+"]'))
+    assert "send?phone=77015550883&amp;text=%2B" in client.get("/campaign/?tab=sent").get_data(as_text=True)

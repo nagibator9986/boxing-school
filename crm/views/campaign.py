@@ -18,8 +18,9 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 
 from app.campaign.contacts import CampaignOutcome, CampaignResult, CampaignStatus
+from app.kb.models import CampaignPolicy
 from app.logging_conf import get_logger
-from crm.app import config, login_required
+from crm.app import config, login_required, snapshot
 from crm.campaign_excel import IMPORTABLE_SHEETS, PREFERRED_SHEET, parse_workbook
 from crm.campaign_store import MAX_MESSAGE_CHARS, CampaignStore, ContactRow, StoreBusy
 from crm.forms import choice, opt_text, text
@@ -47,6 +48,9 @@ TABS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     ),
     "closed": ("Не пишем", (CampaignStatus.EXCLUDED.value, CampaignStatus.OPTED_OUT.value)),
 }
+
+#: WhatsApp Web: чат с номером открывается сразу, текст стоит в поле ввода — остаётся Enter.
+WHATSAPP_WEB: Final[str] = "https://web.whatsapp.com/send"
 
 #: Прежнее имя вкладки «Можно писать» — ссылки и закладки на него ведут в черновики.
 _TAB_ALIASES: Final[dict[str, str]] = {"ready": "drafts"}
@@ -147,6 +151,7 @@ def index() -> Any:
     statuses = TABS[tab][1]
     funnel = store.funnel(since=_day_start())
     counts = funnel.statuses
+    contacts = store.contacts(statuses=statuses, segment=segment, queue_order=tab == "approved")
     return render_template(
         "campaign.html",
         ready=store.ready,
@@ -158,7 +163,10 @@ def index() -> Any:
         pult=_pult(),
         segment=segment,
         segments=store.segment_counts(statuses=statuses),
-        contacts=store.contacts(statuses=statuses, segment=segment),
+        contacts=contacts,
+        queue=_queue_numbers(contacts) if tab == "approved" else {},
+        whatsapp_web=WHATSAPP_WEB,
+        opener=_chat_opener(),
         segment_titles=SEGMENT_TITLES,
         status_titles=STATUS_TITLES,
         status_tones=STATUS_TONES,
@@ -168,6 +176,25 @@ def index() -> Any:
         sheets=IMPORTABLE_SHEETS,
         drafts_to_rewrite=len(store.drafts_to_rewrite()) if tab == "drafts" else 0,
     )
+
+
+def _queue_numbers(contacts: list[ContactRow]) -> dict[str, int]:
+    """Номер одобренного в очереди рассылки; «не раньше» будущей даты в очередь не встаёт."""
+    now = _now()
+    waiting = [c for c in contacts if c.not_before is None or c.not_before <= now]
+    return {c.id: number for number, c in enumerate(waiting, start=1)}
+
+
+def _chat_opener() -> str:
+    """Чем открыть чат с номера бота: первое из ``policies.campaign.chat_openers``.
+
+    Такое сообщение бот не принимает за ответ администратора (``pipeline._is_chat_opener``).
+    """
+    try:
+        openers = snapshot().policies.campaign.chat_openers
+    except Exception:  # noqa: BLE001 - база знаний не читается: берём список по умолчанию
+        openers = CampaignPolicy().chat_openers
+    return next((item.strip() for item in openers if item.strip()), "")
 
 
 def _pult() -> dict[str, Any]:

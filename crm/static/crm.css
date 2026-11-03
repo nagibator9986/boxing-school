@@ -126,6 +126,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .btn.primary:hover { opacity: .9; color: #fff; }
 .btn.danger { color: var(--accent); }
 .btn.small { padding: 4px 10px; font-size: 13px; }
+/* Открыть чат в WhatsApp Web; уже открытый (история браузера) — зелёным. */
+.btn.wa { margin-top: 4px; color: var(--ok); border-color: var(--ok); }
+.btn.wa:visited { background-color: var(--ok-soft); }
 .actions { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
 .toolbar form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
