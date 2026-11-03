@@ -1799,6 +1799,27 @@ async def _handle_echo(
             correlation_id=correlation_id,
         )
 
+    if _is_chat_opener(inbound, kb):
+        # «.» с номера бота перед рассылкой «Возврат клиентов»: WhatsApp не пропускал
+        # первое сообщение тем, кто писал школе на основной номер (28.10.2026), и
+        # администратор открывает чат точкой. Пауза от неё убирала клиента из рассылки
+        # («отвечает администратор»), поэтому точка видна в CRM — и только.
+        await conv_session.record_inbound(db, conv, inbound, author=Author.OPERATOR)
+        if int(conv.msg_in_count or 0) == 0:
+            # Диалог, заведённый точкой, получает время «клиент писал» — а клиент молчал.
+            # Рассылка сочла бы такой диалог свежим и снова убрала бы контакт на проверку.
+            conv.first_inbound_at = None
+            conv.last_inbound_at = None
+        _log.info("chat_opener", conv_key=conv.conv_key)
+        return _decision(
+            DecisionAction.SILENT,
+            "chat_opener",
+            inbound=inbound,
+            conv_id=conv.id,
+            lang=Language.parse(conv.lang),
+            correlation_id=correlation_id,
+        )
+
     await conv_session.record_inbound(db, conv, inbound, author=Author.OPERATOR)
     if inbound.text:
         # Оператор — часть диалога: его реплика обязана быть видна модели после
@@ -3980,6 +4001,18 @@ _GREETING_START_RE: Final[re.Pattern[str]] = re.compile(
     r"|ассалам\w*|hi\b|hello\b|рады\s+приветствовать)",
     re.IGNORECASE,
 )
+
+
+def _is_chat_opener(inbound: InboundMessage, kb: KBSnapshot | None) -> bool:
+    """Открыл ли администратор чат перед рассылкой (``policies.campaign.chat_openers``).
+
+    Сообщение сравнивается целиком: «.» — открытие чата, «Добрый день.» — человек.
+    Без базы знаний — не открытие: лишняя пауза безопаснее, чем бот поверх человека.
+    """
+    if kb is None or inbound.msg_type is not MsgType.TEXT:
+        return False
+    body = (inbound.text or "").strip()
+    return bool(body) and body in {item.strip() for item in kb.policies.campaign.chat_openers}
 
 
 def _is_auto_greeting(text: str | None, settings: Settings, *, brand: str = "") -> bool:

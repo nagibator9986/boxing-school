@@ -982,3 +982,85 @@ async def test_a_retry_does_not_step_into_a_live_conversation(deps) -> None:
         assert (await session.get(EscalationState, conv_id)).paused is True
     assert len(await _outbox(deps)) == 1
     assert (await _row(deps, contact)).status == "needs_check"
+
+
+# --------------------------------------------------------------------------- #
+# Точка до первого сообщения (03.11): чат открыт, бот не на паузе
+# --------------------------------------------------------------------------- #
+async def _from_bot_number(deps: PipelineDeps, message_id: str, text: str):
+    """Администратор пишет с номера бота: Wazzup присылает эхо, которого нет в нашем outbox."""
+    return await process_inbound(deps, webhook_payload(message_id, text, chat_id=PHONE, is_echo=True))
+
+
+async def _paused(deps: PipelineDeps) -> bool:
+    async with deps.sessionmaker() as session:
+        conv = (await session.execute(sa.select(Conversation).where(Conversation.chat_id == PHONE))).scalar_one()
+        pause_row = await session.get(EscalationState, conv.id)
+    return bool(pause_row and pause_row.paused)
+
+
+async def test_a_dot_before_the_first_message_opens_the_chat_and_keeps_the_contact_in_the_campaign(deps) -> None:
+    contact = await _contact(deps)
+
+    decisions = await _from_bot_number(deps, "dot-1", " . ")
+    assert [d.reason for d in decisions] == ["chat_opener"]
+    assert await _paused(deps) is False
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is True
+    row = await _row(deps, contact)
+    assert row.status == "sent"
+    async with deps.sessionmaker() as session:
+        dialog = (await session.execute(sa.select(Conversation).where(Conversation.chat_id == PHONE))).scalar_one()
+        messages = list((await session.execute(sa.select(Message).where(Message.conversation_id == dialog.id)
+                                               .order_by(Message.created_at))).scalars())
+    # Сообщение ушло в тот же диалог, что открыла точка.
+    assert row.conversation_id == dialog.id.hex
+    # Точка видна в переписке CRM как сообщение администратора, но модель её не видит.
+    assert [m.author for m in messages if m.text_raw and m.text_raw.strip() == "."] == ["operator"]
+    model_turns = [m.gemini_content["parts"][0]["text"] for m in messages
+                   if m.gemini_content and m.gemini_content.get("role") == "model"]
+    assert model_turns == ["Здравствуйте! Подобрать зал?"]
+
+
+async def test_a_real_message_from_the_bot_number_still_means_a_human_is_talking(deps) -> None:
+    """Открытие чата — только сообщение целиком: точка в конце фразы человека — не оно."""
+    contact = await _contact(deps)
+
+    decisions = await _from_bot_number(deps, "hello-1", "Добрый день.")
+    assert [d.reason for d in decisions] == ["operator_entered"]
+    assert await _paused(deps) is True
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is False
+    assert (await _row(deps, contact)).status == "needs_check"
+    assert await _outbox(deps) == []
+
+
+async def test_after_the_dot_the_client_is_answered_by_the_bot(deps) -> None:
+    await _from_bot_number(deps, "dot-2", ".")
+    deps.llm.push(FakeTurn.answer("Здравствуйте! Это школа бокса. Сколько лет ребёнку?"))
+
+    decisions = await process_inbound(deps, webhook_payload("client-1", "Кто это?", chat_id=PHONE))
+
+    assert [d.reason for d in decisions if d.action.value == "silent"] == []
+    assert any(out.text for d in decisions for out in d.outbound)
+
+
+def test_the_openers_come_from_the_knowledge_base(kb) -> None:
+    assert "." in kb.policies.campaign.chat_openers
+
+
+async def test_a_dot_does_not_hide_that_the_client_wrote(deps) -> None:
+    """Клиент уже писал боту после одобрения — точка этого не стирает, рассылка не пишет."""
+    contact = await _contact(deps)
+    await _conversation(deps, PHONE, last_inbound=NOW - timedelta(hours=2))
+    async with deps.sessionmaker() as session:
+        await session.execute(sa.update(Conversation).where(Conversation.chat_id == PHONE).values(msg_in_count=1))
+        await session.commit()
+
+    await _from_bot_number(deps, "dot-3", ".")
+
+    assert await campaign.send_first(deps, contact.hex, now=NOW, kb=deps.kb(), settings=deps.settings,
+                                     silent=frozenset()) is False
+    assert (await _row(deps, contact)).status == "needs_check"
