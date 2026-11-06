@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-11-02"
+updated_at: "2026-11-06"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -157,35 +157,15 @@ gyms:
   phone: null
   coaches: []
   schedule:
-  # Владелец 13.10.2026: «на Плазе Аймед тренировки только по графику вторник, четверг,
-  # суббота 9:00–10:30 и 19:00–20:30». Пн, Ср, Пт здесь занятий нет.
+  # Владелец 06.11.2026: «Изменение расписания на плазе северо запад: вторник, четверг
+  # 19:00–20:30, суббота 19:30–21:00». Утра (Вт, Чт, Сб 9:00–10:30, с 13.10.2026) в
+  # новом расписании нет; Пн, Ср, Пт здесь занятий нет.
   - discipline: kickboxing
     age_from: null
     age_to: null
     days:
     - tue
     - thu
-    - sat
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-  - discipline: boxing
-    age_from: null
-    age_to: null
-    days:
-    - tue
-    - thu
-    - sat
-    time_start: "09:00"
-    time_end: "10:30"
-    shift: second
-  - discipline: kickboxing
-    age_from: null
-    age_to: null
-    days:
-    - tue
-    - thu
-    - sat
     time_start: "19:00"
     time_end: "20:30"
   - discipline: boxing
@@ -194,9 +174,22 @@ gyms:
     days:
     - tue
     - thu
-    - sat
     time_start: "19:00"
     time_end: "20:30"
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - sat
+    time_start: "19:30"
+    time_end: "21:00"
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - sat
+    time_start: "19:30"
+    time_end: "21:00"
   capacity_note: null
   media:
   - gym_location_plaza_szm_70

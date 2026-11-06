@@ -144,14 +144,14 @@ def kb_with_closed_gym_records(tmp_path_factory: pytest.TempPathFactory) -> KBSn
 
 #: Расписание Плазы до 13.10.2026 — на месте нового, от комментария владельца до видео зала.
 PLAZA_SCHEDULE_1210: Final[Path] = ROOT / "tests" / "fixtures" / "plaza_schedule_1210.yaml"
-_PLAZA_1310_HEAD: Final[str] = "  # Владелец 13.10.2026: «на Плазе Аймед тренировки только по графику"
+_PLAZA_HEAD: Final[str] = "  # Владелец 06.11.2026: «Изменение расписания на плазе северо запад"
 _PLAZA_MEDIA: Final[str] = "  capacity_note: null\n  media:\n  - gym_location_plaza_szm_70\n"
 
 
 def _schedule_1210(text: str) -> str:
     """Расписание залов, каким оно было 12.10.2026: утро «Романтика» и прежняя Плаза."""
     text = text.replace(_ROMANTIK_NO_MORNINGS, _ROMANTIK_MORNINGS)
-    start, end = text.index(_PLAZA_1310_HEAD), text.index(_PLAZA_MEDIA)
+    start, end = text.index(_PLAZA_HEAD), text.index(_PLAZA_MEDIA)
     plaza = "".join(
         line for line in PLAZA_SCHEDULE_1210.read_text(encoding="utf-8").splitlines(keepends=True)
         if not line.startswith("#")

@@ -36,7 +36,7 @@ from app.core import funnel, guards, ignore_list, pause, pipeline
 from app.core.pipeline import PipelineDeps, process_inbound
 from app.core.postcheck import strip_invented_coaches
 from app.kb import loader as kb_loader
-from app.kb.agreement import with_agreement
+from app.kb.agreement import with_agreement, with_choice
 from app.kb.sessions import client_day_parts, time_by_day_part
 from app.llm.client import FakeCall, FakeLLMClient, FakeTurn
 from app.storage import repo_conversation, repo_lead, repo_outbox
@@ -243,23 +243,46 @@ def test_day_parts_in_client_words(texts, parts) -> None:
 def test_a_day_part_picks_the_only_class_in_it(kb) -> None:
     plaza, ksk = kb.gym(PLAZA), kb.gym(KSK)
 
-    assert time_by_day_part(plaza, ("Да, в вечернее время",)) == "19:00"
-    assert time_by_day_part(plaza, ("С утра удобнее",)) == "09:00"
+    assert time_by_day_part(ksk, ("С утра удобнее",)) == "09:00"
     assert time_by_day_part(ksk, ("вечером",), discipline="kickboxing") is None, "17:00 и 19:00 — выбор"
     assert time_by_day_part(ksk, ("вечером",), discipline="boxing", day="tue") == "17:00"
+    # Плаза с 06.11.2026: вечер во Вт, Чт в 19:00, в Сб в 19:30 — час решает день.
+    assert time_by_day_part(plaza, ("Да, в вечернее время",), day="thu") == "19:00"
+    assert time_by_day_part(plaza, ("в субботу вечером",), day="sat") == "19:30"
+    assert time_by_day_part(plaza, ("Да, в вечернее время",)) is None, "без дня 19:00 и 19:30 — выбор"
+    assert time_by_day_part(plaza, ("С утра удобнее",)) is None, "утра на Плазе нет"
     assert time_by_day_part(plaza, ("утром или вечером",)) is None
 
 
-async def test_evening_booking_needs_no_time_question(make_ctx) -> None:
-    """Скриншот 16.10.2026: «Да, в вечернее время» → «Какое время вам удобнее? 1. 09:00 2. 19:00»."""
-    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "Да,в вечернее время", "Иванов Тимур")
+async def test_evening_booking_needs_no_time_question(make_ctx, kb) -> None:
+    """Скриншот 16.10.2026: «Да, в вечернее время» → «Какое время вам удобнее? 1. 09:00 2. 19:00».
 
+    С 06.11.2026 вечер на Плазе в разные дни разный: Вт, Чт 19:00, Сб 19:30. С днём —
+    запись сразу; без дня — вопрос о дне, и утра, которое клиент уже отклонил, в нём нет.
+    """
+    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "В четверг, в вечернее время", "Иванов Тимур")
     result = await create_trial_lead(
-        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
+        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True, session_day="thu",
     )
-
     assert result.data["booked"] is True, result.data
-    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY).hour == 19
+    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY)
+
+    texts = ("Мы на Северо-Западе, сыну 8 лет", "Да,в вечернее время", "Иванов Тимур")
+    result = await create_trial_lead(
+        _ctx(make_ctx, *texts), child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
+    )
+    assert result.data["needs"] == ["need_time"], result.data
+    question = pipeline._booking_question(kb, Language.RU, [_invocation(result)])
+    assert "1. Бокс и кикбоксинг — Вт, Чт 19:00\n2. Бокс и кикбоксинг — Сб 19:30" in question, question
+    assert "09:00" not in question, question
+
+    ctx = _ctx(make_ctx, *texts, with_choice("2", question))
+    booked = await create_trial_lead(
+        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
+        session_day="sat", session_time="19:30",
+    )
+    assert booked.data["booked"] is True, booked.data
+    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 17, 19, 30, tzinfo=ALMATY)
 
 
 def _booked_plaza(slot: datetime) -> SavedLead:
@@ -835,14 +858,22 @@ async def test_the_overview_does_not_need_the_media_record(tmp_path, state, sess
 # Перепроверка 19.10.2026: что нашлось в собственных правках
 # --------------------------------------------------------------------------- #
 async def test_a_new_day_part_wins_over_the_booked_hour(make_ctx) -> None:
-    """Записались «вечером», потом «А можно в субботу утром?» — суббота 09:00, а не 19:00."""
+    """Записались «вечером», потом «А можно в субботу утром?» — суббота 09:00, а не 17:00.
+
+    До 06.11.2026 проверялось на Плазе; утра там больше нет — бокс в КСК: Вт, Чт, Сб 09:00 и 17:00.
+    """
+    booked = SavedLead(
+        lead_id=uuid4(), status=LeadStatus.TRIAL_BOOKED.value, gym_id=KSK,
+        trial_slot=datetime(2026, 10, 15, 17, 0, tzinfo=ALMATY).astimezone(UTC),
+        child_name="Иванова Айша", child_age=7,
+    )
     ctx = _ctx(
-        make_ctx, "Мы на Северо-Западе", "Иванова Айша, 7 лет, на вечернее время", "А можно в субботу утром?",
-        saved_lead=_booked_plaza(datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY)),
+        make_ctx, "Мы в КСК", "Иванова Айша, 7 лет, на вечернее время", "А можно в субботу утром?",
+        saved_lead=booked,
     )
 
     result = await create_trial_lead(
-        ctx, child_name="Иванова Айша", child_age=7, gym_id=PLAZA, parent_agreed=True, session_day="sat",
+        ctx, child_name="Иванова Айша", child_age=7, gym_id=KSK, parent_agreed=True, session_day="sat",
     )
 
     assert result.data["booked"] is True, result.data

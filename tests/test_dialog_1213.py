@@ -82,16 +82,17 @@ def test_romantik_has_no_morning_classes(kb) -> None:
     assert starts == {("boxing", "18:45"), ("kickboxing", "18:45")}, starts
 
 
-def test_plaza_trains_only_tue_thu_sat_at_nine_and_seven(kb) -> None:
+def test_plaza_trains_tue_thu_at_seven_and_saturday_at_half_past_seven(kb) -> None:
+    """Владелец 06.11.2026: Вт, Чт 19:00–20:30, Сб 19:30–21:00; утра больше нет."""
     slots = {(slot.discipline, tuple(slot.days), slot.time_start, slot.time_end) for slot in kb.gym(PLAZA).schedule}
-    days = ("tue", "thu", "sat")
     assert slots == {
         (discipline, days, start, end)
         for discipline in ("boxing", "kickboxing")
-        for start, end in (("09:00", "10:30"), ("19:00", "20:30"))
+        for days, start, end in ((("tue", "thu"), "19:00", "20:30"), (("sat",), "19:30", "21:00"))
     }, slots
     card = render_schedule_card(kb, gym_id=PLAZA, slots=kb.gym(PLAZA).schedule, lang=Language.RU)
-    assert "Пн" not in card and "17:00" not in card, card
+    assert "Пн" not in card and "09:00" not in card and "17:00" not in card, card
+    assert "19:30" in card and "21:00" in card, card
 
 
 @pytest.mark.parametrize("query", ["центр", "в центре", "Нет в центре"])
@@ -554,7 +555,7 @@ async def test_find_sessions_offers_earlier_boxing_in_other_gyms(make_ctx) -> No
     found = [(item["gym_id"], item["time_start"]) for item in result.data["sessions"]]
     assert found == [(KSK, "17:00")], found
     started = {(item["gym_id"], item["time_start"]) for item in result.data["already_started_today"]}
-    assert {(KSK, "09:00"), (PLAZA, "09:00")} <= started, started
+    assert (KSK, "09:00") in started, started
 
 
 async def test_todays_weekday_code_is_today(make_ctx) -> None:
