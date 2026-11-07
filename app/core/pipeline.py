@@ -1220,7 +1220,9 @@ async def _run_turn(
 
         # Заметка собирается заново каждый ход и уходит ПОСЛЕДНИМ элементом
         # contents: любая динамика в начале запроса убивает implicit-кэш.
-        child_talk = await _child_talk_continues(db, conv, text)
+        child_talk = await _child_talk_continues(
+            db, conv, text, self_signup_age=kb.policies.audience_self_signup_age
+        )
         dynamic_note = build_dynamic_note(
             lang=lang,
             now=_school_time(now, settings),
@@ -3077,7 +3079,7 @@ _CARD_LOOKBACK: Final[int] = 20
 
 
 async def _child_talk_continues(
-    db: AsyncSession, conv: Conversation, text: str
+    db: AsyncSession, conv: Conversation, text: str, *, self_signup_age: int | None = None
 ) -> bool:
     """Продолжается ли разговор, в котором пишет сам ребёнок.
 
@@ -3091,19 +3093,26 @@ async def _child_talk_continues(
 
     Признак ищется в отправленных сообщениях, а не в истории модели: просьбу
     позвать взрослого отправляет guard, не спрашивая модель, и в её историю она
-    не попадает вовсе.
+    не попадает вовсе. Отправленные — это очередь ``outbox``: в ``message`` ответы
+    бота не пишутся (найдено 07.11.2026 — до этого признак искался в ``message`` и
+    на сервере не находился ни разу).
+
+    Возраст, с которого записываются сами (``self_signup_age``, владелец 07.11.2026:
+    «с 12 лет»), названный после просьбы, снимает признак до конца разговора: «мне 13»
+    в ответ на «покажи сообщение маме» — это ученик, которого записывают.
     """
-    if guards.has_parent_marker(text):
+    def signs_up_alone(said: str) -> bool:
+        return self_signup_age is not None and guards.signs_up_alone(said, self_signup_age)
+
+    if guards.has_parent_marker(text) or signs_up_alone(text):
         return False
     try:
-        transcript = await repo_message.load_transcript(db, conv.id, limit=_CHILD_LOOKBACK)
+        asked_at = await repo_message.last_sent_with(db, conv.id, _CHILD_REPLY_MARKERS, limit=_CHILD_LOOKBACK)
+        later = await repo_message.client_texts_since(db, conv.id, asked_at) if asked_at is not None else []
     except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
         _log.warning("child_lookup_failed", error=type(exc).__name__)
         return False
-    return any(
-        author is Author.BOT and any(marker in (said or "").lower() for marker in _CHILD_REPLY_MARKERS)
-        for author, said in transcript
-    )
+    return asked_at is not None and not any(signs_up_alone(said) for said in later)
 
 
 #: Заголовки карточек, которые собирает код. По ним видно, что клиент их уже

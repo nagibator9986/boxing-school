@@ -602,6 +602,23 @@ def test_gym_save_keeps_slot_price_group_and_shift(client: Any, editor: KBEditor
     assert "group" not in after[0] and after[1]["group"] == "evening" and after[1]["shift"] == "second"
 
 
+def test_self_signup_age_is_edited_in_crm(client: Any, editor: KBEditor) -> None:
+    """Возраст самостоятельной записи (владелец 07.11.2026: «с 12 лет») правится на странице правил."""
+    fields = form_fields(client.get("/kb/policies").data.decode())
+    assert fields["audience_self_signup_age"] == "12"
+
+    client.post("/kb/policies", data=fields, follow_redirects=True)
+    assert editor.load("policies.yaml")["audience_self_signup_age"] == 12, "сохранение без правки порог не меняет"
+
+    fields["audience_self_signup_age"] = "14"
+    client.post("/kb/policies", data=fields, follow_redirects=True)
+    assert editor.load("policies.yaml")["audience_self_signup_age"] == 14
+
+    fields["audience_self_signup_age"] = "30"
+    client.post("/kb/policies", data=fields, follow_redirects=True)
+    assert editor.load("policies.yaml")["audience_self_signup_age"] == 14, "возраст вне 5–18 не принимается"
+
+
 def test_schedule_paste_garbage_rejected(client: Any, editor: KBEditor) -> None:
     """Непонятый текст не стирает расписание молча."""
     before = next(

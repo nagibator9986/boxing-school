@@ -69,10 +69,15 @@ CHILD_REPLY = (
 
 
 async def _conv_with_bot_reply(sessionmaker, reply: str):
-    """Диалог, в котором бот уже отправил клиенту ``reply``."""
+    """Диалог, в котором бот уже отправил клиенту ``reply``.
+
+    Ответ кладётся в очередь ``outbox``, как в бою: в ``message`` ответы бота не пишутся.
+    До 07.11.2026 тест клал его в ``message`` и проверял признак, который на сервере не
+    находился ни разу.
+    """
     import sqlalchemy as sa
 
-    from app.storage import repo_message
+    from app.storage import repo_outbox
     from app.storage.models import Conversation
     from app.types import ChannelKind, Language, OutboundMessage
 
@@ -82,9 +87,8 @@ async def _conv_with_bot_reply(sessionmaker, reply: str):
         )
         db.add(conv)
         await db.flush()
-        await repo_message.add_outbound(
+        await repo_outbox.enqueue(
             db,
-            conv.id,
             OutboundMessage(
                 conversation_id=conv.id,
                 channel_id="wa",
@@ -93,7 +97,6 @@ async def _conv_with_bot_reply(sessionmaker, reply: str):
                 lang=Language.RU,
                 text=reply,
             ),
-            wazzup_message_id="wz-1",
         )
         await db.commit()
         return (await db.execute(sa.select(Conversation))).scalars().one()

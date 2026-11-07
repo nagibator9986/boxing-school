@@ -186,3 +186,75 @@ async def test_the_city_alone_still_names_no_gym(ctx) -> None:
 )
 def test_district_place_tells_inside_from_nearby(kb, text, place) -> None:
     assert district_place(kb, text) == place
+
+
+# --------------------------------------------------------------------------- #
+# 4. С 12 лет записываются сами
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("text", "child"),
+    [
+        ("Мне 15", False),                                   # скриншот 06.11, 22:39
+        ("Мне 12 лет", False),
+        ("Маған 13 жас", False),
+        ("я в 9 классе, хочу записаться", False),            # девятиклассник — 14
+        ("мне 14, хочу записаться, родители разрешили", False),
+        ("Мне 11", True),
+        ("мне 9 лет, хочу на бокс", True),
+        ("Маған 10 жас", True),
+        ("я в 5 классе, хочу записаться", True),             # пятиклассник — 10
+        ("хочу записаться, родители разрешили", True),       # возраста нет — как раньше
+        ("Мне 10 минут ехать до зала", False),               # не возраст
+    ],
+)
+def test_children_from_twelve_sign_up_alone(kb, text, child) -> None:
+    from app.core.guards import detect_child_writing
+
+    assert detect_child_writing(text, lang=Language.RU, self_signup_age=kb.policies.audience_self_signup_age) is child
+
+
+def test_the_threshold_comes_from_the_policies(kb) -> None:
+    from app.core import guards
+    from app.types import GuardFlag
+
+    assert kb.policies.audience_self_signup_age == 12
+    assert guards.detect_child_writing("Мне 15", lang=Language.RU, self_signup_age=16), "порог из правил, не из кода"
+    verdict = guards.scan("Мне 15", lang=Language.RU, lexicon=kb.lexicon, policies=kb.policies)
+    assert not verdict.has(GuardFlag.CHILD_WRITING), verdict
+    assert "учеником от 12 лет" in render.render_escalation_rules(kb)
+
+
+async def test_a_teen_is_served_and_a_child_still_asked_for_parents(kb, state, sessionmaker, settings) -> None:
+    """Скриншот 06.11, 22:39: «Мне 15» → «покажи это сообщение маме или папе»."""
+    from app.core.pipeline import PipelineDeps, process_inbound
+    from app.kb import loader as kb_loader
+    from app.llm.client import FakeLLMClient, FakeTurn
+
+    from tests.conftest import RecordingQueue, webhook_payload
+
+    kb_loader.swap(kb)
+    deps = PipelineDeps(
+        sessionmaker=sessionmaker, state=state, kb=kb_loader.get_snapshot, queue=RecordingQueue(),
+        settings=settings, llm=FakeLLMClient([]),
+    )
+    child_note = "За клавиатурой сам ребёнок"
+
+    async def say(chat: str, number: int, text: str):
+        deps.llm.reset([FakeTurn.answer("Отлично! Подскажите имя и фамилию?")])
+        before = len(deps.llm.requests)
+        decisions = await process_inbound(deps, webhook_payload(f"{chat}-{number}", text, chat_id=chat))
+        note = deps.llm.requests[-1].dynamic_note if len(deps.llm.requests) > before else None
+        return [d.reason for d in decisions], note
+
+    reasons, note = await say("77015550711", 1, "Мне 15")
+    assert reasons != ["escalate:child_writing"] and note is not None and child_note not in note, reasons
+
+    reasons, _ = await say("77015550712", 1, "мне 10 лет хочу на бокс")
+    assert reasons == ["escalate:child_writing"], reasons
+    _, note = await say("77015550712", 2, "Родители не знают пока")
+    assert note is not None and child_note in note, "ребёнку младше 12 запись по-прежнему не оформляют"
+    # «Мне 13» после просьбы позвать родителей — ученик, которого записывают, до конца разговора.
+    _, note = await say("77015550712", 3, "Мне 13 вообще-то")
+    assert note is not None and child_note not in note, note
+    _, note = await say("77015550712", 4, "Запишите на бокс")
+    assert note is not None and child_note not in note, note

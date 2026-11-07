@@ -42,6 +42,8 @@ __all__ = [
     "detect_stop_word",
     "off_topic_kind",
     "scan",
+    "self_stated_age",
+    "signs_up_alone",
 ]
 
 #: Инструменты, которые остаются доступными после тревоги. Ни лида, ни файлов,
@@ -109,16 +111,22 @@ _PARENT_MARKERS: Final[tuple[str, ...]] = (
     "балам", "ұлым", "қызым", "баламды", "мой мальчик", "моя девочка", "родитель",
     "мама", "папа",
 )
-#: Собственный возраст в первом лице.
+#: Собственный возраст в первом лице. «Мне 10 минут ехать» — не возраст.
 _SELF_AGE_RE: Final[tuple[re.Pattern[str], ...]] = tuple(
     re.compile(pattern)
     for pattern in (
-        r"\bмне\s+(\d{1,2})\s*(?:лет|года|годик\w*)?\b",
+        r"\bмне\s+(\d{1,2})\s*(?:лет|года|годик\w*)?\b(?!\s*(?:мин|час|км|метр|остановк|раз|числ))",
         r"\bмаған\s+(\d{1,2})\s*жас",
         r"\bменің\s+жасым\s+(\d{1,2})",
-        r"\bя\s+(?:учусь\s+)?в\s+(\d{1,2})\s*[- ]?\s*(?:м\s+)?класс",
     )
 )
+#: «Я в 6 классе» — класс, а не возраст.
+_SELF_GRADE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bя\s+(?:учусь\s+)?в\s+(\d{1,2})\s*[- ]?\s*(?:м\s+)?класс"
+)
+#: Младший возраст в классе N — N + 5 лет: в первый класс идут в 6. Считается по младшему,
+#: чтобы шестиклассника, которому ещё 11, не записать без родителей.
+_GRADE_TO_AGE: Final[int] = 5
 #: Детская формулировка намерения.
 _CHILD_INTENT: Final[tuple[str, ...]] = (
     "я хочу записаться", "хочу записаться", "я хочу заниматься", "хочу заниматься",
@@ -228,7 +236,7 @@ def scan(
             reason=None,
         )
 
-    if detect_child_writing(normalized, lang=lang):
+    if detect_child_writing(normalized, lang=lang, self_signup_age=policies.audience_self_signup_age):
         flags.append(GuardFlag.CHILD_WRITING)
         stop_dialog = policies.audience_child_detected_action == "stop"
         return GuardVerdict(
@@ -369,13 +377,42 @@ def has_parent_marker(text: str) -> bool:
     return _matches_word(normalize(text or ""), _PARENT_MARKERS)
 
 
-def detect_child_writing(text: str, *, lang: Language) -> bool:
+#: Младше этого возраст «мне N» — не про себя («мне 2 остановки»), детектор его не считает.
+_MIN_SELF_AGE: Final[int] = 4
+#: Порог самостоятельной записи, если правила его не передали: как до 07.11.2026 (4–15 — ребёнок).
+_DEFAULT_SELF_SIGNUP_AGE: Final[int] = 16
+
+
+def self_stated_age(text: str) -> int | None:
+    """Возраст, который пишущий назвал о себе: «мне 15», «маған 12 жас», «я в 7 классе»."""
+    normalized = normalize(text or "")
+    for pattern in _SELF_AGE_RE:
+        match = pattern.search(normalized)
+        if match:
+            return int(match.group(1))
+    grade = _SELF_GRADE_RE.search(normalized)
+    return int(grade.group(1)) + _GRADE_TO_AGE if grade else None
+
+
+def signs_up_alone(text: str, self_signup_age: int) -> bool:
+    """Назвал ли пишущий свой возраст, с которого записываются сами («мне 15» при пороге 12)."""
+    age = self_stated_age(text)
+    return age is not None and age >= self_signup_age
+
+
+def detect_child_writing(
+    text: str, *, lang: Language, self_signup_age: int = _DEFAULT_SELF_SIGNUP_AGE
+) -> bool:
     """ПРОДУКТОВОЕ правило, а не требование площадки: платит и решает родитель.
 
     Срабатывает при двух условиях сразу: в тексте **нет** взрослых маркеров
     («сын», «дочка», «балам» — так пишет родитель) и есть либо собственный
-    возраст 4–15 лет от первого лица, либо детская формулировка намерения
-    вместе с детским контекстом («мама разрешила», «я в 6 классе»).
+    возраст младше ``self_signup_age`` от первого лица, либо, без возраста, детская
+    формулировка намерения вместе с детским контекстом («мама разрешила»).
+
+    ``self_signup_age`` — из правил (``policies.audience_self_signup_age``). Владелец
+    07.11.2026: «дети с 12 лет могут записываться сами» — на «Мне 15» бот просил позвать
+    родителей. Названный возраст решает и при детском контексте: «мне 14, мама разрешила».
 
     Одного «хочу записаться» мало: так пишет и взрослый, который идёт заниматься
     сам. Ложное срабатывание здесь стоит дорого — взрослого просят позвать
@@ -387,15 +424,9 @@ def detect_child_writing(text: str, *, lang: Language) -> bool:
     if _matches_word(normalized, _PARENT_MARKERS):
         return False
 
-    for pattern in _SELF_AGE_RE:
-        match = pattern.search(normalized)
-        if match:
-            try:
-                value = int(match.group(1))
-            except (TypeError, ValueError):  # pragma: no cover - группа всегда цифры
-                continue
-            if 4 <= value <= 15:
-                return True
+    age = self_stated_age(normalized)
+    if age is not None and age >= _MIN_SELF_AGE:
+        return age < self_signup_age
 
     has_intent = _matches_word(normalized, _CHILD_INTENT)
     has_context = _matches_word(normalized, _CHILD_CONTEXT)

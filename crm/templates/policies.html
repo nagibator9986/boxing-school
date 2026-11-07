@@ -17,8 +17,10 @@
       <div class="field"><label>Часы работы для клиента, русский</label><input type="text" name="work_hours_ru" value="{{ work.get('ru') or '' }}" placeholder="Администратор отвечает с 10:00 до 20:00"></div>
       <div class="field"><label>То же по-казахски</label><input type="text" name="work_hours_kk" value="{{ work.get('kk') or '' }}"></div>
     </div>
-    <div class="field"><label class="checkbox"><input type="checkbox" name="audience_adults_only" value="1" {{ 'checked' if doc.get('audience_adults_only', True) }}> бот разговаривает только со взрослыми</label>
+    <div class="field"><label class="checkbox"><input type="checkbox" name="audience_adults_only" value="1" {{ 'checked' if doc.get('audience_adults_only', True) }}> детей младше возраста ниже бот записывает только через родителей</label>
       <div class="hint">Если пишет ребёнок, бот просит позвать родителя и уведомляет администратора, но диалог не бросает.</div></div>
+    <div class="field"><label>С какого возраста ученик записывается сам, без родителей</label><input type="number" name="audience_self_signup_age" min="5" max="18" value="{{ doc.get('audience_self_signup_age', 16) }}">
+      <div class="hint">Пишет «мне 15» — бот записывает его самого. Младше этого возраста бот просит показать сообщение маме или папе.</div></div>
   </div>
 
   <div class="card">

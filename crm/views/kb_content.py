@@ -452,6 +452,10 @@ def policies() -> Any:
         document["org_brand"] = text(form, "org_brand")
         document["org_city"] = text(form, "org_city")
         document["audience_adults_only"] = flag(form, "audience_adults_only")
+        # Владелец 07.11.2026: «дети с 12 лет могут записываться сами».
+        document["audience_self_signup_age"] = integer(
+            form, "audience_self_signup_age", default=int(document.get("audience_self_signup_age") or 16)
+        )
         work = bilingual(form, "work_hours")
         document["work_hours"] = (
             merge_into(document.get("work_hours"), work) if work.get("ru") or work.get("kk") else None

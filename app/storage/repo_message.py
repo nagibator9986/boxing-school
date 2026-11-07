@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Final, Sequence
 from uuid import UUID, uuid4
 
@@ -35,8 +35,10 @@ __all__ = [
     "add_inbound",
     "add_llm_turn",
     "add_outbound",
+    "client_texts_since",
     "count_artifact_sends",
     "exists_wazzup_id",
+    "last_sent_with",
     "load_history",
     "load_transcript",
     "update_status",
@@ -287,6 +289,45 @@ async def sent_texts(session: AsyncSession, conv_id: UUID, *, limit: int = 20) -
     )
     rows = (await session.execute(stmt)).scalars().all()
     return [str((row or {}).get("text") or "") for row in rows]
+
+
+async def last_sent_with(
+    session: AsyncSession, conv_id: UUID, markers: Sequence[str], *, limit: int = 20
+) -> datetime | None:
+    """Когда бот последний раз поставил в очередь текст с одним из ``markers``. ``None`` — не ставил.
+
+    По ``outbox``, как и :func:`sent_texts`: ответы бота в ``message`` не пишутся вовсе —
+    CRM показывает их тоже из очереди.
+    """
+    stmt = (
+        sa.select(OutboxMessage.created_at, OutboxMessage.payload)
+        .where(
+            OutboxMessage.conversation_id == conv_id,
+            OutboxMessage.state.in_(("pending", "sending", "sent")),
+        )
+        .order_by(OutboxMessage.created_at.desc())
+        .limit(max(1, limit))
+    )
+    for created_at, payload in (await session.execute(stmt)).all():
+        text = str((payload or {}).get("text") or "").lower()
+        if any(marker in text for marker in markers):
+            return created_at
+    return None
+
+
+async def client_texts_since(session: AsyncSession, conv_id: UUID, since: datetime) -> list[str]:
+    """Реплики клиента после ``since``, от старых к новым."""
+    stmt = (
+        sa.select(Message.text_raw)
+        .where(
+            Message.conversation_id == conv_id,
+            Message.author == Author.CLIENT.value,
+            Message.text_raw.is_not(None),
+            Message.created_at > since,
+        )
+        .order_by(Message.created_at)
+    )
+    return [str(text) for text in (await session.execute(stmt)).scalars().all()]
 
 
 def _payload_artifacts(payload: Any) -> list[str]:

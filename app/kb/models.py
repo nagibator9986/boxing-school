@@ -967,6 +967,9 @@ class PoliciesFile(_Base):
     org_city: str
     audience_adults_only: bool = True
     audience_child_detected_action: Literal["escalate", "stop"] = "escalate"
+    #: С какого возраста ученик записывается сам: младше — «покажи сообщение маме или папе».
+    #: По умолчанию 16 — как было до 07.11.2026 (ребёнком считались 4–15 лет).
+    audience_self_signup_age: int = Field(default=16, ge=5, le=18)
     work_hours: Bilingual | None = None
     sla_reply_minutes: int | None = None
     escalation_triggers: list[EscalationReason] = Field(default_factory=list)
