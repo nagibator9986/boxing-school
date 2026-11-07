@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from app.config import get_settings
 from app.kb.gaps import say_no_data
 from app.kb.models import Gym, ScheduleSlot
+from app.kb import render
 from app.kb.render import render_schedule_card
 from app.kb.sessions import client_times, normalize_time, weekday_code
 from app.tools.gyms import opening_caveats
@@ -84,7 +85,30 @@ def _slot_payload(slot: ScheduleSlot, lang: Language) -> dict[str, Any]:
         "note": slot.note.get(lang) if slot.note is not None else None,
         # Абонемент на это время, если он не по общему прайсу (КСК, бокс, Вт/Чт/Сб — 20 000).
         "price": slot.price,
+        # Строки с одним group — одна группа детей: не варианты на выбор (Плаза, 07.11.2026).
+        "group": slot.group,
     }
+
+
+def group_caveats(gym: Gym) -> list[str]:
+    """Предупреждение модели о группах зала: «Вт, Чт 19:00 и Сб 19:30 — одна группа».
+
+    Скриншот владельца 07.11.2026: «Занятия по вечерам: во вторник и четверг в 19:00, а
+    также в субботу в 19:30. Какое время вам подойдёт?» — а это одно расписание.
+    """
+    groups: dict[str, list[str]] = {}
+    for slot in sorted(gym.schedule, key=_sort_key):
+        if slot.group:
+            entry = f"{render.days_label(slot.days, Language.RU)} {slot.time_start}"
+            if entry not in groups.setdefault(slot.group, []):
+                groups[slot.group].append(entry)
+    return [
+        f"Занятия {' и '.join(entries)} — одна группа: ребёнок ходит во все эти дни. Не спрашивай, "
+        "какое из этих времён или дней удобнее, и не предлагай их как варианты: на пробное код "
+        "запишет на ближайшее занятие группы."
+        for entries in groups.values()
+        if len(entries) > 1
+    ]
 
 
 def _sort_key(slot: ScheduleSlot) -> tuple[int, str, int]:
@@ -183,6 +207,7 @@ async def get_schedule(
             "соседнюю: назови существующие варианты из alternatives или передай администратору."
         )
     caveats.append("Дни и время бери только из этих данных, ничего не добавляя от себя.")
+    caveats.extend(group_caveats(gym))
     caveats.extend(opening_caveats(kb, (gym,)))
     # Готовый блок расписания: собран кодом, отформатирован по-человечески.
     # Модель пересказывает расписание прозой («по вторникам, четвергам и

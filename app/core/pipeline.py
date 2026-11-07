@@ -88,7 +88,7 @@ from app.storage import repo_conversation, repo_lead, repo_message, repo_outbox
 from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
 from app.tools import registry
-from app.tools.gyms import district_gym, gyms_named_in, normalize_text
+from app.tools.gyms import district_place, gyms_named_in, normalize_text
 from app.types import (
     MAX_MESSAGE_CHARS,
     OWNER_TEXT_ARTIFACT_PREFIX,
@@ -3228,8 +3228,13 @@ def _just_said(
     # Костанай 2 район, гостиница Остров» модель не стала искать по району и сама выбрала
     # центр, а владелец закрепил второй Костанай за Плазой («ближайшая — Плаза Аймед»).
     # Только слова клиента: в пометке согласия — вопрос бота, и район из него клиент не называл.
-    gym = kb.gym(district_gym(kb, split_agreement(text)[0]) or "")
-    if gym is not None:
+    # Район, где стоит сам зал, — «в этом районе есть зал»: владелец 07.11.2026, «на втором
+    # Костанае у нас есть зал», а бот отвечал «в вашем районе зала нет, ближайший — Плаза».
+    place = district_place(kb, split_agreement(text)[0])
+    gym = kb.gym(place[0]) if place is not None else None
+    if gym is not None and place is not None and place[1]:
+        said.append(f"район — в нём есть наш зал «{gym.title.ru}» ({gym.id}), другой зал не подбирай")
+    elif gym is not None:
         said.append(f"район — ближайший к нему зал «{gym.title.ru}» ({gym.id}), другой зал не подбирай")
     return tuple(said)
 
@@ -3641,7 +3646,6 @@ def _option_key(option: dict) -> tuple:
 
 def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) -> str:
     """«1. Бокс — Вт, Чт, Сб 19:00» — варианты из расписания зала, по одному в строке."""
-    lines: list[str] = []
     # По секции, внутри — по времени: «1. Бокс 09:00, 2. Бокс 18:45, 3. Кикбоксинг 09:00».
     # Владелец 01.10.2026: «поочерёдность — первое время, второе, третье». Номер,
     # которым отвечает клиент, разбирается по отправленному тексту, а не по расписанию.
@@ -3661,12 +3665,26 @@ def _numbered_options(kb: KBSnapshot, lang: Language, options: Sequence[Any]) ->
             str(option.get("time_start") or ""),
         ),
     )
+    # Строки одной группы — один вариант «Бокс и кикбоксинг — Вт, Чт 19:00, Сб 19:30»: владелец
+    # 07.11.2026 про Плазу, «он расписание делит на два предложения, а у нас это одно расписание».
+    rows: list[str | tuple[str, str]] = []
+    grouped: dict[tuple[str, str], list[str]] = {}
     for option in ordered:
         label = _kb_text(kb, f"card.{discipline_of(option)}", lang)
         days = render.days_label(list(option.get("days") or []), lang)
-        line = f"{label} — {days} {option.get('time_start') or ''}".strip()
-        if label and line not in lines:
-            lines.append(line)
+        when = f"{days} {option.get('time_start') or ''}".strip()
+        if not label:
+            continue
+        group = str(option.get("group") or "")
+        if group:
+            if (label, group) not in grouped:
+                grouped[(label, group)] = []
+                rows.append((label, group))
+            if when not in grouped[(label, group)]:
+                grouped[(label, group)].append(when)
+        elif f"{label} — {when}" not in rows:
+            rows.append(f"{label} — {when}")
+    lines = [row if isinstance(row, str) else f"{row[0]} — {', '.join(grouped[row])}" for row in rows]
     return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, 1)) if len(lines) >= 2 else ""
 
 

@@ -153,17 +153,25 @@ def _options_line(kb: KBSnapshot, slots: tuple[ScheduleSlot, ...]) -> str:
     """Варианты для родителя: «Кикбоксинг — Пн, Ср, Пт 19:00; Бокс — Вт, Чт, Сб 09:00».
 
     Бокс и кикбоксинг в одни дни и час — «Бокс и кикбоксинг» одним вариантом (14.10.2026).
+    Строки одной группы (Плаза: Вт, Чт 19:00 и Сб 19:30) — один вариант, а не два: владелец
+    07.11.2026, «у нас это одно расписание».
     """
     shared: dict[tuple, set[str]] = {}
     for slot in slots:
         shared.setdefault((tuple(sorted(slot.days)), slot.time_start), set()).add(slot.discipline)
     by_discipline: dict[str, list[str]] = {}
+    grouped: dict[tuple[str, str], list[str]] = {}
     for slot in slots:
         both = len(shared[(tuple(sorted(slot.days)), slot.time_start)]) > 1
         label = kb.text(f"card.{COMBINED_DISCIPLINE if both else slot.discipline}", Language.RU)
         entry = f"{render.days_label(slot.days, Language.RU)} {slot.time_start}"
-        if entry not in by_discipline.setdefault(label, []):
-            by_discipline[label].append(entry)
+        entries = grouped.setdefault((label, slot.group), []) if slot.group else by_discipline.setdefault(label, [])
+        if entry not in entries:
+            entries.append(entry)
+    for (label, _), entries in grouped.items():
+        by_discipline.setdefault(label, []).append(
+            f"{' и '.join(entries)} (одна группа: ребёнок ходит во все эти дни, это не выбор)"
+        )
     return "; ".join(f"{label} — {', '.join(entries)}" for label, entries in by_discipline.items())
 
 
@@ -765,6 +773,7 @@ async def create_trial_lead(
                         "days": list(slot.days),
                         "time_start": slot.time_start,
                         "time_end": slot.time_end,
+                        "group": slot.group,
                     }
                     for slot in (choice.options if choice is not None and session is None else ())
                 ],

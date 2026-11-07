@@ -568,6 +568,40 @@ def test_schedule_paste(client: Any, editor: KBEditor) -> None:
     assert gym["schedule"][0]["days"] == ["mon", "wed", "fri"]
 
 
+def test_gym_save_keeps_slot_price_group_and_shift(client: Any, editor: KBEditor) -> None:
+    """Сохранение зала в CRM не стирает цену, группу и смену строк расписания.
+
+    До 07.11.2026 форма не несла этих полей: правка адреса КСК молча снимала особую цену
+    20 000 ₸, а правка Плазы — группу «одно расписание» (Вт, Чт 19:00 и Сб 19:30).
+    """
+    def slots(gym_id: str) -> list[dict[str, Any]]:
+        gym = next(gym for gym in editor.load("gyms.yaml")["gyms"] if gym["id"] == gym_id)
+        return [dict(slot) for slot in gym["schedule"]]
+
+    ksk_before, plaza_before = slots("ksk_kairbekova_334"), slots("plaza_szm_70")
+    assert any(slot.get("price") for slot in ksk_before) and all(slot.get("group") for slot in plaza_before)
+
+    for gym_id in ("ksk_kairbekova_334", "plaza_szm_70"):
+        fields = form_fields(client.get(f"/kb/gyms/{gym_id}").data.decode())
+        fields["address_ru"] = fields["address_ru"] + ", вход со двора"
+        client.post(f"/kb/gyms/{gym_id}", data=fields, follow_redirects=True)
+
+    def kept(rows: list[dict[str, Any]]) -> list[tuple]:
+        # Смена по умолчанию — «any»: CRM пишет её явно, файл может и не писать.
+        return [(row.get("price"), row.get("group"), row.get("shift") or "any") for row in rows]
+
+    assert kept(slots("ksk_kairbekova_334")) == kept(ksk_before)
+    assert kept(slots("plaza_szm_70")) == kept(plaza_before)
+
+    # Группу можно поставить и снять в форме.
+    fields = form_fields(client.get("/kb/gyms/plaza_szm_70").data.decode())
+    fields["slot-0-group"] = ""
+    fields["slot-1-shift"] = "second"
+    client.post("/kb/gyms/plaza_szm_70", data=fields, follow_redirects=True)
+    after = slots("plaza_szm_70")
+    assert "group" not in after[0] and after[1]["group"] == "evening" and after[1]["shift"] == "second"
+
+
 def test_schedule_paste_garbage_rejected(client: Any, editor: KBEditor) -> None:
     """Непонятый текст не стирает расписание молча."""
     before = next(

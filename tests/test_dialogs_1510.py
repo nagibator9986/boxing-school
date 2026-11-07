@@ -36,7 +36,7 @@ from app.core import funnel, guards, ignore_list, pause, pipeline
 from app.core.pipeline import PipelineDeps, process_inbound
 from app.core.postcheck import strip_invented_coaches
 from app.kb import loader as kb_loader
-from app.kb.agreement import with_agreement, with_choice
+from app.kb.agreement import with_agreement
 from app.kb.sessions import client_day_parts, time_by_day_part
 from app.llm.client import FakeCall, FakeLLMClient, FakeTurn
 from app.storage import repo_conversation, repo_lead, repo_outbox
@@ -257,32 +257,23 @@ def test_a_day_part_picks_the_only_class_in_it(kb) -> None:
 async def test_evening_booking_needs_no_time_question(make_ctx, kb) -> None:
     """Скриншот 16.10.2026: «Да, в вечернее время» → «Какое время вам удобнее? 1. 09:00 2. 19:00».
 
-    С 06.11.2026 вечер на Плазе в разные дни разный: Вт, Чт 19:00, Сб 19:30. С днём —
-    запись сразу; без дня — вопрос о дне, и утра, которое клиент уже отклонил, в нём нет.
+    С 06.11.2026 вечер на Плазе — Вт, Чт 19:00 и Сб 19:30, и с 07.11.2026 это одна группа
+    («у нас это одно расписание»): запись на ближайшее занятие, без вопроса о времени и дне.
     """
-    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "В четверг, в вечернее время", "Иванов Тимур")
+    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "В субботу, в вечернее время", "Иванов Тимур")
     result = await create_trial_lead(
-        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True, session_day="thu",
+        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True, session_day="sat",
+    )
+    assert result.data["booked"] is True, result.data
+    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 17, 19, 30, tzinfo=ALMATY)
+
+    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "Да,в вечернее время", "Иванов Тимур")
+    result = await create_trial_lead(
+        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
     )
     assert result.data["booked"] is True, result.data
     assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 15, 19, 0, tzinfo=ALMATY)
-
-    texts = ("Мы на Северо-Западе, сыну 8 лет", "Да,в вечернее время", "Иванов Тимур")
-    result = await create_trial_lead(
-        _ctx(make_ctx, *texts), child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
-    )
-    assert result.data["needs"] == ["need_time"], result.data
-    question = pipeline._booking_question(kb, Language.RU, [_invocation(result)])
-    assert "1. Бокс и кикбоксинг — Вт, Чт 19:00\n2. Бокс и кикбоксинг — Сб 19:30" in question, question
-    assert "09:00" not in question, question
-
-    ctx = _ctx(make_ctx, *texts, with_choice("2", question))
-    booked = await create_trial_lead(
-        ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
-        session_day="sat", session_time="19:30",
-    )
-    assert booked.data["booked"] is True, booked.data
-    assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 17, 19, 30, tzinfo=ALMATY)
+    assert pipeline._booking_question(kb, Language.RU, [_invocation(result)]) is None
 
 
 def _booked_plaza(slot: datetime) -> SavedLead:
@@ -791,8 +782,12 @@ def test_the_model_is_told_the_gym_of_the_named_place(kb) -> None:
     )
 
     assert any("Костанай Плаза — AIMED" in item and PLAZA in item for item in said), said
+    # Владелец 07.11.2026: «на втором Костанае у нас есть зал» — зал в районе, а не рядом.
+    assert any("в нём есть наш зал" in item for item in said), said
     for text in ("Мы в Костанае", "Нет КСК далеко час езды на автобусе На КСК только бокс ?", "Мы из Тобыла"):
-        assert not any("ближайший" in item for item in pipeline._just_said(text, kb=kb, now=THURSDAY)), text
+        assert not any("район —" in item for item in pipeline._just_said(text, kb=kb, now=THURSDAY)), text
+    nearby = pipeline._just_said("Живём в районе аэропорт", kb=kb, now=THURSDAY)
+    assert any("ближайший к нему зал «Костанай Плаза — AIMED»" in item for item in nearby), nearby
 
 
 @pytest.mark.parametrize(("text", "gym"), [

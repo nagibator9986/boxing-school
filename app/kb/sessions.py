@@ -38,6 +38,7 @@ __all__ = [
     "same_classes",
     "fold_name",
     "normalize_time",
+    "one_group",
     "resolve_trial_session",
     "time_by_day_part",
     "weekday_code",
@@ -110,9 +111,16 @@ _weekday = weekday_code
 #: «19:00», «19.00».
 _HHMM_RE: Final[re.Pattern[str]] = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)")
 
+#: «19 30» — время через пробел. Скриншот владельца 07.11.2026: на «Какое время вам удобнее?
+#: … Сб 19:30» клиент ответил «19 30», и бот задал тот же вопрос ещё раз. Минуты — только
+#: 00, 15, 30, 45: «детям 10 12» и куски телефона временем не становятся.
+_SPACED_HHMM_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\d:.])([01]?\d|2[0-3])\s+(00|15|30|45)(?![\d:.])")
+
 #: «в 19», «к 7 вечера», «на 17» — но не «на 9 лет» и не «в 5 классе».
 _PREP_HOUR_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:^|[\s,])(?:в|к|на|с|до)\s+([01]?\d|2[0-3])(?![\d:.])"
+    # «в 19 30» — это 19:30 (см. ``_SPACED_HHMM_RE``), а не ещё и 19:00.
+    r"(?!\s+(?:00|15|30|45)(?![\d:.]))"
     # «в 6-й микрорайон», «в 7 мкр», «в 9 школе», «у 15-го магазина» — место, а не час.
     r"(?!\s*(?:лет|год|класс|мес|раз|дет|реб|жас|мкр|микр|школ|мектеп|магазин|-\s*[а-яё]))"
     r"(?:\s*(утра|дня|вечера|ночи))?",
@@ -230,7 +238,7 @@ def _client_times(texts: tuple[str, ...] | list[str]) -> set[str]:
         picked = _offered_times(chosen_option(raw))
         if len(picked) == 1:
             found |= picked
-        for match in _HHMM_RE.finditer(text):
+        for match in (*_HHMM_RE.finditer(text), *_SPACED_HHMM_RE.finditer(text)):
             found.add(f"{int(match.group(1)):02d}:{match.group(2)}")
         for match in (*_PREP_HOUR_RE.finditer(text), *_HOUR_WORD_RE.finditer(text)):
             hour = int(match.group(1))
@@ -508,17 +516,33 @@ def resolve_trial_session(
             return SessionChoice(problem="unknown_discipline", options=tuple(slots))
         slots = chosen
 
+    tz = ZoneInfo(tz_name)
+    local_now = now.astimezone(tz)
+    earliest = local_now + timedelta(hours=max(0.0, min_lead_hours))
+    first_day = local_now.date()
+    if gym.opens_after(first_day):
+        # Зал ещё не открылся: пробное — на первые его занятия, и окно поиска считается
+        # от дня открытия, а не от сегодня (до открытия может быть больше двух недель).
+        first_day = gym.opens_on
+        earliest = max(earliest, datetime(first_day.year, first_day.month, first_day.day, tzinfo=tz))
+
     time = normalize_time(time_text)
     if time is None:
         # Время у выбранной секции одно (в «Кеме» бокс только в 19:00) — выбирать
         # родителю нечего, и вопрос «во сколько удобно?» только тянет запись.
         wanted = _weekday(day)
-        starts = {slot.time_start for slot in slots if wanted is None or wanted in slot.days}
+        on_day = [slot for slot in slots if wanted is None or wanted in slot.days]
+        starts = {slot.time_start for slot in on_day}
         if wanted is not None and not starts:
             # «В понедельник», а занятий в понедельник нет — это не «уточните время».
             return SessionChoice(problem="unknown_day", options=tuple(slots))
         if len(starts) != 1:
-            return SessionChoice(problem="need_time", options=tuple(slots))
+            # Строки одной группы — одно расписание (Плаза: Вт, Чт 19:00 и Сб 19:30):
+            # выбирать между ними нечего, пробное — ближайшее занятие группы.
+            nearest = _nearest(on_day, None, first_day, earliest, tz, horizon_days) if one_group(on_day) else None
+            if nearest is None:
+                return SessionChoice(problem="need_time", options=tuple(slots))
+            starts, day = {nearest.time_start}, nearest.weekday
         time = next(iter(starts))
     timed = [slot for slot in slots if slot.time_start == time]
     if not timed:
@@ -540,17 +564,26 @@ def resolve_trial_session(
             return SessionChoice(problem="need_discipline", options=tuple(timed))
         combined = True
 
-    tz = ZoneInfo(tz_name)
-    local_now = now.astimezone(tz)
-    earliest = local_now + timedelta(hours=max(0.0, min_lead_hours))
-    first_day = local_now.date()
-    if gym.opens_after(first_day):
-        # Зал ещё не открылся: пробное — на первые его занятия, и окно поиска считается
-        # от дня открытия, а не от сегодня (до открытия может быть больше двух недель).
-        first_day = gym.opens_on
-        earliest = max(earliest, datetime(first_day.year, first_day.month, first_day.day, tzinfo=tz))
+    best = _nearest(timed, wanted_day, first_day, earliest, tz, horizon_days)
+    if best is None:
+        return SessionChoice(problem="unknown_time", options=tuple(slots))
+    if combined:
+        best = TrialSession(best.starts_at, best.weekday, best.time_start, best.time_end, COMBINED_DISCIPLINE)
+    return SessionChoice(session=best)
+
+
+def one_group(slots) -> bool:
+    """Одна ли это группа детей: у всех строк одно и то же непустое ``group``."""
+    groups = {slot.group for slot in slots}
+    return len(groups) == 1 and None not in groups
+
+
+def _nearest(
+    slots, wanted_day: str | None, first_day, earliest: datetime, tz: ZoneInfo, horizon_days: int
+) -> TrialSession | None:
+    """Ближайшее занятие из этих строк — не раньше ``earliest``, в ``wanted_day``, если он задан."""
     best: TrialSession | None = None
-    for slot in timed:
+    for slot in slots:
         hours, minutes = (int(part) for part in slot.time_start.split(":"))
         for offset in range(horizon_days + 1):
             date = first_day + timedelta(days=offset)
@@ -563,8 +596,4 @@ def resolve_trial_session(
             if best is None or starts < best.starts_at:
                 best = TrialSession(starts, weekday, slot.time_start, slot.time_end, slot.discipline)
             break
-    if best is None:
-        return SessionChoice(problem="unknown_time", options=tuple(slots))
-    if combined:
-        best = TrialSession(best.starts_at, best.weekday, best.time_start, best.time_end, COMBINED_DISCIPLINE)
-    return SessionChoice(session=best)
+    return best

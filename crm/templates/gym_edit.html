@@ -90,11 +90,11 @@
 
   <div class="card">
     <h2>Расписание</h2>
-    <p class="mini">Отметьте дни, поставьте время. Возраст указывается парой «от» и «до» либо не указывается вовсе — тогда бот скажет, что возрастную группу уточнит администратор.</p>
+    <p class="mini">Отметьте дни, поставьте время. Возраст указывается парой «от» и «до» либо не указывается вовсе — тогда бот скажет, что возрастную группу уточнит администратор. «Цена ₸» — абонемент на это время, если он не по общему прайсу. «Группа» — одно и то же слово у строк, которые составляют одно расписание (например, Вт, Чт 19:00 и Сб 19:30): ребёнок ходит во все эти дни, и бот записывает на ближайшее занятие, не спрашивая, какое время удобнее.</p>
     <div class="slotline mini">
       <div>Вид</div><div>Начало</div><div>Конец</div>
       {% for code, label in days %}<div class="day">{{ label }}</div>{% endfor %}
-      <div>Возраст и примечание</div><div class="day">×</div>
+      <div>Возраст, примечание, цена, группа</div><div class="day">×</div>
     </div>
     {% for slot in slots %}
       {% set i = loop.index0 %}
@@ -111,6 +111,9 @@
           <input type="number" name="slot-{{ i }}-age_from" value="{{ slot.get('age_from') if slot.get('age_from') is not none else '' }}" placeholder="от" style="width:64px">
           <input type="number" name="slot-{{ i }}-age_to" value="{{ slot.get('age_to') if slot.get('age_to') is not none else '' }}" placeholder="до" style="width:64px">
           <input type="text" name="slot-{{ i }}-note_ru" value="{{ (slot.get('note') or {}).get('ru') or '' }}" placeholder="примечание">
+          <input type="number" name="slot-{{ i }}-price" value="{{ slot.get('price') if slot.get('price') is not none else '' }}" placeholder="цена ₸" title="Абонемент на это время, если он не по общему прайсу. Пусто — общий прайс." style="width:96px">
+          <input type="text" name="slot-{{ i }}-group" value="{{ slot.get('group') or '' }}" placeholder="группа" title="Одинаковое слово у нескольких строк — одна группа: ребёнок ходит во все её дни, и бот не спрашивает, какое время удобнее." style="width:96px">
+          <input type="hidden" name="slot-{{ i }}-shift" value="{{ slot.get('shift') or 'any' }}">
         </div>
         <div class="day"><input type="checkbox" name="slot-{{ i }}-delete" value="1" title="удалить занятие"></div>
       </div>
@@ -128,6 +131,8 @@
           <input type="number" name="slot-{{ i }}-age_from" placeholder="от" style="width:64px">
           <input type="number" name="slot-{{ i }}-age_to" placeholder="до" style="width:64px">
           <input type="text" name="slot-{{ i }}-note_ru" placeholder="примечание">
+          <input type="number" name="slot-{{ i }}-price" placeholder="цена ₸" style="width:96px">
+          <input type="text" name="slot-{{ i }}-group" placeholder="группа" style="width:96px">
         </div>
         <div class="day"></div>
       </div>

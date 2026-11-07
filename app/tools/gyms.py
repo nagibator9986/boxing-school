@@ -766,6 +766,17 @@ def district_gym(kb: KBSnapshot, text: str | None) -> str | None:
     15.10.2026). Назван сам зал («Нет, КСК далеко») — ``None``: это не выбор зала, и
     подсказывать модели его как ближайший нельзя.
     """
+    place = district_place(kb, text)
+    return place[0] if place is not None else None
+
+
+def district_place(kb: KBSnapshot, text: str | None) -> tuple[str, bool] | None:
+    """Зал для района клиента и стоит ли он в самом районе: ``(gym_id, inside)``.
+
+    ``inside`` — район назван синонимом самого зала, но не его именем: «второй Костанай» —
+    район Плазы (владелец 07.11.2026: «на втором Костанае у нас есть зал»). Иначе —
+    район рядом, из ``serves_districts``.
+    """
     queries = [query for query in dict.fromkeys(_variants(text or "")) if query]
     if not queries:
         return None
@@ -773,18 +784,37 @@ def district_gym(kb: KBSnapshot, text: str | None) -> str | None:
     city_key = frozenset({normalize_text(kb.gyms.city_settlement or "")} - {""})
     gyms = kb.active_gyms(Scope.ALL)
     direct = ("alias", "settlement", "district", "text")
-    if any(
-        _score_gym(gym, forms, sources=direct, whole_keys_only=True, ignore_keys=city_key)[0] >= MIN_MATCH_SCORE
-        for gym in gyms
-    ):
-        return None
+    hits = []
+    for gym in gyms:
+        score, _, key = _score_gym(gym, forms, sources=direct, whole_keys_only=True, ignore_keys=city_key)
+        if score >= MIN_MATCH_SCORE:
+            hits.append((gym, key))
+    if hits:
+        gym, key = hits[0]
+        return (gym.id, True) if len(hits) == 1 and not _names_the_gym(gym, key) else None
     scores = {
         gym.id: _score_gym(gym, forms, sources=("nearby",), whole_keys_only=True, ignore_keys=city_key)[0]
         for gym in gyms
     }
     best = max(scores.values(), default=0)
     winners = [gym_id for gym_id, score in scores.items() if score == best]
-    return winners[0] if best >= MIN_MATCH_SCORE and len(winners) == 1 else None
+    return (winners[0], False) if best >= MIN_MATCH_SCORE and len(winners) == 1 else None
+
+
+def _names_the_gym(gym: Gym, key: str) -> bool:
+    """Называет ли ключ сам зал — его название, район из карточки, адрес или ориентир.
+
+    «КСК», «Касымханова» — это зал, и в «Нет, КСК далеко» клиент его отвергает. «Второй
+    Костанай» нигде в карточке Плазы не написан: это район, где зал стоит.
+    """
+    if not key or key not in {normalize_text(alias) for alias in gym.district_aliases}:
+        return True
+    own = (gym.title, gym.district, gym.address, gym.landmark)
+    return any(
+        _contains_phrase(normalize_text(text), key)
+        for field in own if field is not None
+        for text in (field.ru, field.kk) if text
+    )
 
 
 def gyms_named_in(kb: KBSnapshot, text: str | None) -> frozenset[str]:

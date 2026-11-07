@@ -333,7 +333,28 @@ def render_schedule_overview(snapshot: KBSnapshot) -> str:
         )
     else:
         lines.append("Утренних групп нет ни в одном зале.")
+    # Владелец 07.11.2026 про Плазу (Вт, Чт и Сб в разное время): «у нас это одно расписание»,
+    # а бот спрашивал, какое время подходит.
+    grouped = sorted(
+        gym.id for gym in snapshot.active_gyms(Scope.ALL)
+        if any(len(times) > 1 for times in _group_times(gym).values())
+    )
+    if grouped:
+        lines.append(
+            f"Одна группа в разные дни и часы: {', '.join(grouped)}. Ребёнок ходит на все её занятия — "
+            "не спрашивай, какое время или день удобнее, и не предлагай их на выбор: на пробное "
+            "код запишет на ближайшее занятие."
+        )
     return _join(lines)
+
+
+def _group_times(gym: Gym) -> dict[str, set[tuple[tuple[str, ...], str]]]:
+    """Группы зала (``ScheduleSlot.group``): у каждой — её дни и начала занятий."""
+    groups: dict[str, set[tuple[tuple[str, ...], str]]] = {}
+    for slot in gym.schedule or ():
+        if slot.group:
+            groups.setdefault(slot.group, set()).add((tuple(slot.days), slot.time_start))
+    return groups
 
 
 def render_escalation_rules(snapshot: KBSnapshot) -> str:
@@ -619,7 +640,9 @@ def _schedule_lines(snapshot: KBSnapshot, gym: Gym, lang: Language) -> list[str]
     shared: dict[tuple, set[str]] = {}
     for slot in gym.schedule:
         shared.setdefault(_slot_identity(slot), set()).add(slot.discipline)
-    rows: dict[tuple[str, tuple[str, ...], int | None], list[ScheduleSlot]] = {}
+    # Строки одной группы (Плаза: Вт, Чт 19:00 и Сб 19:30) — одной строкой списка, а не двумя
+    # с одинаковой подписью: владелец 07.11.2026, «у нас это одно расписание».
+    rows: dict[tuple[str, tuple[str, ...] | str, int | None], list[ScheduleSlot]] = {}
     listed: set[tuple] = set()
     for slot in sorted(gym.schedule, key=lambda item: (item.time_start, item.days[0])):
         key = _slot_identity(slot)
@@ -627,11 +650,14 @@ def _schedule_lines(snapshot: KBSnapshot, gym: Gym, lang: Language) -> list[str]
             continue
         listed.add(key)
         label = COMBINED_DISCIPLINE if len(shared[key]) > 1 else slot.discipline
-        rows.setdefault((label, tuple(slot.days), slot.price), []).append(slot)
+        rows.setdefault((label, slot.group or tuple(slot.days), slot.price), []).append(slot)
     lines: list[str] = []
-    for (label, days, price), slots in rows.items():
-        ranges = ", ".join(f"{slot.time_start}–{slot.time_end}" for slot in slots)
-        line = f"{ICON_TIME} {_lang_text(snapshot, f'card.{label}', lang)}: {_days_line(list(days), lang)} · {ranges}"
+    for (label, _, price), slots in rows.items():
+        by_days: dict[tuple[str, ...], list[str]] = {}
+        for slot in slots:
+            by_days.setdefault(tuple(slot.days), []).append(f"{slot.time_start}–{slot.time_end}")
+        when = "; ".join(f"{_days_line(list(days), lang)} · {', '.join(ranges)}" for days, ranges in by_days.items())
+        line = f"{ICON_TIME} {_lang_text(snapshot, f'card.{label}', lang)}: {when}"
         if price is not None:
             line += f" — {snapshot.text('card.slot_price', lang, price=_money(price))}"
         lines.append(line)

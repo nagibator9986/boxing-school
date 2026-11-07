@@ -34,6 +34,8 @@ SCOPES: tuple[tuple[str, str], ...] = (("city", "Костанай"), ("region", 
 STATUSES: tuple[tuple[str, str], ...] = (
     ("open", "Работает"), ("closed", "Закрыт"), ("unresolved", "Не подтверждён"),
 )
+#: Школьная смена строки расписания (``ScheduleSlot.shift``): в форме не правится, но сохраняется.
+SHIFTS: tuple[tuple[str, str], ...] = (("any", "Любая"), ("first", "Первая"), ("second", "Вторая"))
 #: Сколько пустых строк расписания показывать под заполненными.
 BLANK_SLOTS = 3
 
@@ -70,22 +72,32 @@ def _read_slots(form: Any) -> list[dict[str, Any]]:
         if (age_from is None) != (age_to is None):
             age_from = age_to = None
         note_ru = opt_text(form, f"slot-{index}-note_ru")
-        slots.append(
-            {
-                "discipline": choice(
-                    form, f"slot-{index}-discipline", dict(DISCIPLINES), default="kickboxing"
-                ),
-                "age_from": age_from,
-                "age_to": age_to,
-                "days": days,
-                "time_start": start,
-                "time_end": end,
-                "shift": "any",
-                "note": {"ru": note_ru, "kk": opt_text(form, f"slot-{index}-note_kk") or note_ru}
-                if note_ru
-                else None,
-            }
-        )
+        slot: dict[str, Any] = {
+            "discipline": choice(
+                form, f"slot-{index}-discipline", dict(DISCIPLINES), default="kickboxing"
+            ),
+            "age_from": age_from,
+            "age_to": age_to,
+            "days": days,
+            "time_start": start,
+            "time_end": end,
+            # Смена в форме не показывается, но и не теряется: раньше сохранение зала
+            # ставило всем строкам «any».
+            "shift": choice(form, f"slot-{index}-shift", dict(SHIFTS), default="any"),
+            "note": {"ru": note_ru, "kk": opt_text(form, f"slot-{index}-note_kk") or note_ru}
+            if note_ru
+            else None,
+        }
+        # Особая цена (КСК: бокс Вт, Чт, Сб — 20 000) и группа (Плаза: Вт, Чт 19:00 и Сб 19:30 —
+        # одно расписание). До 07.11.2026 полей в форме не было, и любое сохранение зала
+        # молча стирало цену из строк расписания.
+        price = opt_integer(form, f"slot-{index}-price")
+        if price is not None:
+            slot["price"] = price
+        group = opt_text(form, f"slot-{index}-group")
+        if group:
+            slot["group"] = group
+        slots.append(slot)
     return slots
 
 
