@@ -639,6 +639,7 @@ async def create_trial_lead(
             now=ctx.now,
             tz_name=_school_tz(),
             min_lead_hours=float(kb.policies.trial_min_lead_hours),
+            day_part=part if said_time is None else None,
         )
         session = choice.session
         if session is not None and said_time is None and part is not None and day_part_of(session.time_start) != part:

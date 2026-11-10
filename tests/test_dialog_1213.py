@@ -82,17 +82,20 @@ def test_romantik_has_no_morning_classes(kb) -> None:
     assert starts == {("boxing", "18:45"), ("kickboxing", "18:45")}, starts
 
 
-def test_plaza_trains_tue_thu_at_seven_and_saturday_at_half_past_seven(kb) -> None:
-    """Владелец 06.11.2026: Вт, Чт 19:00–20:30, Сб 19:30–21:00; утра больше нет."""
+def test_plaza_trains_mornings_and_an_evening_group(kb) -> None:
+    """Владелец 06.11.2026: Вт, Чт 19:00–20:30, Сб 19:30–21:00; 10.11.2026: «Мы убрали график на
+    Плазе 9:00 — добавьте его» — утро Вт, Чт, Сб 9:00–10:30 снова есть."""
     slots = {(slot.discipline, tuple(slot.days), slot.time_start, slot.time_end) for slot in kb.gym(PLAZA).schedule}
     assert slots == {
         (discipline, days, start, end)
         for discipline in ("boxing", "kickboxing")
-        for days, start, end in ((("tue", "thu"), "19:00", "20:30"), (("sat",), "19:30", "21:00"))
+        for days, start, end in (
+            (("tue", "thu", "sat"), "09:00", "10:30"), (("tue", "thu"), "19:00", "20:30"), (("sat",), "19:30", "21:00"),
+        )
     }, slots
     card = render_schedule_card(kb, gym_id=PLAZA, slots=kb.gym(PLAZA).schedule, lang=Language.RU)
-    assert "Пн" not in card and "09:00" not in card and "17:00" not in card, card
-    assert "19:30" in card and "21:00" in card, card
+    assert "Пн" not in card and "17:00" not in card, card
+    assert "09:00–10:30" in card and "19:30" in card and "21:00" in card, card
 
 
 @pytest.mark.parametrize("query", ["центр", "в центре", "Нет в центре"])

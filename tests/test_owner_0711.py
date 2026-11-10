@@ -17,6 +17,7 @@ import pytest
 
 from app.core import pipeline
 from app.kb import render
+from app.kb.agreement import with_choice
 from app.kb.sessions import client_named_time, client_times, resolve_trial_session
 from app.tools.booking import create_trial_lead
 from app.tools.gyms import district_place, find_gym_by_district
@@ -31,10 +32,11 @@ KSK = "ksk_kairbekova_334"
 THURSDAY = datetime(2026, 10, 15, 10, 18, tzinfo=ALMATY)
 
 
-def _resolve(kb, now: datetime, *, time_text: str | None = None, day: str | None = None, gym_id: str = PLAZA):
+def _resolve(kb, now: datetime, *, time_text: str | None = None, day: str | None = None, gym_id: str = PLAZA,
+             day_part: str | None = None):
     return resolve_trial_session(
         kb.gym(gym_id), time_text=time_text, day=day, discipline=None, now=now.astimezone(UTC),
-        tz_name="Asia/Almaty", min_lead_hours=float(kb.policies.trial_min_lead_hours),
+        tz_name="Asia/Almaty", min_lead_hours=float(kb.policies.trial_min_lead_hours), day_part=day_part,
     )
 
 
@@ -45,8 +47,10 @@ def _ctx(make_ctx, *texts: str, now: datetime = THURSDAY):
 # --------------------------------------------------------------------------- #
 # 1. Одна группа — одна запись, а не выбор
 # --------------------------------------------------------------------------- #
-def test_plaza_schedule_is_one_group(kb) -> None:
-    assert {slot.group for slot in kb.gym(PLAZA).schedule} == {"evening"}
+def test_plaza_evening_is_one_group(kb) -> None:
+    """Вечер — одна группа; утро 9:00 (вернулось 10.11.2026) — другая группа, без group."""
+    groups = {(slot.time_start, slot.group) for slot in kb.gym(PLAZA).schedule}
+    assert groups == {("09:00", None), ("19:00", "evening"), ("19:30", "evening")}, groups
 
 
 @pytest.mark.parametrize(
@@ -58,8 +62,8 @@ def test_plaza_schedule_is_one_group(kb) -> None:
         (datetime(2026, 10, 17, 18, 0, tzinfo=ALMATY), datetime(2026, 10, 20, 19, 0, tzinfo=ALMATY)),   # сб поздно → вт
     ],
 )
-def test_without_a_time_the_nearest_class_of_the_group_is_taken(kb, now, expected) -> None:
-    choice = _resolve(kb, now)
+def test_evening_without_a_time_takes_the_nearest_class_of_the_group(kb, now, expected) -> None:
+    choice = _resolve(kb, now, day_part="evening")
 
     assert choice.problem is None and choice.session is not None, choice
     assert choice.session.starts_at == expected
@@ -67,10 +71,18 @@ def test_without_a_time_the_nearest_class_of_the_group_is_taken(kb, now, expecte
 
 
 @pytest.mark.parametrize(("day", "time"), [("sat", "19:30"), ("tue", "19:00"), ("thu", "19:00")])
-def test_a_named_day_keeps_its_own_hour(kb, day, time) -> None:
-    choice = _resolve(kb, THURSDAY, day=day)
+def test_a_named_day_keeps_its_own_evening_hour(kb, day, time) -> None:
+    choice = _resolve(kb, THURSDAY, day=day, day_part="evening")
 
     assert choice.session is not None and choice.session.weekday == day and choice.session.time_start == time
+
+
+def test_morning_or_evening_is_still_a_choice(kb) -> None:
+    """Утро и вечер — разные группы: без части дня родителя спрашивают."""
+    assert _resolve(kb, THURSDAY).problem == "need_time"
+    assert _resolve(kb, THURSDAY, day="sat").problem == "need_time"
+    morning = _resolve(kb, THURSDAY, day_part="morning").session
+    assert morning is not None and morning.time_start == "09:00"
 
 
 def test_gyms_without_a_group_still_ask_for_the_time(kb) -> None:
@@ -78,15 +90,28 @@ def test_gyms_without_a_group_still_ask_for_the_time(kb) -> None:
     assert _resolve(kb, THURSDAY, gym_id=KSK).problem == "need_time"
 
 
-async def test_plaza_booking_asks_no_time_question(make_ctx, kb) -> None:
-    """Скриншот 07.11, 05:43: «Какое время вам удобнее? 1. Вт, Чт 19:00 2. Сб 19:30»."""
-    ctx = _ctx(make_ctx, "Мы на Северо-Западе, сыну 8 лет", "Запишите", "Иванов Тимур",
-               now=datetime(2026, 10, 17, 5, 43, tzinfo=ALMATY))
+async def test_plaza_asks_morning_or_evening_and_the_evening_pick_books(make_ctx, kb) -> None:
+    """Скриншот 07.11, 05:43: «1. Вт, Чт 19:00 2. Сб 19:30» — вечер делился надвое. С 10.11 вопрос
+    — утро или вечер, и вечер в нём одним вариантом; «2» записывает на ближайшее вечернее."""
+    from tests.test_dialogs_1510 import _invocation
 
-    result = await create_trial_lead(ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True)
+    texts = ("Мы на Северо-Западе, сыну 8 лет", "Запишите", "Иванов Тимур")
+    now = datetime(2026, 10, 17, 5, 43, tzinfo=ALMATY)
+    result = await create_trial_lead(
+        _ctx(make_ctx, *texts, now=now), child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True,
+    )
+    assert result.data["needs"] == ["need_time"], result.data
+    question = pipeline._booking_question(kb, Language.RU, [_invocation(result)])
+    assert "1. Бокс и кикбоксинг — Вт, Чт, Сб 09:00\n2. Бокс и кикбоксинг — Вт, Чт 19:00, Сб 19:30" in question, question
 
-    assert result.data["booked"] is True, result.data
+    ctx = _ctx(make_ctx, *texts, with_choice("2", question), now=now)
+    booked = await create_trial_lead(ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True)
+    assert booked.data["booked"] is True, booked.data
     assert ctx.services.leads[-1].trial_slot.astimezone(ALMATY) == datetime(2026, 10, 17, 19, 30, tzinfo=ALMATY)
+
+    ctx = _ctx(make_ctx, *texts, "в вечернее время", now=now)
+    booked = await create_trial_lead(ctx, child_name="Иванов Тимур", child_age=8, gym_id=PLAZA, parent_agreed=True)
+    assert booked.data["booked"] is True, booked.data
 
 
 def test_a_group_is_one_numbered_option(kb) -> None:
@@ -258,3 +283,21 @@ async def test_a_teen_is_served_and_a_child_still_asked_for_parents(kb, state, s
     assert note is not None and child_note not in note, note
     _, note = await say("77015550712", 4, "Запишите на бокс")
     assert note is not None and child_note not in note, note
+
+
+def test_an_evening_request_is_not_offered_the_morning(kb) -> None:
+    """КСК, кикбоксинг: 09:00, 17:00, 19:00. На «вечером» в вопросе только вечер (жалоба 16.10.2026)."""
+    choice = resolve_trial_session(
+        kb.gym(KSK), time_text=None, day=None, discipline="kickboxing", now=THURSDAY.astimezone(UTC),
+        tz_name="Asia/Almaty", min_lead_hours=2.0, day_part="evening",
+    )
+
+    assert choice.problem == "need_time"
+    assert {slot.time_start for slot in choice.options} == {"17:00", "19:00"}, choice.options
+
+
+def test_the_schedule_card_shows_the_group_on_one_line(kb) -> None:
+    gym = kb.gym(PLAZA)
+    card = render.render_schedule_card(kb, gym_id=PLAZA, slots=gym.schedule, lang=Language.RU)
+
+    assert "🕒 Вт, Чт, Сб · 09:00–10:30\n🕒 Вт, Чт · 19:00–20:30; Сб · 19:30–21:00" in card, card

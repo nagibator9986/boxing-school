@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: "2026-11-07"
+updated_at: "2026-11-10"
 updated_by: admin
 timezone: Asia/Almaty
 city_settlement: Костанай
@@ -172,6 +172,29 @@ gyms:
   # Владелец 07.11.2026: «он расписание делит на два предложения и уточняет, какое время
   # подходит, а у нас это одно расписание». Все четыре строки — одна группа (group):
   # ребёнок ходит и во вторник, и в четверг, и в субботу; пробное — ближайшее занятие.
+  # Владелец 10.11.2026: «Мы убрали график на Плазе 9:00 — добавьте его». Утро Вт, Чт, Сб
+  # 9:00–10:30 вернулось, как было с 13.10: это другая группа (вторая смена), поэтому без
+  # group — утро или вечер родитель выбирает.
+  - discipline: kickboxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
+  - discipline: boxing
+    age_from: null
+    age_to: null
+    days:
+    - tue
+    - thu
+    - sat
+    time_start: "09:00"
+    time_end: "10:30"
+    shift: second
   - discipline: kickboxing
     age_from: null
     age_to: null
@@ -498,6 +521,7 @@ gyms:
   phone: null
   coaches: []
   # Владелец 02.11.2026: «График Тобыл изменился. Теперь понедельник, среда, пятница 20:00-21:00».
+  # Владелец 10.11.2026: «Тобыл неправильный график. Там 19:30–21:00, а у вас стоит 20:00–21:00».
   schedule:
   - discipline: kickboxing
     age_from: null
@@ -506,13 +530,13 @@ gyms:
     - mon
     - wed
     - fri
-    time_start: "20:00"
+    time_start: "19:30"
     time_end: "21:00"
   - discipline: boxing
     age_from: null
     age_to: null
     days: *id005
-    time_start: "20:00"
+    time_start: "19:30"
     time_end: "21:00"
   capacity_note: null
   media:

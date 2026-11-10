@@ -250,7 +250,7 @@ def test_a_day_part_picks_the_only_class_in_it(kb) -> None:
     assert time_by_day_part(plaza, ("Да, в вечернее время",), day="thu") == "19:00"
     assert time_by_day_part(plaza, ("в субботу вечером",), day="sat") == "19:30"
     assert time_by_day_part(plaza, ("Да, в вечернее время",)) is None, "без дня 19:00 и 19:30 — выбор"
-    assert time_by_day_part(plaza, ("С утра удобнее",)) is None, "утра на Плазе нет"
+    assert time_by_day_part(plaza, ("С утра удобнее",)) == "09:00", "утро на Плазе вернулось 10.11.2026"
     assert time_by_day_part(plaza, ("утром или вечером",)) is None
 
 

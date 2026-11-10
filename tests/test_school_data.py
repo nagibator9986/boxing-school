@@ -30,9 +30,9 @@ def test_ksk_kickboxing_mon_wed_fri_and_discounted_boxing_tue_thu_sat(kb: KBSnap
 
 
 def test_kasymkhanova_and_tobyl_new_hours(kb: KBSnapshot) -> None:
-    """Владелец 12.10.2026: Касымханова 18:00–19:00; 02.11.2026: Тобыл Пн, Ср, Пт 20:00–21:00."""
+    """Владелец 12.10.2026: Касымханова 18:00–19:00; 10.11.2026: Тобыл Пн, Ср, Пт 19:30–21:00."""
     assert {(s.time_start, s.time_end) for s in kb.gym("center_kasymkhanova_10").schedule} == {("18:00", "19:00")}
-    assert {(s.time_start, s.time_end) for s in kb.gym("region_tobyl").schedule} == {("20:00", "21:00")}
+    assert {(s.time_start, s.time_end) for s in kb.gym("region_tobyl").schedule} == {("19:30", "21:00")}
 
 
 def test_what_to_bring_is_answered_with_the_owners_text(kb: KBSnapshot) -> None:

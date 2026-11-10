@@ -196,6 +196,11 @@ def latest_day_part(texts) -> str | None:
         parts = client_day_parts((raw,))
         if parts:
             return next(iter(parts)) if len(parts) == 1 else None
+        # «2» на «1. … Вт, Чт, Сб 09:00 / 2. … Вт, Чт 19:00, Сб 19:30» — выбран вечер целой
+        # группой: двух часов в варианте мало для времени, но часть дня в нём одна (10.11.2026).
+        picked = {day_part_of(time) for time in _offered_times(chosen_option(raw))}
+        if len(picked) == 1 and None not in picked:
+            return next(iter(picked))
         if _client_times([raw]):
             # «Где у вас утренний кикбоксинг?», а потом «среда, 17.00» — назван час, и
             # «утро» из прежней реплики выбором уже не считается (живой прогон 19.10.2026).
@@ -504,8 +509,15 @@ def resolve_trial_session(
     tz_name: str,
     min_lead_hours: float,
     horizon_days: int = _HORIZON_DAYS,
+    day_part: str | None = None,
 ) -> SessionChoice:
-    """Ближайшее занятие зала под выбор родителя, не раньше ``min_lead_hours``."""
+    """Ближайшее занятие зала под выбор родителя, не раньше ``min_lead_hours``.
+
+    ``day_part`` — часть дня из слов клиента («в вечернее время»): без названного часа выбор
+    идёт только среди занятий этой части дня. Плаза с 10.11.2026: утро 9:00 и вечерняя
+    группа (Вт, Чт 19:00, Сб 19:30) — на «вечером» запись на ближайшее вечернее занятие, а
+    не вопрос «9:00 или вечер?», на который владелец жаловался 16.10.2026.
+    """
     slots = list(gym.schedule)
     if not slots:
         return SessionChoice(problem="no_schedule")
@@ -536,12 +548,16 @@ def resolve_trial_session(
         if wanted is not None and not starts:
             # «В понедельник», а занятий в понедельник нет — это не «уточните время».
             return SessionChoice(problem="unknown_day", options=tuple(slots))
+        in_part = [slot for slot in on_day if day_part_of(slot.time_start) == day_part] if day_part else []
+        if len(starts) != 1 and in_part:
+            # Часть дня названа, и занятия в ней есть: вариантов меньше, утро вечернему не предлагается.
+            on_day, starts = in_part, {slot.time_start for slot in in_part}
         if len(starts) != 1:
             # Строки одной группы — одно расписание (Плаза: Вт, Чт 19:00 и Сб 19:30):
             # выбирать между ними нечего, пробное — ближайшее занятие группы.
             nearest = _nearest(on_day, None, first_day, earliest, tz, horizon_days) if one_group(on_day) else None
             if nearest is None:
-                return SessionChoice(problem="need_time", options=tuple(slots))
+                return SessionChoice(problem="need_time", options=tuple(in_part or slots))
             starts, day = {nearest.time_start}, nearest.weekday
         time = next(iter(starts))
     timed = [slot for slot in slots if slot.time_start == time]

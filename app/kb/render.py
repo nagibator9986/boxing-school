@@ -947,6 +947,8 @@ def render_schedule_card(
     for discipline, group in by_discipline.items():
         name = _lang_text(snapshot, f"card.{discipline}", lang)
         lines = [f"{ICON_GYM} {name}"]
+        # Строки одной группы (Плаза: Вт, Чт 19:00 и Сб 19:30) — одной строкой, как в списке залов.
+        rows: dict[object, list[str]] = {}
         for slot in sorted(group, key=lambda item: (item.time_start, item.days[0])):
             days = _days_line(slot.days, lang)
             line = f"{days} · {slot.time_start}–{slot.time_end}"
@@ -954,7 +956,8 @@ def render_schedule_card(
                 line += f" ({slot.age_from}–{slot.age_to})"
             if slot.price is not None:
                 line += f" — {snapshot.text('card.slot_price', lang, price=_money(slot.price))}"
-            lines.append(f"{ICON_TIME} {line}")
+            rows.setdefault(("group", slot.group) if slot.group else id(slot), []).append(line)
+        lines.extend(f"{ICON_TIME} {'; '.join(row)}" for row in rows.values())
         parts.append("\n".join(lines))
 
     if any(not slot.age_known for slot in slots):

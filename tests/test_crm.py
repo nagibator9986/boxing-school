@@ -579,7 +579,8 @@ def test_gym_save_keeps_slot_price_group_and_shift(client: Any, editor: KBEditor
         return [dict(slot) for slot in gym["schedule"]]
 
     ksk_before, plaza_before = slots("ksk_kairbekova_334"), slots("plaza_szm_70")
-    assert any(slot.get("price") for slot in ksk_before) and all(slot.get("group") for slot in plaza_before)
+    assert any(slot.get("price") for slot in ksk_before) and any(slot.get("group") for slot in plaza_before)
+    assert any(slot.get("shift") == "second" for slot in plaza_before), "утро Плазы — вторая смена"
 
     for gym_id in ("ksk_kairbekova_334", "plaza_szm_70"):
         fields = form_fields(client.get(f"/kb/gyms/{gym_id}").data.decode())
@@ -595,11 +596,13 @@ def test_gym_save_keeps_slot_price_group_and_shift(client: Any, editor: KBEditor
 
     # Группу можно поставить и снять в форме.
     fields = form_fields(client.get("/kb/gyms/plaza_szm_70").data.decode())
-    fields["slot-0-group"] = ""
-    fields["slot-1-shift"] = "second"
+    evening = [index for index, slot in enumerate(plaza_before) if slot.get("group")]
+    fields[f"slot-{evening[0]}-group"] = ""
+    fields[f"slot-{evening[1]}-shift"] = "second"
     client.post("/kb/gyms/plaza_szm_70", data=fields, follow_redirects=True)
     after = slots("plaza_szm_70")
-    assert "group" not in after[0] and after[1]["group"] == "evening" and after[1]["shift"] == "second"
+    assert "group" not in after[evening[0]]
+    assert after[evening[1]]["group"] == "evening" and after[evening[1]]["shift"] == "second"
 
 
 def test_self_signup_age_is_edited_in_crm(client: Any, editor: KBEditor) -> None:
