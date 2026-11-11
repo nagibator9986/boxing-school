@@ -27,6 +27,7 @@ from app.kb.gaps import say_no_data
 from app.kb.models import Artifact, KBSnapshot
 from app.kb.places import scope_by_texts
 from app.kb.render import render_artifact_body, schedule_heading
+from app.tools import freshness
 from app.types import (
     CHANNEL_LIMITS,
     MAX_MESSAGE_CHARS,
@@ -233,7 +234,10 @@ async def _schedule_already_shown(ctx: ToolContext, gym_id: str | None) -> bool:
         return True
     if not gym_id:
         return False
-    return await ctx.services.count_artifact_sends(ctx.conversation_id, f"schedule_{gym_id}") > 0
+    # Карточка, ушедшая до смены расписания, нового не показала: подпись к видео его несёт.
+    artifact_id = f"{freshness.SCHEDULE_CARD_PREFIX}{gym_id}"
+    since = freshness.artifact_since(ctx.kb, artifact_id)
+    return await ctx.services.count_artifact_sends(ctx.conversation_id, artifact_id, since=since) > 0
 
 
 async def _prefer_route_video(ctx: ToolContext, artifact: Artifact) -> Artifact:
@@ -372,7 +376,10 @@ async def send_content(ctx: ToolContext, *, artifact_id: str, gym_id: str | None
             ],
         )
 
-    already_sent = await ctx.services.count_artifact_sends(ctx.conversation_id, artifact.id)
+    # Список расписаний, ушедший до смены расписания хотя бы одного его зала, устарел — и
+    # лимитом повторов не считается. Видео и фото от расписания не зависят.
+    since = freshness.artifact_since(ctx.kb, artifact.id) if artifact.render_from == "schedules" else None
+    already_sent = await ctx.services.count_artifact_sends(ctx.conversation_id, artifact.id, since=since)
     if already_sent >= artifact.max_send_per_dialog:
         return ToolResult.success(
             data={

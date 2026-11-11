@@ -42,12 +42,16 @@ from app.admin.kb_lock import DEFAULT_TIMEOUT_S as DEFAULT_LOCK_TIMEOUT_S
 from app.admin.kb_lock import KBLockTimeout, kb_write_lock
 from app.kb import loader as kb_loader
 from app.kb.models import KBSnapshot
+from app.kb.schedule_since import schedules_differ
 from app.types import KBValidationError
 
 __all__ = ["BackupInfo", "KBEditError", "KBEditor", "SaveResult", "merge_into", "quote_ambiguous"]
 
 #: Сколько резервных копий держим. Каждая — семь небольших файлов.
 BACKUP_KEEP: Final[int] = 40
+
+#: Файл залов: только в нём занятия, по смене которых ставится ``schedule_since``.
+GYMS_FILE: Final[str] = "gyms.yaml"
 
 
 def _yaml() -> YAML:
@@ -233,6 +237,8 @@ class KBEditor:
         backup = self._backup()
         for name, document in documents.items():
             self._stamp(document, actor=actor)
+            if name == GYMS_FILE:
+                self._stamp_schedule_changes(document, previous=self._load_or_none(GYMS_FILE))
             self._write_atomic(self._kb_dir / name, self.dump(document))
 
         try:
@@ -299,10 +305,15 @@ class KBEditor:
     def _restore_locked(self, source: Path) -> SaveResult:
         """Тело отката. Вызывается только под блокировкой."""
         safety = self._backup()
+        previous_gyms = self._load_or_none(GYMS_FILE)
         for name in kb_loader.KB_FILES:
             candidate = source / name
             if candidate.is_file():
                 self._write_atomic(self._kb_dir / name, candidate.read_text(encoding="utf-8"))
+        # Откат меняет расписание так же, как правка: старые карточки с ним устаревают.
+        restored_gyms = self._load_or_none(GYMS_FILE)
+        if restored_gyms is not None and self._stamp_schedule_changes(restored_gyms, previous=previous_gyms):
+            self._write_atomic(self._kb_dir / GYMS_FILE, self.dump(restored_gyms))
         try:
             snapshot, warnings = kb_loader.load_sync(
                 self._kb_dir, media_dir=self._media_dir, schema_version=self._schema_version
@@ -319,6 +330,41 @@ class KBEditor:
         )
 
     # ------------------------------------------------------------ внутреннее
+    def _load_or_none(self, name: str) -> Any:
+        """Документ с диска; ``None`` — файла нет или он не читается."""
+        try:
+            return self.load(name)
+        except Exception:  # noqa: BLE001 - нет прежней версии — нечего сравнивать
+            return None
+
+    def _stamp_schedule_changes(self, document: Any, *, previous: Any) -> bool:
+        """Ставит ``schedule_since`` залам, у которых поменялись занятия. ``True`` — поставил.
+
+        По этому моменту бот понимает, что карточка расписания, ушедшая клиенту раньше,
+        устарела: не ссылается на неё и присылает новую (владелец 11.11.2026: «вы не
+        исправили расписание» — правка была, а бот в старых переписках опирался на прежнюю
+        карточку). Новый зал отметки не получает: старых карточек у него нет.
+        """
+        try:
+            old_gyms = [gym for gym in (previous or {}).get("gyms") or () if hasattr(gym, "get")]
+            before = {str(gym.get("id")): gym.get("schedule") for gym in old_gyms}
+            since_before = {str(gym.get("id")): gym.get("schedule_since") for gym in old_gyms}
+            moment = datetime.now(tz=self._tz).replace(microsecond=0).isoformat()
+            stamped = False
+            for gym in document.get("gyms") or ():
+                gym_id = str(gym.get("id"))
+                if gym_id in before and schedules_differ(before[gym_id], gym.get("schedule")):
+                    gym["schedule_since"] = moment
+                    stamped = True
+                elif gym.get("schedule_since") is None and since_before.get(gym_id) is not None:
+                    # Форма зала собирает его заново и про отметку не знает, а merge_into
+                    # удаляет ключи, которых нет в форме: без этого любое сохранение зала
+                    # стирало момент смены, и старые карточки снова считались верными.
+                    gym["schedule_since"] = since_before[gym_id]
+            return stamped
+        except (AttributeError, TypeError):  # pragma: no cover - документ не того вида
+            return False
+
     def _stamp(self, document: Any, *, actor: str) -> None:
         """Проставляет, кто и когда правил. Поля есть в схеме каждого файла.
 

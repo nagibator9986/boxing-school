@@ -291,6 +291,26 @@ async def sent_texts(session: AsyncSession, conv_id: UUID, *, limit: int = 20) -
     return [str((row or {}).get("text") or "") for row in rows]
 
 
+async def sent_rows(
+    session: AsyncSession, conv_id: UUID, *, limit: int = 20
+) -> list[tuple[datetime, dict[str, Any]]]:
+    """То же, что :func:`sent_texts`, но со временем постановки и всем payload, свежие первыми.
+
+    Нужно проверке свежести расписания: какой материал ушёл и когда.
+    """
+    stmt = (
+        sa.select(OutboxMessage.created_at, OutboxMessage.payload)
+        .where(
+            OutboxMessage.conversation_id == conv_id,
+            OutboxMessage.state.in_(("pending", "sending", "sent")),
+        )
+        .order_by(OutboxMessage.created_at.desc())
+        .limit(max(1, limit))
+    )
+    rows = (await session.execute(stmt)).all()
+    return [(created_at, dict(payload or {})) for created_at, payload in rows]
+
+
 async def last_sent_with(
     session: AsyncSession, conv_id: UUID, markers: Sequence[str], *, limit: int = 20
 ) -> datetime | None:
@@ -388,12 +408,17 @@ async def artifact_texts(session: AsyncSession, conv_id: UUID, artifact_id: str,
     return list(reversed(found[:limit]))
 
 
-async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id: str) -> int:
+async def count_artifact_sends(
+    session: AsyncSession, conv_id: UUID, artifact_id: str, *, since: datetime | None = None
+) -> int:
     """Сколько раз артефакт уже уходил в этом диалоге.
 
     Считается по очереди исходящих: ``artifact_id`` живёт в JSON-дампе ``OutboundMessage``.
     Учитываются и ещё не отправленные строки (``pending``/``sending``) — иначе бот
     успеет поставить второй такой же артефакт до отправки первого.
+
+    ``since`` — считать только поставленные не раньше этого момента: карточка расписания,
+    ушедшая до смены расписания, клиенту нового не показала (``app.tools.freshness``).
     """
     stmt = (
         sa.select(sa.func.count())
@@ -408,4 +433,6 @@ async def count_artifact_sends(session: AsyncSession, conv_id: UUID, artifact_id
             ),
         )
     )
+    if since is not None:
+        stmt = stmt.where(OutboxMessage.created_at >= since)
     return int((await session.execute(stmt)).scalar_one() or 0)

@@ -64,7 +64,7 @@ from app.core import (
     postcheck,
 )
 from app.core import session as conv_session
-from app.kb.models import FAQ_TOPICS, KBSnapshot, min_accepted_age
+from app.kb.models import FAQ_TOPICS, Gym, KBSnapshot, min_accepted_age
 from app.kb import render
 from app.kb.agreement import (
     is_option_line,
@@ -87,7 +87,7 @@ from app.observability import metrics
 from app.storage import repo_conversation, repo_lead, repo_message, repo_outbox
 from app.storage.models import Conversation, ProcessedWebhook
 from app.storage.state import StateStore, key_dedup_message, key_rate
-from app.tools import registry
+from app.tools import freshness, registry
 from app.tools.gyms import district_place, gyms_named_in, normalize_text
 from app.types import (
     MAX_MESSAGE_CHARS,
@@ -547,10 +547,12 @@ class _Services:
             self.session, self.conv.id, now=self.turn_started_at, within_minutes=within_minutes
         )
 
-    async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
-        """Сколько раз артефакт уже уходил в этот диалог."""
+    async def count_artifact_sends(
+        self, conversation_id: UUID, artifact_id: str, *, since: datetime | None = None
+    ) -> int:
+        """Сколько раз артефакт уже уходил в этот диалог; ``since`` — только начиная с этого момента."""
         return await repo_message.count_artifact_sends(
-            self.session, conversation_id, artifact_id
+            self.session, conversation_id, artifact_id, since=since
         )
 
 
@@ -1233,6 +1235,7 @@ async def _run_turn(
         child_talk = await _child_talk_continues(
             db, conv, text, self_signup_age=kb.policies.audience_self_signup_age
         )
+        cards_sent, outdated_schedules = await _cards_already_sent(db, conv, kb=kb)
         dynamic_note = build_dynamic_note(
             lang=lang,
             now=_school_time(now, settings),
@@ -1245,7 +1248,8 @@ async def _run_turn(
                 text, kb=kb, now=now, name_is_childs=await _bot_asked_child_name(db, conv)
             ),
             child_at_keyboard=child_talk,
-            cards_sent=await _cards_already_sent(db, conv),
+            cards_sent=cards_sent,
+            outdated_schedules=outdated_schedules,
         )
         request = LLMRequest(
             system_instruction=system_instruction,
@@ -1376,7 +1380,7 @@ async def _run_turn(
         if invented_names:
             _log.warning("invented_name_stripped", names=list(invented_names))
         strict = injection or verdict.has(GuardFlag.OFF_TOPIC)
-        sent_before = await _texts_already_sent(db, conv)
+        sent_before, schedule_fresh = await _sent_for_postcheck(db, conv, kb=kb)
         pc = postcheck.check(
             cleaned,
             invocations=invocations,
@@ -1387,8 +1391,8 @@ async def _run_turn(
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
             known_names=known_names,
             known_numbers=_numbers_in(sent_before),
-            known_times=_times_in(sent_before),
-            known_weekdays=_weekdays_in(sent_before),
+            known_times=_times_in(schedule_fresh),
+            known_weekdays=_weekdays_in(schedule_fresh),
         )
         if not cleaned and services.messages:
             # Модель промолчала, а инструменты уже ответили клиенту — карточкой или
@@ -2557,7 +2561,9 @@ async def _answer_schedule_overview(
         return None
     limit = int(artifact.max_send_per_dialog or 1) if artifact is not None else _SCHEDULES_SENDS
     try:
-        sent = await services.count_artifact_sends(conv.id, SCHEDULES_CARD)
+        sent = await services.count_artifact_sends(
+            conv.id, SCHEDULES_CARD, since=freshness.artifact_since(kb, SCHEDULES_CARD)
+        )
     except Exception as exc:  # noqa: BLE001 - не знаем — пусть отвечает модель
         _log.warning("schedules_card_lookup_failed", error=type(exc).__name__)
         return None
@@ -3173,24 +3179,73 @@ def _times_in(texts: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for said in texts for value in postcheck.extract_times(said)))
 
 
-async def _cards_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
-    """Какие готовые карточки клиент в этом диалоге уже видел.
+async def _sent_rows(db: AsyncSession, conv: Conversation) -> list[freshness.SentRow]:
+    """Последние строки очереди этого диалога — со временем и материалами, свежие первыми."""
+    try:
+        raw = await repo_message.sent_rows(db, conv.id, limit=_CARD_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001 - заметка и фильтр не важнее ответа
+        _log.warning("sent_rows_lookup_failed", error=type(exc).__name__)
+        return []
+    return [freshness.SentRow.from_payload(created_at, payload) for created_at, payload in raw]
+
+
+def _outdated_in(kb: KBSnapshot, row: freshness.SentRow) -> tuple[Gym, ...]:
+    """Залы, расписание которых в этой строке устарело."""
+    try:
+        return freshness.outdated_gyms(kb, row, named_in=gyms_named_in)
+    except Exception as exc:  # noqa: BLE001 - проверка свежести не роняет ход
+        _log.warning("schedule_freshness_failed", error=type(exc).__name__)
+        return ()
+
+
+async def _sent_for_postcheck(
+    db: AsyncSession, conv: Conversation, *, kb: KBSnapshot
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Уже отправленные тексты: все — и те, чьё расписание ещё действует.
+
+    Цифры подтверждает любой отправленный текст, а время и дни — только тот, где
+    расписание не устарело: иначе модель повторяла «Тобыл 20:00–21:00» из карточки,
+    ушедшей до смены расписания, и фильтр пропускал это как уже сказанное (11.11.2026).
+    """
+    rows = await _sent_rows(db, conv)
+    return (
+        tuple(row.text for row in rows),
+        tuple(row.text for row in rows if not _outdated_in(kb, row)),
+    )
+
+
+async def _cards_already_sent(
+    db: AsyncSession, conv: Conversation, *, kb: KBSnapshot
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Какие готовые карточки клиент видел — и расписание каких залов у него устарело.
 
     Живой прогон 09.09.2026: клиент выбрал пункт меню, получил список залов и
     прайс, а на «ему 9 лет» модель пересказала тот же список залов своими
     словами. Дедуп внутри хода этого не ловит — карточка ушла ходом раньше.
+
+    Карточка с расписанием, ушедшая до его смены, в первый список не попадает: заметка
+    «не присылай повторно, ссылайся на список выше» отправляла клиента к старому
+    расписанию (владелец 11.11.2026: «вы не исправили расписание»). Такие залы — во
+    втором списке, пока клиент не получил их расписание заново.
     """
-    try:
-        texts = await repo_message.sent_texts(db, conv.id, limit=_CARD_LOOKBACK)
-    except Exception as exc:  # noqa: BLE001 - заметка не важнее ответа
-        _log.warning("sent_cards_lookup_failed", error=type(exc).__name__)
-        return ()
+    rows = await _sent_rows(db, conv)
     seen: list[str] = []
-    for said in texts:
+    outdated: dict[str, str] = {}
+    refreshed: set[str] = set()
+    # Свежие строки первыми: зал, чьё новое расписание уже ушло, устаревшим не считается.
+    for row in rows:
+        stale = _outdated_in(kb, row)
+        if stale:
+            for gym in stale:
+                if gym.id not in refreshed:
+                    outdated.setdefault(gym.id, gym.title.ru)
+            continue
+        for artifact_id in row.artifact_ids:
+            refreshed.update(gym.id for gym in freshness.schedule_gyms(kb, artifact_id))
         for marker, label in _CARD_MARKERS:
-            if marker in said and label not in seen:
+            if marker in row.text and label not in seen:
                 seen.append(label)
-    return tuple(seen)
+    return tuple(seen), tuple(outdated.values())
 
 
 def _client_said_goodbye(text: str, *, kb: KBSnapshot) -> bool:

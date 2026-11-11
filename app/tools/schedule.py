@@ -29,6 +29,7 @@ from app.kb.models import Gym, ScheduleSlot
 from app.kb import render
 from app.kb.render import render_schedule_card
 from app.kb.sessions import client_times, normalize_time, weekday_code
+from app.tools import freshness
 from app.tools.gyms import opening_caveats
 from app.types import (
     EscalationReason,
@@ -229,9 +230,24 @@ async def get_schedule(
     # Подпись к видео дороги несёт то же расписание. Живой прогон диалога 12.10.2026:
     # на «Нет в центре» ушло видео с подписью, на «Надо» — карточка расписания того же
     # зала, и клиент получил одно и то же два раза подряд.
-    sent_before = await ctx.services.count_artifact_sends(
-        ctx.conversation_id, _SCHEDULE_ARTIFACT.format(gym_id=gym.id)
-    ) + await ctx.services.count_artifact_sends(ctx.conversation_id, f"route_{gym.id}")
+    # Карточка или подпись, ушедшая до смены расписания (``Gym.schedule_since``), нового
+    # клиенту не показала: такая не считается, и карточка уходит снова. Владелец 11.11.2026:
+    # «вы не исправили расписание» — в старых переписках бот опирался на прежнюю карточку.
+    since = freshness.since_of(kb, gym)
+    shown = (_SCHEDULE_ARTIFACT.format(gym_id=gym.id), f"route_{gym.id}")
+    sent_before = 0
+    for artifact_id in shown:
+        sent_before += await ctx.services.count_artifact_sends(ctx.conversation_id, artifact_id, since=since)
+    if not sent_before and since is not None:
+        outdated = 0
+        for artifact_id in shown:
+            outdated += await ctx.services.count_artifact_sends(ctx.conversation_id, artifact_id)
+        if outdated:
+            caveats.append(
+                "Раньше в этом диалоге клиент получал прежнее расписание этого зала — с тех пор "
+                "оно изменилось. Скажи одной короткой фразой, что расписание обновилось, и не "
+                "ссылайся на старое."
+            )
     if sent_before:
         caveats.append(
             "Эту карточку расписания клиент в диалоге уже получал. Второй раз блоком "

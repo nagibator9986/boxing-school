@@ -901,8 +901,10 @@ class ToolServices(Protocol):
         """Ставит или продлевает паузу бота."""
         ...
 
-    async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
-        """Сколько раз артефакт уже уходил в этом диалоге."""
+    async def count_artifact_sends(
+        self, conversation_id: UUID, artifact_id: str, *, since: datetime | None = None
+    ) -> int:
+        """Сколько раз артефакт уже уходил в этом диалоге; ``since`` — только начиная с этого момента."""
         ...
 
     async def escalation_open(self, *, within_minutes: int) -> bool:

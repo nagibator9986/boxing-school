@@ -22,6 +22,7 @@ import yaml
 
 from app.admin.kb_lock import kb_write_lock
 from app.kb import loader as kb_loader
+from app.kb.schedule_since import schedules_differ, stamp_now
 from app.logging_conf import get_logger
 
 __all__ = ["ScheduleWriteError", "WriteResult", "apply_schedule", "clear_schedule", "read_schedule"]
@@ -151,6 +152,9 @@ def _apply_schedule_locked(
         raise ScheduleWriteError(f"в gyms.yaml нет зала '{gym_id}'")
 
     before = len(target.get("schedule") or [])
+    if schedules_differ(target.get("schedule"), slots):
+        # Карточки с прежним расписанием, ушедшие клиентам, с этого момента устарели.
+        target["schedule_since"] = stamp_now(data.get("timezone"))
     target["schedule"] = slots
 
     # Пробел G-1 закрыт для этого зала — снимаем пометку, иначе бот продолжит
@@ -188,6 +192,8 @@ def _clear_schedule_locked(
     for gym in data["gyms"]:
         if isinstance(gym, dict) and gym.get("id") == gym_id:
             before = len(gym.get("schedule") or [])
+            if schedules_differ(gym.get("schedule"), []):
+                gym["schedule_since"] = stamp_now(data.get("timezone"))
             gym["schedule"] = []
             refs = gym.get("gap_refs")
             if isinstance(refs, list) and "G-1" not in refs:

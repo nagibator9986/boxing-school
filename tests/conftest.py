@@ -215,8 +215,10 @@ class RecordingServices:
         """Записывает паузу бота."""
         self.pauses.append((conv_key, minutes, reason))
 
-    async def count_artifact_sends(self, conversation_id: UUID, artifact_id: str) -> int:
-        """Сколько раз артефакт уже уходил в диалоге."""
+    async def count_artifact_sends(
+        self, conversation_id: UUID, artifact_id: str, *, since: datetime | None = None
+    ) -> int:
+        """Сколько раз артефакт уже уходил в диалоге. ``since`` заглушка не различает."""
         return self.artifact_sends.get(artifact_id, 0)
 
     async def escalation_open(self, *, within_minutes: int) -> bool:
