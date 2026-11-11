@@ -364,6 +364,11 @@ class _Services:
     cards: list[ManagerCard] = field(default_factory=list)
     #: Строки outbox с карточками администратору: вход человека в диалог их не отменяет.
     card_outbox: set[UUID] = field(default_factory=set)
+    #: Строка outbox последнего сообщения КЛИЕНТУ — единственная, куда можно дописать
+    #: следующий текст. Последняя строка хода для этого не годится: 11.11.2026 после
+    #: записи последней в очереди стояла карточка администратору, текст клиенту
+    #: дописался в неё, вышел длиннее 1000 знаков, и не ушло ни то, ни другое.
+    client_tail: UUID | None = None
     lead_id: UUID | None = None
     paused: bool = False
     #: Начало хода. Нужно, чтобы отличить реплику человека, пришедшую ПОКА бот
@@ -404,6 +409,7 @@ class _Services:
             self.card_outbox.add(outbox_id)
         if to_client:
             self.messages.append(message)
+            self.client_tail = outbox_id
             await self._send_early(outbox_id, message)
         return outbox_id
 
@@ -447,7 +453,12 @@ class _Services:
         одном запросе Wazzup передавать нельзя.
         """
         text = (message.text or "").strip()
-        if not text or message.content_uri or not self.outbox or not self.messages:
+        if not text or message.content_uri or not self.messages:
+            return None
+        # Дописывать можно только в строку, которая ещё ждёт конца хода: ушедшая раньше
+        # (ранняя отправка) или снятая при входе человека уже не наша.
+        outbox_id = self.client_tail
+        if outbox_id is None or all(entry[0] != outbox_id for entry in self.outbox):
             return None
 
         previous = self.messages[-1]
@@ -461,7 +472,6 @@ class _Services:
         if len(joined) > hard:
             return None
 
-        outbox_id = self.outbox[-1][0]
         try:
             if not await repo_outbox.append_text(
                 self.session, outbox_id, text, artifact_ids=message.artifacts()
