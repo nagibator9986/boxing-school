@@ -52,6 +52,10 @@ SEEDED: tuple[str, ...] = ("kb", "media")
 # доехать до сервера, даже если владелец правил словарь в CRM.
 MERGED_KEYS: dict[str, str] = {"i18n.yaml": "strings", "lexicon.yaml": "intents"}
 
+#: Файл залов: в правленый владельцем выпуск дописывает отметку смены расписания
+#: (``schedule_since``) тем залам, у которых её нет (:func:`_merge_schedule_since`).
+GYMS_FILE: str = "gyms.yaml"
+
 #: Какую версию каждого файла положил на диск сам запуск — отпечаток SHA-256.
 #: Лежит в корне каталога данных, а не в ``kb/``: там его подхватил бы отпечаток
 #: базы знаний.
@@ -236,14 +240,14 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
                     f"{name}/{item.name}: отличается от версии в репозитории, а правил ли его "
                     "владелец — неизвестно. Оставлен как есть."
                 )
-                if name == "kb" and item.name in MERGED_KEYS:
+                if name == "kb" and (item.name in MERGED_KEYS or item.name == GYMS_FILE):
                     merges.append((item, destination))
             elif disk_hash != seeded:
                 _log(
                     f"{name}/{item.name}: в репозитории новая версия, но файл правили в CRM — "
                     "оставлена правка владельца."
                 )
-                if name == "kb" and item.name in MERGED_KEYS:
+                if name == "kb" and (item.name in MERGED_KEYS or item.name == GYMS_FILE):
                     merges.append((item, destination))
             else:
                 updates.append((name, item, destination, image_hash))
@@ -288,6 +292,8 @@ def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
     Тексты владельца не меняются ни на букву: добавляется только то, чего у него нет.
     Разбор с сохранением комментариев и кавычек — тот же, что у CRM.
     """
+    if source.name == GYMS_FILE:
+        return _merge_schedule_since(source, destination)
     section = MERGED_KEYS.get(source.name)
     if not section:
         return []
@@ -316,6 +322,61 @@ def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
         _log(f"ВНИМАНИЕ: kb/{destination.name}: не удалось дописать новые тексты: {exc}")
         return []
     _log(f"kb/{destination.name}: правки владельца оставлены, дописаны новые тексты: {', '.join(added)}")
+    return added
+
+
+def _merge_schedule_since(source: Path, destination: Path) -> list[str]:
+    """Дописывает залам в правленый владельцем ``gyms.yaml`` отметку смены расписания.
+
+    11.11.2026: выпуск принёс ``schedule_since`` Плазе и Тобылу, а файл на томе за час до
+    этого сохранили в CRM — и выпуск его не тронул: бот продолжал считать карточки со старым
+    расписанием верными. Расписание владельца не меняется; дописывается только отметка, и
+    только залу, у которого её нет, а в выпуске она есть:
+
+    * занятия совпадают с выпуском — момент из выпуска;
+    * отличаются — их меняли в CRM после выпуска, а когда, неизвестно: берётся время
+      последнего сохранения файла. Карточки, ушедшие раньше, тогда считаются устаревшими —
+      лишний повтор расписания лучше, чем ссылка на прежнее.
+    """
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from ruamel.yaml import YAML
+
+        from app.kb.schedule_since import DEFAULT_TZ, schedules_differ
+
+        engine = YAML()
+        engine.preserve_quotes = True
+        engine.width = 4096
+        engine.indent(mapping=2, sequence=2, offset=0)
+        image = engine.load(source.read_text(encoding="utf-8")) or {}
+        disk = engine.load(destination.read_text(encoding="utf-8")) or {}
+        released = {
+            str(gym.get("id")): gym for gym in image.get("gyms") or () if gym.get("schedule_since")
+        }
+        tz = ZoneInfo(str(disk.get("timezone") or DEFAULT_TZ))
+        saved_at = datetime.fromtimestamp(destination.stat().st_mtime, tz=tz).replace(microsecond=0)
+        added: list[str] = []
+        for gym in disk.get("gyms") or ():
+            gym_id = str(gym.get("id"))
+            ours = released.get(gym_id)
+            if ours is None or gym.get("schedule_since"):
+                continue
+            same = not schedules_differ(ours.get("schedule"), gym.get("schedule"))
+            gym["schedule_since"] = ours["schedule_since"] if same else saved_at.isoformat()
+            # В журнале видно, меняли ли занятия в CRM: читать файл на томе для этого не нужно.
+            added.append(gym_id if same else f"{gym_id} (занятия отличаются от выпуска — с {saved_at:%d.%m %H:%M})")
+        if not added:
+            return []
+        temporary = destination.with_name(f".{destination.name}.seed-tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            engine.dump(disk, handle)
+        os.replace(temporary, destination)
+    except Exception as exc:  # noqa: BLE001 - не дописали — громко, но запуск продолжается
+        _log(f"ВНИМАНИЕ: kb/{destination.name}: не удалось дописать отметку смены расписания: {exc}")
+        return []
+    _log(f"kb/{destination.name}: правки владельца оставлены, дописана отметка смены расписания: {', '.join(added)}")
     return added
 
 

@@ -459,3 +459,54 @@ def test_owner_edited_lexicon_receives_a_new_intent(tmp_path: Path, capsys: pyte
     assert "  invoice:" in merged and "выставите счет" in merged, "новый интент дописан"
     assert '  - "кжби район"' in merged, "правка владельца осталась"
     assert serve._kb_loads(data / "kb", data / "media"), "база читается"
+
+
+def test_owner_edited_gyms_receive_the_schedule_change_moment(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """11.11.2026: выпуск принёс ``schedule_since`` Плазе и Тобылу, а ``gyms.yaml`` на томе
+    за час до этого сохранили в CRM — выпуск файл не тронул, и отметки до бота не дошли."""
+    import os
+    from datetime import datetime
+
+    import yaml
+
+    data = tmp_path / "data"
+    image = tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    gyms = image / "kb" / "gyms.yaml"
+    released = gyms.read_text(encoding="utf-8")
+    assert released.count("  schedule_since:") == 2
+    # Прошлый выпуск — без отметок.
+    gyms.write_text(
+        "\n".join(line for line in released.splitlines() if not line.startswith("  schedule_since:")) + "\n",
+        encoding="utf-8",
+    )
+    serve.seed_from_image(data, image_root=image)
+    # Владелец в CRM поменял час в Тобыле; Плаза не тронута.
+    owner = data / "kb" / "gyms.yaml"
+    text = owner.read_text(encoding="utf-8")
+    tobyl_at = text.index("- id: region_tobyl")
+    start = text.index('time_start: "19:30"', tobyl_at)
+    owner.write_text(text[:start] + 'time_start: "19:45"' + text[start + len('time_start: "19:30"'):], encoding="utf-8")
+    saved_at = datetime(2026, 11, 11, 16, 35, 49).astimezone()
+    os.utime(owner, (saved_at.timestamp(), saved_at.timestamp()))
+
+    gyms.write_text(released, encoding="utf-8")   # новый выпуск с отметками
+    serve.seed_from_image(data, image_root=image)
+
+    raw = {gym["id"]: gym for gym in yaml.safe_load(owner.read_text(encoding="utf-8"))["gyms"]}
+    since = {gym_id: raw[gym_id]["schedule_since"] for gym_id in ("plaza_szm_70", "region_tobyl")}
+    as_time = {key: value if isinstance(value, datetime) else datetime.fromisoformat(str(value)) for key, value in since.items()}
+    assert as_time["plaza_szm_70"] == datetime.fromisoformat("2026-11-10T15:32:00+05:00"), "занятия совпали — момент выпуска"
+    assert as_time["region_tobyl"] == saved_at, "занятия меняли в CRM — момент сохранения файла"
+    assert '"19:45"' in owner.read_text(encoding="utf-8"), "правка владельца осталась"
+    assert "schedule_since" not in raw["ksk_kairbekova_334"]
+    assert serve._kb_loads(data / "kb", data / "media"), "база читается"
+    assert (
+        "дописана отметка смены расписания: plaza_szm_70, "
+        "region_tobyl (занятия отличаются от выпуска — с 11.11 16:35)"
+    ) in capsys.readouterr().out
+
+    before = owner.read_text(encoding="utf-8")
+    serve.seed_from_image(data, image_root=image)
+    assert owner.read_text(encoding="utf-8") == before, "следующий запуск отметку не переписывает"
