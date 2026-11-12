@@ -476,6 +476,9 @@ async def _handle_error(
         code=code,
         disposition=reason,
         channel=message.channel.value,
+        # Что именно не ушло — клиенту, карточка администратору, напоминание: без этого
+        # отказ разбирался только по базе (прод 12.11.2026).
+        kind=message.kind.value,
     )
 
     await _react_terminal(
@@ -531,6 +534,17 @@ async def _react_terminal(
         # клиента: недоставку с причиной показывает CRM, а серию отказов ловит сама
         # рассылка и выключается (tasks_campaign). Спам и мёртвый канал — тревога как всегда.
         log.info("campaign_undelivered", code=code)
+        return
+
+    if message.kind is OutboundKind.MANAGER_CARD:
+        # Прод 12.11.2026: две карточки не ушли с общим отказом Wazzup, а тревога звала
+        # «ответить клиенту вручную» — клиенту при этом всё ушло. Не дошла карточка заявки.
+        await _alert(
+            deps,
+            f"Карточка заявки не доставлена ({code}, {reason}). Клиенту бот ответил; заявка "
+            "в CRM. Проверьте номера и чаты для заявок в настройках CRM.",
+            code="manager_card_undelivered",
+        )
         return
 
     if isinstance(exc, WazzupBadContactError):

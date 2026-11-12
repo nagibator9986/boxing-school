@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from app import deps as app_deps
 from app.admin.admin_store import AdminStore
 from app.admin.runtime_settings import RuntimeSettings
@@ -136,6 +138,35 @@ async def test_undelivered_lead_card_does_not_stop_the_school_channel(monkeypatc
     )
 
     assert stopped == [] and alerts == ["manager_card_undelivered"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [(OutboundKind.MANAGER_CARD, "manager_card_undelivered"), (OutboundKind.BOT_REPLY, "wazzup_send_failed")],
+)
+async def test_a_generic_failure_names_what_was_not_delivered(monkeypatch, kind, expected) -> None:
+    """Прод 12.11.2026: не ушли карточки заявки, а тревога звала ответить клиенту вручную."""
+    import app.workers.tasks_outbound as outbound
+    from app.types import WazzupError
+
+    alerts: list[tuple[str, str]] = []
+
+    async def alert(deps, text, *, code):
+        alerts.append((code, text))
+
+    monkeypatch.setattr(outbound, "_alert", alert)
+    message = OutboundMessage(
+        conversation_id=None, channel_id="school", channel=ChannelKind.WHATSAPP, chat_id=LEADS_NUMBER,
+        lang=Language.RU, kind=kind, text="текст",
+    )
+
+    await outbound._react_terminal(
+        None, message, WazzupError.__new__(WazzupError), code="postmessageerror", reason="fatal", conversation_id=None
+    )
+
+    assert [code for code, _ in alerts] == [expected]
+    if kind is OutboundKind.MANAGER_CARD:
+        assert "клиенту" not in alerts[0][1].split(".")[0], "первая фраза — про карточку, не про клиента"
 
 
 async def test_spam_on_a_client_reply_still_stops_the_channel(monkeypatch) -> None:
