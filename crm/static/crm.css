@@ -149,6 +149,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 10px; font-size: 14px; }
 .flash.ok { background: var(--ok-soft); color: var(--ok); }
 .flash.error { background: var(--accent-soft); color: var(--accent); }
+.flash.warn { background: var(--warn-soft); color: var(--warn); }
+.flash.detail { background: var(--bg); border: 1px solid var(--line); }
 .flash.detail { background: var(--warn-soft); color: var(--warn); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 
 /* ------------------------------------------------------------------ диалог */
@@ -176,7 +178,11 @@ pre.raw { background: var(--bg); border: 1px solid var(--line); border-radius: 8
 /* Строка занятия обязана оставаться одной строкой: перенос примечания вниз
    ломает сетку дней, и глаз перестаёт видеть, к какому занятию она относится. */
 .slotline .inline { flex-wrap: nowrap; }
-.slotline .inline input[type=text] { min-width: 80px; }
+.slotline .inline input[type=number] { width: 72px !important; }
+.slotline .inline input[name$="-age_from"], .slotline .inline input[name$="-age_to"] { width: 52px !important; }
+.slotline .inline input[name$="-group"] { width: 80px !important; }
+.slotline .inline select { width: 104px !important; }
+.slotline .inline input[type=text] { min-width: 60px; flex: 1; }
 .mini { color: var(--muted); font-size: 12px; }
 .login-wrap { display: grid; place-items: center; min-height: 100vh; }
 .login-card { width: 340px; }

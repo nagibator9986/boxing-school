@@ -14,7 +14,7 @@ from typing import Any
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
 
-from app.admin.media_store import MediaWriteError, register_media
+from app.admin.media_store import MediaWriteError, register_media, video_channels
 from app.kb import loader as kb_loader
 from app.types import ArtifactKind, FactSource, GapRef, Scope
 from crm.app import config, editor, login_required, snapshot
@@ -25,6 +25,7 @@ from crm.forms import (
     flag,
     integer,
     lines,
+    opt_float,
     opt_integer,
     opt_text,
     text,
@@ -250,6 +251,10 @@ def faq_edit(entry_id: str | None = None) -> Any:
             "escalate_if_empty": flag(form, "escalate_if_empty"),
             "requires_tool": opt_text(form, "requires_tool"),
             "forbidden_claims": lines(form, "forbidden_claims"),
+            # Без этих полей сохранение «Что взять с собой» стирало «дословно» и «с эмодзи»,
+            # и проверка базы отклоняла правку из-за эмодзи — ответ нельзя было поменять.
+            "emoji_ok": flag(form, "emoji_ok"),
+            "verbatim": flag(form, "verbatim"),
         }
         if position >= 0:
             entries[position] = merge_into(entries[position], payload)
@@ -359,11 +364,13 @@ def media_upload() -> Any:
     finally:
         tmp.unlink(missing_ok=True)
 
-    flash(
-        f"Материал {result.artifact_id} добавлен ({result.size_bytes / 1048576:.1f} МБ). "
-        + ("Видео уходит только в Telegram." if kind == "video" else "Отправляется во все каналы."),
-        "ok",
-    )
+    if kind != "video":
+        where = "Отправляется во все каналы."
+    elif video_channels(result.size_bytes)["whatsapp"] == "allow":
+        where = "Видео уходит в WhatsApp и Telegram."
+    else:
+        where = "Видео больше 10 МБ — уходит только в Telegram; для WhatsApp сожмите его."
+    flash(f"Материал {result.artifact_id} добавлен ({result.size_bytes / 1048576:.1f} МБ). {where}", "ok")
     return redirect(url_for("kb_content.media_edit", artifact_id=result.artifact_id))
 
 
@@ -464,11 +471,52 @@ def policies() -> Any:
         document["escalation_pause_minutes"] = integer(form, "escalation_pause_minutes", default=60)
         document["followup_stop_words"] = lines(form, "followup_stop_words")
         document["forbidden_behaviour"] = lines(form, "forbidden_behaviour")
+        # Владелец 12.11.2026: «всё менять в CRM». Срок записи на пробное, слова прощания и
+        # напоминания до этого правились только в файле.
+        lead_hours = opt_float(form, "trial_min_lead_hours")
+        if lead_hours is not None:
+            document["trial_min_lead_hours"] = lead_hours
+        if "followup_closing_words" in form:
+            document["followup_closing_words"] = lines(form, "followup_closing_words")
+        _read_followups(form, document.get("followup_policy") or [])
         return _save(
             {"policies.yaml": document}, back=url_for("kb_content.policies"), ok="Правила сохранены."
         )
 
-    return render_template("policies.html", doc=document)
+    rules = [
+        (rule, FOLLOWUP_LABELS.get(str(rule.get("event")), str(rule.get("event"))))
+        for rule in document.get("followup_policy") or []
+    ]
+    return render_template("policies.html", doc=document, followups=rules)
+
+
+#: Напоминания по-человечески. Код события в файле менять нельзя — на него ссылается бот.
+FOLLOWUP_LABELS: dict[str, str] = {
+    "fu_soft": "Клиент замолчал — мягкое напоминание",
+    "fu_value": "Клиент так и не ответил — второе напоминание",
+    "trial_reminder_morning": "Утром в день пробного",
+    "trial_reminder_2h": "Перед пробным занятием",
+    "no_show": "После пропущенного пробного",
+}
+
+
+def _read_followups(form: Any, rules: Any) -> None:
+    """Сроки напоминаний из таблицы формы. Текст и код события здесь не меняются."""
+    by_event = {str(rule.get("event")): rule for rule in rules}
+    for key in form:
+        if not (key.startswith("fu::") and key.endswith("::delay_hours")):
+            continue
+        event = key[len("fu::"):-len("::delay_hours")]
+        rule = by_event.get(event)
+        if rule is None:
+            continue
+        delay = opt_float(form, f"fu::{event}::delay_hours")
+        if delay is not None:
+            rule["delay_hours"] = delay
+        rule["max_times"] = max(0, integer(form, f"fu::{event}::max_times", default=int(rule.get("max_times") or 0)))
+        rule["only_work_hours"] = flag(form, f"fu::{event}::only_work_hours")
+        if "at_local_time" in rule or text(form, f"fu::{event}::at_local_time"):
+            rule["at_local_time"] = opt_text(form, f"fu::{event}::at_local_time")
 
 
 @bp.route("/texts", methods=["GET", "POST"])

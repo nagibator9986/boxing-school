@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.admin.admin_store import COUNT_MAX, SETTING_SPECS, AdminStore
-from app.admin.media_store import MediaWriteError, register_media
+from app.admin.media_store import MediaWriteError, register_media, video_channels
 from app.admin.schedule_store import (
     ScheduleWriteError,
     apply_schedule,
@@ -156,12 +156,15 @@ class AdminConsole:
         except MediaWriteError as exc:
             return f"Не получилось сохранить: {exc}"
 
-        where = (
-            "Отправляется во все каналы."
-            if kind == "image"
-            else "Видео уходит только в Telegram: в WhatsApp мешает лимит 10 МБ, "
-            "а в Instagram видео не отправляется вовсе — там бот ответит текстом."
-        )
+        if kind == "image":
+            where = "Отправляется во все каналы."
+        elif video_channels(result.size_bytes)["whatsapp"] == "allow":
+            where = "Видео уходит в WhatsApp и Telegram; в Instagram бот ответит текстом."
+        else:
+            where = (
+                "Видео больше 10 МБ — уходит только в Telegram. Для WhatsApp сожмите его "
+                "и пришлите снова; в Instagram бот ответит текстом."
+            )
         return (
             f"Сохранил: {result.artifact_id}\n"
             f"Размер: {result.size_bytes / 1048576:.1f} МБ\n"

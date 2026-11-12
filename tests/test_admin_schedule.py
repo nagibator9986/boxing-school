@@ -267,8 +267,12 @@ def test_photo_from_admin_is_registered_and_sendable(sandbox, tmp_path) -> None:
     assert artifact.body.ru is None
 
 
-def test_video_from_admin_is_telegram_only(sandbox, tmp_path) -> None:
-    """Видео помечается доставляемым только в Telegram — в других каналах оно не пройдёт."""
+def test_small_video_from_admin_goes_to_whatsapp_too(sandbox, tmp_path) -> None:
+    """Видео до потолка Wazzup (10 МБ) уходит в WhatsApp и Telegram, в Instagram — нет.
+
+    До 12.11.2026 видео из админки помечалось только для Telegram, хотя видео дороги в
+    WhatsApp уходят давно; крупное видео по-прежнему туда не идёт (``video_channels``).
+    """
     from app.admin.media_store import register_media
     from app.kb.loader import load_sync
 
@@ -291,7 +295,7 @@ def test_video_from_admin_is_telegram_only(sandbox, tmp_path) -> None:
     snapshot, _ = load_sync(kb, media_dir=media, schema_version=1)
     artifact = snapshot.artifact(result.artifact_id)
     assert artifact.channels.get("telegram") == "allow"
-    assert artifact.channels.get("whatsapp") == "deny"
+    assert artifact.channels.get("whatsapp") == "allow"
     assert artifact.channels.get("instagram") == "deny"
     assert artifact.gym_id == "ksk_kairbekova_334"
 

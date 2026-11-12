@@ -28,8 +28,9 @@ import yaml
 from app.admin.kb_lock import kb_write_lock
 from app.kb import loader as kb_loader
 from app.logging_conf import get_logger
+from app.types import CHANNEL_LIMITS, ChannelKind
 
-__all__ = ["MediaWriteError", "MediaRegistration", "register_media", "slugify"]
+__all__ = ["MediaWriteError", "MediaRegistration", "register_media", "slugify", "video_channels"]
 
 _log = get_logger(__name__)
 
@@ -43,11 +44,18 @@ _TRANSLIT: Final[dict[str, str]] = {
     "ұ": "u", "ү": "u", "һ": "h", "і": "i",
 }
 
-#: Видео уходит вложением только в Telegram: у Wazzup потолок 10 МБ, а в
-#: Instagram Direct видео не отправляется вовсе.
+#: Видео в Instagram Direct не отправляется вовсе, а в WhatsApp — до потолка Wazzup
+#: (``CHANNEL_LIMITS``, 10 МБ). До 12.11.2026 видео из CRM и Telegram шло только в
+#: Telegram, хотя видео дороги в WhatsApp уходят давно.
 _VIDEO_CHANNELS: Final[dict[str, str]] = {
     "telegram": "allow", "whatsapp": "deny", "instagram": "deny"
 }
+
+
+def video_channels(size_bytes: int) -> dict[str, str]:
+    """Куда уходит видео этого размера."""
+    fits = size_bytes <= CHANNEL_LIMITS[ChannelKind.WHATSAPP].max_file_bytes
+    return {**_VIDEO_CHANNELS, "whatsapp": "allow" if fits else "deny"}
 _PHOTO_CHANNELS: Final[dict[str, str]] = {
     "telegram": "allow", "whatsapp": "allow", "instagram": "allow"
 }
@@ -184,7 +192,7 @@ def _register_media_locked(
             "file_mime": "video/mp4" if kind == "video" else "image/jpeg",
             "file_bytes": len(blob),
             "file_sha256": hashlib.sha256(blob).hexdigest(),
-            "channels": dict(_VIDEO_CHANNELS if kind == "video" else _PHOTO_CHANNELS),
+            "channels": video_channels(len(blob)) if kind == "video" else dict(_PHOTO_CHANNELS),
             "max_send_per_dialog": 1,
             "gap_ref": None,
             "render_from": None,

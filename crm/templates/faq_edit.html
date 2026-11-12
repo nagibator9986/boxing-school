@@ -38,6 +38,14 @@
     </div>
     <div class="field"><label class="checkbox"><input type="checkbox" name="escalate_if_empty" value="1" {{ 'checked' if e.get('escalate_if_empty', True) }}> если ответа нет — передать администратору</label></div>
     <div class="field">
+      <label class="checkbox"><input type="checkbox" name="verbatim" value="1" {{ 'checked' if e.get('verbatim') }}> отправлять ответ клиенту дословно, отдельным сообщением</label>
+      <div class="hint">Для текстов, которые важно передать слово в слово («Что взять с собой»): бот не пересказывает их своими словами.</div>
+    </div>
+    <div class="field">
+      <label class="checkbox"><input type="checkbox" name="emoji_ok" value="1" {{ 'checked' if e.get('emoji_ok') }}> в ответе можно эмодзи</label>
+      <div class="hint">Обычно бот пишет без эмодзи. Отметьте, если эмодзи — часть вашего текста.</div>
+    </div>
+    <div class="field">
       <label>Чего боту нельзя утверждать в этой теме</label>
       <textarea name="forbidden_claims" rows="3">{{ (e.get('forbidden_claims') or []) | join('\n') }}</textarea>
       <div class="hint">По одному запрету в строке. Пост-фильтр снимет ответ, если бот это скажет.</div>

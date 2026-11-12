@@ -77,7 +77,7 @@ from app.kb.agreement import (
     with_agreement,
     with_choice,
 )
-from app.kb.places import scope_by_texts
+from app.kb.places import place_words, scope_by_texts
 from app.kb.sessions import COMBINED_DISCIPLINE, age_answer
 from app.kb.render import render_artifact_body, render_system_prompt
 from app.llm.dynamic import build_dynamic_note
@@ -3295,7 +3295,7 @@ def _just_said(
     age = lexicon.extract_age(text, lexicon=kb.lexicon, now=now)
     if age is not None:
         said.append(f"возраст ребёнка — {age}")
-    name = lexicon.extract_name(text)
+    name = lexicon.extract_name(text, not_names=place_words(kb))
     if name:
         said.append(f"имя ребёнка — {name}" if name_is_childs else f"имя — {name}")
     # Место, которое по базе ведёт ровно к одному залу. Живой прогон 19.10.2026: на «Живу

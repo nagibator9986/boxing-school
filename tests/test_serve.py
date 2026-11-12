@@ -262,7 +262,7 @@ def test_owner_edit_survives_a_new_release(tmp_path: Path, capsys: pytest.Captur
     serve.seed_from_image(data, image_root=image)
 
     assert (data / "kb" / "pricing.yaml").read_text(encoding="utf-8") == "# правка владельца\n"
-    assert "правили в CRM" in capsys.readouterr().out, "о новой версии в репозитории — в журнал"
+    assert "оставлена правка владельца" in capsys.readouterr().out, "о новой версии в репозитории — в журнал"
 
 
 def test_file_without_history_is_taken_under_watch_only_when_it_matches(tmp_path: Path) -> None:
@@ -379,7 +379,7 @@ def test_owner_edited_texts_receive_new_keys_from_a_release(tmp_path: Path, caps
     assert "card.head_gym" in merged, "новый текст дописан"
     assert "Работаю круглосуточно" in merged, "правка владельца осталась"
     assert serve._kb_loads(data / "kb", data / "media"), "база читается"
-    assert "дописаны новые тексты: card.head_gym" in capsys.readouterr().out
+    assert "из выпуска перенесено: strings.card.head_gym" in capsys.readouterr().out
 
     serve.seed_from_image(data, image_root=image)
     assert "Работаю круглосуточно" in owner.read_text(encoding="utf-8"), "следующий запуск не затирает правку"
@@ -491,6 +491,8 @@ def test_owner_edited_gyms_receive_the_schedule_change_moment(tmp_path: Path, ca
     saved_at = datetime(2026, 11, 11, 16, 35, 49).astimezone()
     os.utime(owner, (saved_at.timestamp(), saved_at.timestamp()))
 
+    # Том, подключённый до трёхстороннего слияния: версии прошлого выпуска на нём нет.
+    shutil.rmtree(data / serve.SEED_BASE)
     gyms.write_text(released, encoding="utf-8")   # новый выпуск с отметками
     serve.seed_from_image(data, image_root=image)
 
@@ -510,3 +512,74 @@ def test_owner_edited_gyms_receive_the_schedule_change_moment(tmp_path: Path, ca
     before = owner.read_text(encoding="utf-8")
     serve.seed_from_image(data, image_root=image)
     assert owner.read_text(encoding="utf-8") == before, "следующий запуск отметку не переписывает"
+
+
+def _release(tmp_path: Path) -> tuple[Path, Path]:
+    data, image = tmp_path / "data", tmp_path / "image"
+    shutil.copytree(ROOT / "kb", image / "kb", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "media", image / "media", ignore=shutil.ignore_patterns(".*"))
+    return data, image
+
+
+def test_release_changes_reach_a_file_edited_in_crm(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Владелец 12.11.2026: всё правится в CRM — и правки из репозитория всё равно доезжают."""
+    import yaml
+
+    data, image = _release(tmp_path)
+    serve.seed_from_image(data, image_root=image)
+    assert (data / serve.SEED_BASE / "kb" / "gyms.yaml").is_file(), "версия выпуска запомнена"
+    owner = data / "kb" / "gyms.yaml"
+    # CRM: владелец поменял телефон Плазы.
+    owner.write_text(owner.read_text(encoding="utf-8").replace(
+        "- id: plaza_szm_70", "- id: plaza_szm_70\n  phone: '+77015550111'", 1), encoding="utf-8")
+    owner.write_text(owner.read_text(encoding="utf-8").replace(
+        "  phone: null\n  coaches: []\n  # Новое расписание заработало на сервере 10.11.2026 в 15:31 (выкатка d8f15f3)",
+        "  coaches: []\n  # Новое расписание заработало на сервере 10.11.2026 в 15:31 (выкатка d8f15f3)", 1), encoding="utf-8")
+    # Выпуск: в Тобыле занятия с 19:00.
+    release = image / "kb" / "gyms.yaml"
+    text = release.read_text(encoding="utf-8")
+    tobyl = text.index("- id: region_tobyl")
+    start = text.index('time_start: "19:30"', tobyl)
+    release.write_text(text[:start] + 'time_start: "19:00"' + text[start + len('time_start: "19:30"'):], encoding="utf-8")
+
+    serve.seed_from_image(data, image_root=image)
+
+    gyms = {gym["id"]: gym for gym in yaml.safe_load(owner.read_text(encoding="utf-8"))["gyms"]}
+    assert gyms["plaza_szm_70"]["phone"] == "+77015550111", "правка CRM осталась"
+    assert gyms["region_tobyl"]["schedule"][0]["time_start"] == "19:00", "правка выпуска доехала"
+    assert "# Владелец 10.11.2026: «Тобыл неправильный график" in owner.read_text(encoding="utf-8"), "комментарии целы"
+    assert serve._kb_loads(data / "kb", data / "media")
+    assert "из выпуска перенесено: gyms[region_tobyl]" in capsys.readouterr().out
+
+
+def test_a_release_that_breaks_with_crm_edits_is_rolled_back_and_retried(tmp_path: Path) -> None:
+    """Выпуск удалил зал, а в CRM к нему завели материал: база не сходится — откат."""
+    import yaml
+
+    data, image = _release(tmp_path)
+    serve.seed_from_image(data, image_root=image)
+    media = data / "kb" / "media.yaml"
+    doc = yaml.safe_load(media.read_text(encoding="utf-8"))
+    doc["artifacts"].append({
+        "id": "photo_karabalyk", "kind": "image", "enabled": False, "scope": "any", "gym_id": "region_karabalyk",
+        "title": {"ru": "Зал", "kk": "Зал"}, "when_to_send_ru": "когда спрашивают про зал в Карабалыке",
+        "body": None, "file_path": None, "file_mime": None, "file_bytes": None, "file_sha256": None,
+        "channels": {"whatsapp": "allow"}, "max_send_per_dialog": 1, "gap_ref": None, "render_from": None,
+    })
+    media.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    assert serve._kb_loads(data / "kb", data / "media"), "правка CRM сама по себе верна"
+    base_before = (data / serve.SEED_BASE / "kb" / "gyms.yaml").read_text(encoding="utf-8")
+    release = image / "kb" / "gyms.yaml"
+    text = release.read_text(encoding="utf-8")
+    start = text.index("- id: region_karabalyk")
+    end = text.index("\n- id: ", start + 1) + 1
+    release.write_text(text[:start] + text[end:], encoding="utf-8")
+
+    serve.seed_from_image(data, image_root=image)
+
+    assert serve._kb_loads(data / "kb", data / "media"), "бот читает базу"
+    gyms = {gym["id"] for gym in yaml.safe_load((data / "kb" / "gyms.yaml").read_text(encoding="utf-8"))["gyms"]}
+    assert "region_karabalyk" in gyms, "несовместимый выпуск откатан"
+    assert (data / serve.SEED_BASE / "kb" / "gyms.yaml").read_text(encoding="utf-8") == base_before, (
+        "база слияния не сдвинулась — выпуск попробует снова"
+    )

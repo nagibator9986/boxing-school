@@ -10,6 +10,17 @@
 </div>
 
 <div class="card">
+  <h2>Город и пригороды</h2>
+  <form method="post" action="{{ url_for('kb_gyms.city') }}" class="inline">
+    <input type="hidden" name="form_complete" value="1">
+    <span class="mini">Город: <strong>{{ city }}</strong>. Посёлки, которые школа считает частью города (городские цены, городской список залов):</span>
+    <input type="text" name="city_suburbs" value="{{ suburbs | join(', ') }}" placeholder="Тобыл" style="min-width:240px">
+    <button class="btn small" type="submit">Сохранить</button>
+  </form>
+  <div class="hint">Через запятую. Зал с отметкой «Костанай» в посёлке, которого здесь нет, CRM добавит сюда сама.</div>
+</div>
+
+<div class="card">
 <table>
   <thead><tr><th>Зал</th><th>Где</th><th>Расписание</th><th>Тренеры</th><th>Состояние</th><th></th></tr></thead>
   <tbody>

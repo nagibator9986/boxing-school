@@ -37,6 +37,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -55,6 +56,10 @@ MERGED_KEYS: dict[str, str] = {"i18n.yaml": "strings", "lexicon.yaml": "intents"
 #: Файл залов: в правленый владельцем выпуск дописывает отметку смены расписания
 #: (``schedule_since``) тем залам, у которых её нет (:func:`_merge_schedule_since`).
 GYMS_FILE: str = "gyms.yaml"
+
+#: Версии файлов базы знаний, которые положил прошлый выпуск: база трёхстороннего слияния
+#: (:mod:`app.admin.kb_merge`). Лежит в корне каталога данных, как и :data:`SEED_STATE`.
+SEED_BASE: str = ".seed-base"
 
 #: Какую версию каждого файла положил на диск сам запуск — отпечаток SHA-256.
 #: Лежит в корне каталога данных, а не в ``kb/``: там его подхватил бы отпечаток
@@ -240,14 +245,16 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
                     f"{name}/{item.name}: отличается от версии в репозитории, а правил ли его "
                     "владелец — неизвестно. Оставлен как есть."
                 )
-                if name == "kb" and (item.name in MERGED_KEYS or item.name == GYMS_FILE):
+                if name == "kb" and _mergeable(data_dir, item.name):
                     merges.append((item, destination))
             elif disk_hash != seeded:
-                _log(
-                    f"{name}/{item.name}: в репозитории новая версия, но файл правили в CRM — "
-                    "оставлена правка владельца."
-                )
-                if name == "kb" and (item.name in MERGED_KEYS or item.name == GYMS_FILE):
+                if not (name == "kb" and _seed_base(data_dir, item.name).is_file()):
+                    # С базой слияния о результате скажет само слияние: что перенесено, что нет.
+                    _log(
+                        f"{name}/{item.name}: в репозитории новая версия, но файл правили в CRM — "
+                        "оставлена правка владельца."
+                    )
+                if name == "kb" and _mergeable(data_dir, item.name):
                     merges.append((item, destination))
             else:
                 updates.append((name, item, destination, image_hash))
@@ -269,7 +276,10 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
     # владельцем», и следующий выпуск снова только допишет новое, а не заменит его.
     merged = [destination for item, destination in merges if _merge_missing_keys(item, destination)]
 
+    rolled_back: set[str] = set()
     if valid_before and not _kb_loads(kb_dir, media_dir) and backup is not None:
+        rolled_back.update(destination.name for destination in merged)
+        rolled_back.update(item.name for _, item, _, _ in kb_updates)
         for destination in merged:
             shutil.copy2(backup / destination.name, destination)
         for name, item, destination, _ in kb_updates:
@@ -283,7 +293,85 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
         _log("=" * 72)
 
     _write_seed_state(data_dir, state)
+    # База следующего слияния — этот выпуск. Файл, чья новая версия откатилась, базу не
+    # меняет: его правки попробуют применить снова со следующим запуском.
+    _store_seed_base(data_dir, image_root / "kb", skip=rolled_back)
     return report
+
+
+def _seed_base(data_dir: Path, name: str) -> Path:
+    """Где лежит версия файла базы знаний, которую положил прошлый выпуск."""
+    return data_dir / SEED_BASE / "kb" / name
+
+
+def _mergeable(data_dir: Path, name: str) -> bool:
+    """Можно ли перенести правки выпуска в файл, правленый владельцем."""
+    return _seed_base(data_dir, name).is_file() or name in MERGED_KEYS or name == GYMS_FILE
+
+
+def _store_seed_base(data_dir: Path, source_dir: Path, *, skip: set[str]) -> None:
+    """Запоминает версии файлов базы знаний из этого выпуска."""
+    if not source_dir.is_dir():
+        return
+    target = data_dir / SEED_BASE / "kb"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        for item in sorted(source_dir.iterdir()):
+            if item.is_file() and not item.name.startswith(".") and item.name not in skip:
+                shutil.copy2(item, target / item.name)
+    except OSError as exc:
+        _log(f"ВНИМАНИЕ: не удалось запомнить версию базы знаний для слияния: {exc}")
+
+
+def _yaml_engine() -> Any:
+    """Разбор YAML с сохранением комментариев и кавычек — тот же, что у CRM."""
+    from ruamel.yaml import YAML
+
+    engine = YAML()
+    engine.preserve_quotes = True
+    engine.width = 4096
+    engine.indent(mapping=2, sequence=2, offset=0)
+    return engine
+
+
+def _merge_three_way(base: Path, source: Path, destination: Path) -> list[str]:
+    """Переносит в файл владельца правки выпуска, которых владелец не касался.
+
+    Где обе стороны поменяли одно и то же, остаётся правка владельца — путь значения
+    уходит в журнал (:mod:`app.admin.kb_merge`).
+    """
+    try:
+        from app.admin.kb_merge import merge3
+
+        engine = _yaml_engine()
+        disk = engine.load(destination.read_text(encoding="utf-8")) or {}
+        report = merge3(
+            engine.load(base.read_text(encoding="utf-8")) or {},
+            disk,
+            engine.load(source.read_text(encoding="utf-8")) or {},
+        )
+        if report.applied:
+            temporary = destination.with_name(f".{destination.name}.seed-tmp")
+            with temporary.open("w", encoding="utf-8") as handle:
+                engine.dump(disk, handle)
+            os.replace(temporary, destination)
+    except Exception as exc:  # noqa: BLE001 - не слили — громко, но запуск продолжается
+        _log(f"ВНИМАНИЕ: kb/{destination.name}: правки выпуска не перенесены: {exc}")
+        return []
+    if report.conflicts:
+        _log(
+            f"kb/{destination.name}: выпуск и CRM поменяли одно и то же — оставлена правка "
+            f"владельца: {_listing(report.conflicts)}"
+        )
+    if report.applied:
+        _log(f"kb/{destination.name}: правки владельца оставлены, из выпуска перенесено: {_listing(report.applied)}")
+    return report.applied
+
+
+def _listing(paths: list[str], limit: int = 12) -> str:
+    """Список путей для журнала: длинный обрезается с указанием, сколько ещё."""
+    shown = ", ".join(paths[:limit])
+    return shown if len(paths) <= limit else f"{shown} и ещё {len(paths) - limit}"
 
 
 def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
@@ -291,7 +379,13 @@ def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
 
     Тексты владельца не меняются ни на букву: добавляется только то, чего у него нет.
     Разбор с сохранением комментариев и кавычек — тот же, что у CRM.
+
+    Если известна версия прошлого выпуска, правки переносятся целиком — трёхсторонним
+    слиянием, а не только недостающими ключами.
     """
+    base = _seed_base(destination.parent.parent, destination.name)
+    if base.is_file():
+        return _merge_three_way(base, source, destination)
     if source.name == GYMS_FILE:
         return _merge_schedule_since(source, destination)
     section = MERGED_KEYS.get(source.name)

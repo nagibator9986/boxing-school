@@ -10,7 +10,22 @@
 {% set coaches = g.get('coaches') or [] %}
 {% block content %}
 <h1 class="page-title">{{ 'Новый зал' if not gym else (title.get('ru') or gym_id) }}</h1>
-<p class="page-note">Всё, что бот знает об этой точке. Поле, оставленное пустым, означает «данных нет» — бот честно скажет это клиенту и передаст вопрос администратору, вместо того чтобы придумать ответ.</p>
+<p class="page-note">Всё, что бот знает об этой точке. Поле, оставленное пустым, означает «данных нет» — бот честно скажет это клиенту и передаст вопрос администратору, вместо того чтобы придумать ответ. Сохранённое бот подхватывает сам, без перезапуска.</p>
+
+{% if preview %}
+<div class="card">
+  <h2>Как это увидит клиент</h2>
+  <p class="mini">Ровно те сообщения, которые соберёт бот по сохранённым данным (версия базы {{ preview.kb_hash }}).{% if preview.since %} Расписание действует с {{ preview.since }}: карточки, отправленные клиентам раньше, бот считает устаревшими и при вопросе пришлёт новые.{% endif %}</p>
+  {% if preview.problems %}
+    {% for problem in preview.problems %}<div class="flash warn">{{ problem }}</div>{% endfor %}
+  {% endif %}
+  <div class="row">
+    {% for label, body in preview.cards %}
+      <div class="field"><label>{{ label }}</label><div class="bubble bot" style="max-width:100%">{{ body }}</div></div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
 
 <form method="post">
   <input type="hidden" name="form_complete" value="1">
@@ -19,8 +34,8 @@
     <div class="row three">
       <div class="field">
         <label>Идентификатор</label>
-        <input type="text" name="id" value="{{ g.get('id', '') }}" {{ 'readonly' if gym }} placeholder="ksk_kairbekova_334">
-        <div class="hint">Латиницей, без пробелов. Менять у существующего зала нельзя: на него ссылаются заявки и материалы.</div>
+        <input type="text" name="id" value="{{ g.get('id', '') }}" {{ 'readonly' if gym }} placeholder="{{ 'ksk_kairbekova_334' if gym else 'можно оставить пустым' }}">
+        <div class="hint">{% if gym %}Менять у существующего зала нельзя: на него ссылаются заявки и материалы.{% else %}Оставьте пустым — CRM придумает его из названия латиницей.{% endif %}</div>
       </div>
       <div class="field">
         <label>Где находится</label>
@@ -90,11 +105,11 @@
 
   <div class="card">
     <h2>Расписание</h2>
-    <p class="mini">Отметьте дни, поставьте время. Возраст указывается парой «от» и «до» либо не указывается вовсе — тогда бот скажет, что возрастную группу уточнит администратор. «Цена ₸» — абонемент на это время, если он не по общему прайсу. «Группа» — одно и то же слово у строк, которые составляют одно расписание (например, Вт, Чт 19:00 и Сб 19:30): ребёнок ходит во все эти дни, и бот записывает на ближайшее занятие, не спрашивая, какое время удобнее.</p>
+    <p class="mini">Отметьте дни, поставьте время. Возраст указывается парой «от» и «до» либо не указывается вовсе — тогда бот скажет, что возрастную группу уточнит администратор. «Цена ₸» — абонемент на это время, если он не по общему прайсу. «Группа» — одно и то же слово у строк, которые составляют одно расписание (например, Вт, Чт 19:00 и Сб 19:30): ребёнок ходит во все эти дни, и бот записывает на ближайшее занятие, не спрашивая, какое время удобнее. «Смена» — для каких школьников это время: утро обычно для 2-й смены, и ребёнку из 1-й бот его не предложит.</p>
     <div class="slotline mini">
       <div>Вид</div><div>Начало</div><div>Конец</div>
       {% for code, label in days %}<div class="day">{{ label }}</div>{% endfor %}
-      <div>Возраст, примечание, цена, группа</div><div class="day">×</div>
+      <div>Возраст, примечание, цена, группа, смена</div><div class="day">×</div>
     </div>
     {% for slot in slots %}
       {% set i = loop.index0 %}
@@ -113,7 +128,9 @@
           <input type="text" name="slot-{{ i }}-note_ru" value="{{ (slot.get('note') or {}).get('ru') or '' }}" placeholder="примечание">
           <input type="number" name="slot-{{ i }}-price" value="{{ slot.get('price') if slot.get('price') is not none else '' }}" placeholder="цена ₸" title="Абонемент на это время, если он не по общему прайсу. Пусто — общий прайс." style="width:96px">
           <input type="text" name="slot-{{ i }}-group" value="{{ slot.get('group') or '' }}" placeholder="группа" title="Одинаковое слово у нескольких строк — одна группа: ребёнок ходит во все её дни, и бот не спрашивает, какое время удобнее." style="width:96px">
-          <input type="hidden" name="slot-{{ i }}-shift" value="{{ slot.get('shift') or 'any' }}">
+          <select name="slot-{{ i }}-shift" title="Для каких школьников это время" style="width:120px">
+            {% for value, label in shifts %}<option value="{{ value }}" {{ 'selected' if (slot.get('shift') or 'any') == value }}>{{ label }}</option>{% endfor %}
+          </select>
         </div>
         <div class="day"><input type="checkbox" name="slot-{{ i }}-delete" value="1" title="удалить занятие"></div>
       </div>
@@ -133,6 +150,9 @@
           <input type="text" name="slot-{{ i }}-note_ru" placeholder="примечание">
           <input type="number" name="slot-{{ i }}-price" placeholder="цена ₸" style="width:96px">
           <input type="text" name="slot-{{ i }}-group" placeholder="группа" style="width:96px">
+          <select name="slot-{{ i }}-shift" title="Для каких школьников это время" style="width:120px">
+            {% for value, label in shifts %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
         </div>
         <div class="day"></div>
       </div>
@@ -205,6 +225,20 @@
 
 {% if gym %}
 <div class="card">
+  <h2>Видео дороги</h2>
+  {% if preview and preview.route %}
+    <p class="mini">Сейчас: {{ preview.route.file_path }} ({{ '%.1f' | format((preview.route.file_bytes or 0) / 1048576) }} МБ){% if preview.route.channels.get('whatsapp') == 'allow' %} — уходит в WhatsApp{% else %} — <strong>в WhatsApp не уходит</strong>{% endif %}. Новый файл заменит его.</p>
+  {% else %}
+    <p class="mini">Видео, как пройти от остановки или входа. Бот отправит его, когда клиент выберет этот зал или спросит, как добраться, — с подписью: адрес, карта и расписание.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('kb_gyms.route_video', gym_id=gym_id) }}" enctype="multipart/form-data" class="inline">
+    <input type="file" name="file" accept="video/mp4,.mp4">
+    <button class="btn" type="submit">Загрузить</button>
+  </form>
+  <div class="hint">Формат mp4, до 10 МБ — больше WhatsApp не пропускает.</div>
+</div>
+
+<div class="card">
   <h2>Вставить расписание текстом</h2>
   <p class="mini">Тот же текст, который вы обычно отправляете в WhatsApp — с эмодзи, днями через точку и временем. Разберётся и заменит расписание этого зала целиком.</p>
   <form method="post" action="{{ url_for('kb_gyms.schedule_text', gym_id=gym_id) }}">
@@ -217,8 +251,8 @@
 
 <div class="card">
   <h2>Удалить зал</h2>
-  <p class="mini">Зал исчезнет из базы знаний. Если он просто закрылся на время — снимите галочку «бот предлагает этот зал», это обратимо.</p>
-  <form method="post" action="{{ url_for('kb_gyms.delete', gym_id=gym_id) }}" onsubmit="return confirm('Удалить зал {{ gym_id }} из базы знаний?')">
+  <p class="mini">Зал исчезнет из базы знаний{% if companions %} вместе со своими материалами: {{ companions | join(', ') }}{% endif %}. Если он просто закрылся на время — снимите галочку «бот предлагает этот зал», это обратимо.</p>
+  <form method="post" action="{{ url_for('kb_gyms.delete', gym_id=gym_id) }}" onsubmit="return confirm('Удалить зал {{ gym_id }}{% if companions %} и его материалы{% endif %} из базы знаний?')">
     <button class="btn danger" type="submit">Удалить зал</button>
   </form>
 </div>

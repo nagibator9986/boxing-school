@@ -41,6 +41,33 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>Запись на пробное и напоминания</h2>
+    <div class="field"><label>За сколько часов до занятия ещё можно записаться на пробное</label>
+      <input type="number" step="0.5" min="0" name="trial_min_lead_hours" value="{{ doc.get('trial_min_lead_hours', 2) }}" style="width:120px">
+      <div class="hint">Если до ближайшего занятия меньше — бот записывает на следующее.</div></div>
+    <table>
+      <thead><tr><th>Напоминание</th><th>Через сколько часов</th><th>В какое время</th><th>Сколько раз</th><th>Не ночью</th></tr></thead>
+      <tbody>
+      {% for rule, label in followups %}
+        {% set ev = rule.get('event') %}
+        <tr>
+          <td>{{ label }}<div class="mini">текст — на странице «Тексты», ключ {{ rule.get('template_id') }}</div></td>
+          <td><input type="text" name="fu::{{ ev }}::delay_hours" value="{{ rule.get('delay_hours') }}" style="width:80px">{% if ev.startswith('trial_') %}<div class="mini">минус — за столько часов до занятия</div>{% endif %}</td>
+          <td>{% if rule.get('at_local_time') is not none %}<input type="text" name="fu::{{ ev }}::at_local_time" value="{{ rule.get('at_local_time') or '' }}" placeholder="09:30" style="width:80px">{% else %}<span class="mini">—</span>{% endif %}</td>
+          <td><input type="number" min="0" name="fu::{{ ev }}::max_times" value="{{ rule.get('max_times', 1) }}" style="width:64px"><div class="mini">0 — выключено</div></td>
+          <td><input type="checkbox" name="fu::{{ ev }}::only_work_hours" value="1" {{ 'checked' if rule.get('only_work_hours', True) }}></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="field">
+      <label>Слова прощания: после них бот не напоминает о разговоре</label>
+      <textarea name="followup_closing_words" rows="4">{{ (doc.get('followup_closing_words') or []) | join('\n') }}</textarea>
+      <div class="hint">По одному в строке: «спасибо», «до встречи». В отличие от стоп-слов, на следующий вопрос клиента бот ответит как обычно.</div>
+    </div>
+  </div>
+
   <div class="actions"><button class="btn primary" type="submit">Сохранить правила</button></div>
 </form>
 {% endblock %}
