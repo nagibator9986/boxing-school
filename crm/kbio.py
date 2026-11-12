@@ -45,7 +45,7 @@ from app.kb.models import KBSnapshot
 from app.kb.schedule_since import schedules_differ
 from app.types import KBValidationError
 
-__all__ = ["BackupInfo", "KBEditError", "KBEditor", "SaveResult", "merge_into", "quote_ambiguous"]
+__all__ = ["BackupInfo", "KBEditError", "KBEditor", "SaveResult", "merge_into", "quote_ambiguous", "yaml_engine"]
 
 #: Сколько резервных копий держим. Каждая — семь небольших файлов.
 BACKUP_KEEP: Final[int] = 40
@@ -68,6 +68,11 @@ def _yaml() -> YAML:
         type(None), lambda dumper, _: dumper.represent_scalar("tag:yaml.org,2002:null", "null")
     )
     return engine
+
+
+def yaml_engine() -> YAML:
+    """Тот же разбор и запись YAML, что у CRM: для тех, кто правит файлы базы вне CRM."""
+    return _yaml()
 
 
 def quote_ambiguous(node: Any) -> Any:

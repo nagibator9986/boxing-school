@@ -208,11 +208,42 @@ async def test_postcheck_trusts_times_only_from_current_schedules(kb, sessionmak
         conv = await _conversation(db)
         await _sent(db, conv, since - timedelta(days=1), kind=OutboundKind.ARTIFACT,
                     text=OLD_TOBYL_CARD + "\n💳 12 000 ₸", artifact_id=f"schedule_{TOBYL}")
-        every, fresh = await pipeline._sent_for_postcheck(db, conv, kb=kb)
+        sent = await pipeline._sent_for_postcheck(db, conv, kb=kb)
 
-    assert pipeline._times_in(every) and "20:00" in pipeline._times_in(every)
-    assert "20:00" not in pipeline._times_in(fresh)
-    assert "12000" in pipeline._numbers_in(every), "цены из старой карточки по-прежнему подтверждены"
+    assert "20:00" in pipeline._times_in(sent.texts)
+    assert "20:00" not in sent.times, "часа 20:00 у Тобыла больше нет"
+    assert "21:00" in sent.times, "конец занятия остался прежним — его подтверждает и старая карточка"
+    assert set(sent.weekdays) == {"mon", "wed", "fri"}, "дни Тобыла не менялись"
+    assert "12000" in pipeline._numbers_in(sent.texts), "цены из старой карточки по-прежнему подтверждены"
+
+
+async def test_days_that_are_gone_are_not_confirmed_by_an_old_card(kb, sessionmaker) -> None:
+    async with sessionmaker() as db:
+        conv = await _conversation(db)
+        await _sent(db, conv, _since(kb, TOBYL) - timedelta(days=1), kind=OutboundKind.ARTIFACT,
+                    text="🗓 Расписание — Тобыл\n🕒 Вт, Чт · 20:00–21:00", artifact_id=f"schedule_{TOBYL}")
+        await _sent(db, conv, _since(kb, TOBYL) - timedelta(days=1), kind=OutboundKind.BOT_REPLY,
+                    text="В Тобыле ждём вас во вторник в 20:00")
+        sent = await pipeline._sent_for_postcheck(db, conv, kb=kb)
+
+    assert not {"tue", "thu"} & set(sent.weekdays) and "20:00" not in sent.times
+
+
+async def test_a_booking_merged_into_an_outdated_card_keeps_its_time(kb, sessionmaker) -> None:
+    """Подтверждение записи, склеенное с прежней карточкой: устарели строки занятий, не запись."""
+    since = _since(kb, TOBYL)
+    async with sessionmaker() as db:
+        conv = await _conversation(db)
+        await _sent(db, conv, since - timedelta(days=1), kind=OutboundKind.ARTIFACT,
+                    text=OLD_TOBYL_CARD + "\n\n✅ Записали: во вторник в 18:45\n💳 12 000 ₸",
+                    artifact_id=f"schedule_{TOBYL}", merged_artifact_ids=("trial_confirmation",))
+        sent = await pipeline._sent_for_postcheck(db, conv, kb=kb)
+        cards, outdated = await pipeline._cards_already_sent(db, conv, kb=kb)
+
+    assert "18:45" in sent.times and "20:00" not in sent.times
+    assert "tue" in sent.weekdays, "день записи подтверждён, хотя занятий во вторник в Тобыле нет"
+    assert "прайс" in cards and "расписание зала" not in cards
+    assert outdated == ("Тобыл",)
 
 
 @pytest.mark.parametrize(("shift", "shown"), [(timedelta(days=-1), False), (timedelta(hours=1), True)])
@@ -223,10 +254,9 @@ async def test_postcheck_trusts_times_only_from_current_schedules(kb, sessionmak
         ("Во сколько в Тобыле?", "В Тобыле занятия начинаются в 20:00.", "занятия начинаются в 20:00"),
         # Час и день: проверяются оба.
         ("Во сколько в Тобыле в понедельник?", "В Тобыле занятия в понедельник в 20:00.", "занятия в понедельник в 20:00"),
-        # Только дни: их тоже подтверждало лишь прежнее «уже звучало». После смены расписания
-        # дни зала могли поменяться так же, как часы, — их называет только get_schedule.
-        ("В какие дни в Тобыле?", "В Тобыле занятия по понедельникам, средам и пятницам.",
-         "по понедельникам, средам и пятницам"),
+        # Только дни, которых в расписании больше нет: старая карточка их не подтверждает.
+        ("В какие дни в Тобыле?", "В Тобыле занятия по вторникам и четвергам.",
+         "по вторникам и четвергам"),
     ],
 )
 async def test_the_bot_cannot_repeat_an_old_hour_from_the_dialog(
@@ -236,7 +266,7 @@ async def test_the_bot_cannot_repeat_an_old_hour_from_the_dialog(
     async with sessionmaker() as db:
         conv = await _conversation(db)
         await _sent(db, conv, _since(kb, TOBYL) + shift, kind=OutboundKind.ARTIFACT,
-                    text=OLD_TOBYL_CARD, artifact_id=f"schedule_{TOBYL}")
+                    text=OLD_TOBYL_CARD + "\n🕒 Вт, Чт · 20:00–21:00", artifact_id=f"schedule_{TOBYL}")
         await db.commit()
     kb_loader.swap(kb)
     deps = PipelineDeps(
@@ -385,3 +415,27 @@ def test_restoring_a_backup_with_another_schedule_stamps_it(kb_copy) -> None:
 
     # В копии прежнее расписание и отметки нет — после отката она есть, и она не раньше правки.
     assert _since_value(_gym_raw(kb_dir, KSK)) >= stamped_by_edit
+
+
+async def test_an_old_card_still_confirms_days_that_did_not_change(kb, state, sessionmaker, settings) -> None:
+    """Дни Тобыла не менялись (Пн, Ср, Пт): «ждём в понедельник» по старой карточке — не выдумка.
+
+    Прод 11.11.2026, 19:22: ответ с «понедельник» сняли как выдумку, разговор ушёл
+    администратору, бот встал на паузу.
+    """
+    async with sessionmaker() as db:
+        conv = await _conversation(db)
+        await _sent(db, conv, _since(kb, TOBYL) - timedelta(days=1), kind=OutboundKind.ARTIFACT,
+                    text=OLD_TOBYL_CARD, artifact_id=f"schedule_{TOBYL}")
+        await db.commit()
+    kb_loader.swap(kb)
+    reply = "Хорошо, ждём вас в Тобыле в понедельник!"
+    deps = PipelineDeps(
+        sessionmaker=sessionmaker, state=state, kb=kb_loader.get_snapshot, queue=RecordingQueue(),
+        settings=settings, llm=FakeLLMClient([FakeTurn.answer(reply), FakeTurn.answer(reply)]),
+    )
+
+    decisions = await process_inbound(deps, webhook_payload("m-days-1", "Спасибо, придём", chat_id=CHAT))
+
+    text = "\n".join(out.text or "" for d in decisions for out in d.outbound)
+    assert "в понедельник" in text, text

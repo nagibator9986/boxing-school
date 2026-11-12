@@ -65,6 +65,16 @@ def new_gym_id(title: str, settlement: str, taken: set[str]) -> str:
     return candidate
 
 
+def _canonical(name: str, known: list[str]) -> str:
+    """Название так, как оно уже записано в базе: без лишних пробелов, в том же регистре."""
+    clean = " ".join(name.split())
+    folded = clean.casefold().replace("ё", "е")
+    for candidate in known:
+        if candidate and " ".join(str(candidate).split()).casefold().replace("ё", "е") == folded:
+            return str(candidate)
+    return clean
+
+
 def _text(value: Any, lang: str) -> str:
     return str((value or {}).get(lang) or "").strip()
 
@@ -79,24 +89,28 @@ def prepare_gym_save(editor: Any, gyms_doc: Any, gym_id: str) -> Prepared:
     if gym is None:
         return prepared
     title = _text(gym.get("title"), "ru") or gym_id
-    settlement = str(gym.get("settlement") or "").strip()
     city = str(gyms_doc.get("city_settlement") or "").strip()
+    if gyms_doc.get("city_suburbs") is None:
+        gyms_doc["city_suburbs"] = []
+    suburbs = gyms_doc["city_suburbs"]
+    pricing = editor.load("pricing.yaml") if gym.get("scope") == "region" else None
+    if pricing is not None and pricing.get("region_settlements") is None:
+        pricing["region_settlements"] = []
+    regions = pricing["region_settlements"] if pricing is not None else []
+    # Посёлок, набранный иначе («костанай», «Карабалык » с пробелом), — тот же: пишется так,
+    # как он уже записан. Проверка базы сравнивает буквы, и «костанай» стал бы новым пригородом.
+    settlement = _canonical(str(gym.get("settlement") or ""), [city, *suburbs, *regions])
+    if settlement and settlement != gym.get("settlement"):
+        gym["settlement"] = settlement
 
     if gym.get("scope") == "city" and settlement and settlement != city:
-        suburbs = gyms_doc.get("city_suburbs")
-        if suburbs is None:
-            gyms_doc["city_suburbs"] = suburbs = []
         if settlement not in suburbs:
             suburbs.append(settlement)
             prepared.notes.append(
                 f"«{settlement}» отмечен частью города: там действуют цены {city or 'города'}."
             )
 
-    if gym.get("scope") == "region" and gym.get("active", True) and settlement:
-        pricing = editor.load("pricing.yaml")
-        regions = pricing.get("region_settlements")
-        if regions is None:
-            pricing["region_settlements"] = regions = []
+    if pricing is not None and gym.get("active", True) and settlement:
         if settlement not in regions:
             regions.append(settlement)
             prepared.documents["pricing.yaml"] = pricing

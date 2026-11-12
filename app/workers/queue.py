@@ -439,6 +439,10 @@ def build_queue(settings: Settings, deps: "PipelineDeps") -> JobQueue:
 def redis_settings(settings: Settings | None = None) -> RedisSettings:
     """``RedisSettings`` из ``REDIS_URL``. Сети не касается — только разбор строки."""
     url = settings.redis_url if settings is not None else _cfg("redis_url", _REDIS_FALLBACK)
+    if not (url or "").strip():
+        # REDIS_URL не задан — это норма для встроенной очереди (INLINE_WORKER), а не ошибка:
+        # прежде каждый запуск писал в журнал «redis_url_invalid» уровня ERROR.
+        return RedisSettings.from_dsn(_REDIS_FALLBACK)
     try:
         return RedisSettings.from_dsn(url)
     except Exception:  # noqa: BLE001 - кривой URL не должен ломать импорт модуля

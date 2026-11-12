@@ -475,7 +475,7 @@ def policies() -> Any:
         # напоминания до этого правились только в файле.
         lead_hours = opt_float(form, "trial_min_lead_hours")
         if lead_hours is not None:
-            document["trial_min_lead_hours"] = lead_hours
+            document["trial_min_lead_hours"] = _number(lead_hours)
         if "followup_closing_words" in form:
             document["followup_closing_words"] = lines(form, "followup_closing_words")
         _read_followups(form, document.get("followup_policy") or [])
@@ -500,6 +500,11 @@ FOLLOWUP_LABELS: dict[str, str] = {
 }
 
 
+def _number(value: float) -> int | float:
+    """«48», а не «48.0»: целое пишется целым, как его записал человек."""
+    return int(value) if value.is_integer() else value
+
+
 def _read_followups(form: Any, rules: Any) -> None:
     """Сроки напоминаний из таблицы формы. Текст и код события здесь не меняются."""
     by_event = {str(rule.get("event")): rule for rule in rules}
@@ -512,7 +517,7 @@ def _read_followups(form: Any, rules: Any) -> None:
             continue
         delay = opt_float(form, f"fu::{event}::delay_hours")
         if delay is not None:
-            rule["delay_hours"] = delay
+            rule["delay_hours"] = _number(delay)
         rule["max_times"] = max(0, integer(form, f"fu::{event}::max_times", default=int(rule.get("max_times") or 0)))
         rule["only_work_hours"] = flag(form, f"fu::{event}::only_work_hours")
         if "at_local_time" in rule or text(form, f"fu::{event}::at_local_time"):

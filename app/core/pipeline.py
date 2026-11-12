@@ -1380,7 +1380,7 @@ async def _run_turn(
         if invented_names:
             _log.warning("invented_name_stripped", names=list(invented_names))
         strict = injection or verdict.has(GuardFlag.OFF_TOPIC)
-        sent_before, schedule_fresh = await _sent_for_postcheck(db, conv, kb=kb)
+        sent = await _sent_for_postcheck(db, conv, kb=kb)
         pc = postcheck.check(
             cleaned,
             invocations=invocations,
@@ -1390,9 +1390,9 @@ async def _run_turn(
             strict=strict,
             known_phones=_known_phones(text, inbound=inbound, conv=conv, draft=draft),
             known_names=known_names,
-            known_numbers=_numbers_in(sent_before),
-            known_times=_times_in(schedule_fresh),
-            known_weekdays=_weekdays_in(schedule_fresh),
+            known_numbers=_numbers_in(sent.texts),
+            known_times=sent.times,
+            known_weekdays=sent.weekdays,
         )
         if not cleaned and services.messages:
             # Модель промолчала, а инструменты уже ответили клиенту — карточкой или
@@ -3139,6 +3139,10 @@ _CARD_MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("🗓 Расписание", "расписание зала"),
 )
 
+#: Карточки, которые несут расписание: из строки, ушедшей до его смены, они увиденными не
+#: считаются (``app.tools.freshness``). Список залов — тоже: в нём часы каждого зала.
+_SCHEDULE_LABELS: Final[frozenset[str]] = frozenset({"расписание зала", "список залов"})
+
 
 async def _texts_already_sent(db: AsyncSession, conv: Conversation) -> tuple[str, ...]:
     """Тексты, которые бот уже отправил клиенту в этом диалоге.
@@ -3198,20 +3202,58 @@ def _outdated_in(kb: KBSnapshot, row: freshness.SentRow) -> tuple[Gym, ...]:
         return ()
 
 
-async def _sent_for_postcheck(
-    db: AsyncSession, conv: Conversation, *, kb: KBSnapshot
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Уже отправленные тексты: все — и те, чьё расписание ещё действует.
+@dataclass(frozen=True, slots=True)
+class _SentFacts:
+    """Что уже отправленное подтверждает фильтру: числа, время и дни."""
 
-    Цифры подтверждает любой отправленный текст, а время и дни — только тот, где
-    расписание не устарело: иначе модель повторяла «Тобыл 20:00–21:00» из карточки,
-    ушедшей до смены расписания, и фильтр пропускал это как уже сказанное (11.11.2026).
+    texts: tuple[str, ...]
+    times: tuple[str, ...]
+    weekdays: tuple[str, ...]
+
+
+async def _sent_for_postcheck(db: AsyncSession, conv: Conversation, *, kb: KBSnapshot) -> _SentFacts:
+    """Уже отправленное: цифры подтверждает любой текст, время и дни — только действующие.
+
+    Модель повторяла «Тобыл 20:00–21:00» из карточки, ушедшей до смены расписания, и фильтр
+    пропускал это как уже сказанное (11.11.2026). Но и не верить устаревшему сообщению целиком
+    нельзя: дни Тобыла остались те же — Пн, Ср, Пт, — и «ждём в понедельник» снималось бы как
+    выдумка, а разговор уходил администратору. Поэтому из устаревшего сообщения подтверждается
+    то время и те дни, что есть в нынешнем расписании его залов.
     """
     rows = await _sent_rows(db, conv)
-    return (
-        tuple(row.text for row in rows),
-        tuple(row.text for row in rows if not _outdated_in(kb, row)),
+    times: list[str] = []
+    weekdays: list[str] = []
+    for row in rows:
+        stale = _outdated_in(kb, row)
+        if not stale:
+            times.extend(_times_in((row.text,)))
+            weekdays.extend(_weekdays_in((row.text,)))
+            continue
+        current_times = {moment for gym in stale for slot in gym.schedule for moment in (slot.time_start, slot.time_end)}
+        current_days = {day for gym in stale for slot in gym.schedule for day in slot.days}
+        if _carries_schedule(kb, row):
+            # Карточка, склеенная с ценой или подтверждением записи: устарели строки занятий,
+            # а не время, на которое клиент записан.
+            rest = _without_schedule_lines(row.text)
+            times.extend(_times_in((rest,)))
+            weekdays.extend(_weekdays_in((rest,)))
+        times.extend(value for value in _times_in((row.text,)) if value in current_times)
+        weekdays.extend(code for code in _weekdays_in((row.text,)) if code in current_days)
+    return _SentFacts(
+        texts=tuple(row.text for row in rows),
+        times=tuple(dict.fromkeys(times)),
+        weekdays=tuple(dict.fromkeys(weekdays)),
     )
+
+
+def _carries_schedule(kb: KBSnapshot, row: freshness.SentRow) -> bool:
+    """Несёт ли строка карточку расписания, а не только текст модели."""
+    return any(freshness.schedule_gyms(kb, artifact_id) for artifact_id in row.artifact_ids)
+
+
+def _without_schedule_lines(text: str) -> str:
+    """Текст без строк занятий карточки («🕒 Пн, Ср, Пт · 19:30–21:00»)."""
+    return "\n".join(line for line in text.splitlines() if render.ICON_TIME not in line)
 
 
 async def _cards_already_sent(
@@ -3239,10 +3281,14 @@ async def _cards_already_sent(
             for gym in stale:
                 if gym.id not in refreshed:
                     outdated.setdefault(gym.id, gym.title.ru)
-            continue
-        for artifact_id in row.artifact_ids:
-            refreshed.update(gym.id for gym in freshness.schedule_gyms(kb, artifact_id))
+        else:
+            for artifact_id in row.artifact_ids:
+                refreshed.update(gym.id for gym in freshness.schedule_gyms(kb, artifact_id))
         for marker, label in _CARD_MARKERS:
+            # Из устаревшей строки не считается увиденным только расписание: прайс,
+            # склеенный с ней, клиент получил, и повторять его незачем.
+            if stale and label in _SCHEDULE_LABELS:
+                continue
             if marker in row.text and label not in seen:
                 seen.append(label)
     return tuple(seen), tuple(outdated.values())

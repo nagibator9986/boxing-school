@@ -309,3 +309,101 @@ def test_a_release_added_entry_lands_after_its_neighbour() -> None:
     theirs = _doc(a={}, b={}, c={})
     merge3(base, ours, theirs)
     assert [gym["id"] for gym in ours["gyms"]] == ["a", "b", "c", "z"]
+
+
+# --------------------------------------------------------------------------- #
+# Перепроверка 12.11.2026
+# --------------------------------------------------------------------------- #
+def test_a_settlement_typed_differently_is_the_same_place(client: Any, sandbox: Any) -> None:
+    """«костанай» и «Карабалык » с пробелом — уже известные места, а не новый пригород и дубль."""
+    _new_gym(client, settlement="костанай")
+    _new_gym(client, scope="region", settlement=" карабалык ", title_ru="Карабалык 2", address_ru="школа №2")
+
+    gyms = {gym["id"]: gym for gym in _raw(sandbox.kb_dir, "gyms.yaml")["gyms"]}
+    assert gyms["bereke_arena"]["settlement"] == "Костанай"
+    assert "костанай" not in (_raw(sandbox.kb_dir, "gyms.yaml").get("city_suburbs") or [])
+    assert gyms["karabalyk_2"]["settlement"] == "Карабалык"
+    assert _raw(sandbox.kb_dir, "pricing.yaml")["region_settlements"].count("Карабалык") == 1
+
+
+def test_reuploading_the_same_video_keeps_it_when_the_save_fails(client: Any, sandbox: Any, monkeypatch) -> None:
+    from crm.kbio import KBEditError
+
+    _new_gym(client)
+    _upload(client, "bereke_arena", b"same-video")
+    route = next(a for a in _raw(sandbox.kb_dir, "media.yaml")["artifacts"] if a["id"] == "route_bereke_arena")
+
+    def refuse(self, documents, **kwargs):
+        raise KBEditError("правка отклонена", ["проверка"])
+
+    monkeypatch.setattr(KBEditor, "save", refuse)
+    page = _upload(client, "bereke_arena", b"same-video")
+
+    assert "правка отклонена" in page
+    assert (sandbox.media_dir / route["file_path"]).is_file(), "рабочее видео дороги не удалено"
+
+
+def test_whole_hours_stay_whole(client: Any, sandbox: Any) -> None:
+    fields = form_fields(client.get("/kb/policies").data.decode())
+    client.post("/kb/policies", data=fields, follow_redirects=True)
+    doc = _raw(sandbox.kb_dir, "policies.yaml")
+    rules = {rule["event"]: rule for rule in doc["followup_policy"]}
+    assert isinstance(rules["fu_value"]["delay_hours"], int), "48, а не 48.0"
+    assert isinstance(doc["trial_min_lead_hours"], int)
+    assert rules["fu_soft"]["delay_hours"] == 0.5
+
+
+def test_entries_added_on_both_sides_to_an_empty_list_are_all_kept() -> None:
+    base, ours, theirs = {"entries": []}, {"entries": [{"id": "crm"}]}, {"entries": [{"id": "release"}]}
+    report = merge3(base, ours, theirs)
+    assert [entry["id"] for entry in ours["entries"]] == ["release", "crm"]
+    assert report.conflicts == []
+
+
+def test_lists_of_values_are_merged_whole() -> None:
+    """Дни занятий не склеиваются по элементам: поменяли обе стороны — остаётся правка владельца."""
+    base, ours, theirs = {"days": ["mon"]}, {"days": ["mon", "wed"]}, {"days": ["tue"]}
+    report = merge3(base, ours, theirs)
+    assert ours["days"] == ["mon", "wed"] and report.conflicts == ["days"]
+
+
+async def test_the_bot_tools_see_a_gym_added_in_crm(client: Any, editor: KBEditor) -> None:
+    """Зал из CRM есть в списке залов, который видит модель, и get_schedule отдаёт его карточку."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.tools import registry
+    from app.tools.schedule import get_schedule
+    from app.types import ChannelKind, ToolContext
+    from tests.conftest import CHANNEL_ID, RecordingServices
+
+    _new_gym(client)
+    kb = editor.snapshot()
+
+    specs = {spec.name: spec for spec in registry.build_tool_specs(kb)}
+    enum = specs["get_schedule"].parameters["properties"]["gym_id"]["enum"]
+    assert "bereke_arena" in enum
+    assert "gym_location_bereke_arena" in specs["send_content"].parameters["properties"]["artifact_id"]["enum"]
+
+    services = RecordingServices()
+    ctx = ToolContext(
+        conversation_id=uuid4(), conv_key="conv:test", channel=ChannelKind.WHATSAPP, channel_id=CHANNEL_ID,
+        chat_id="77015550401", lang=Language.RU, kb=kb, kb_hash=kb.kb_hash,
+        now=datetime(2026, 11, 12, 6, 0, tzinfo=timezone.utc), correlation_id="test", services=services,
+    )
+    result = await get_schedule(ctx, gym_id="bereke_arena")
+    assert result.ok, result
+    assert any("Пн, Ср · 18:00–19:30" in (message.text or "") for message in services.outbound), services.outbound
+
+
+def test_an_unset_redis_url_is_not_an_error(monkeypatch, capsys) -> None:
+    """REDIS_URL не задан при встроенной очереди — каждый запуск писал ERROR «redis_url_invalid»."""
+    from app.config import get_settings
+    from app.workers import queue
+
+    events: list[str] = []
+    monkeypatch.setattr(queue.log, "error", lambda event, **kw: events.append(event))
+    settings = get_settings().model_copy(update={"redis_url": ""})
+    assert queue.redis_settings(settings).host == "localhost"
+    queue.redis_settings(settings.model_copy(update={"redis_url": "::not a url::"}))
+    assert events == ["redis_url_invalid"], "кривой адрес по-прежнему виден"

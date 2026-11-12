@@ -583,3 +583,28 @@ def test_a_release_that_breaks_with_crm_edits_is_rolled_back_and_retried(tmp_pat
     assert (data / serve.SEED_BASE / "kb" / "gyms.yaml").read_text(encoding="utf-8") == base_before, (
         "база слияния не сдвинулась — выпуск попробует снова"
     )
+
+
+def test_merged_values_are_quoted_the_way_the_bot_reads_them(tmp_path: Path) -> None:
+    """Бот читает YAML редакцией 1.1: «10:30» без кавычек — число 630, и база не сошлась бы."""
+    import yaml
+
+    data, image = _release(tmp_path)
+    serve.seed_from_image(data, image_root=image)
+    owner = data / "kb" / "faq.yaml"
+    owner.write_text(owner.read_text(encoding="utf-8").replace("entries:", "# правка владельца\nentries:", 1), encoding="utf-8")
+    release = image / "kb" / "faq.yaml"
+    release.write_text(release.read_text(encoding="utf-8").replace(
+        "entries:\n",
+        "entries:\n- id: opens_at\n  topic: trial\n  scope: any\n  question_variants:\n    ru: [во сколько открываетесь]\n"
+        "    kk: []\n  answer:\n    ru: 10:30\n    kk: 10:30\n  source: owner_confirmed\n  gap_ref: null\n"
+        "  escalate_if_empty: true\n  requires_tool: null\n  forbidden_claims: []\n",
+        1,
+    ), encoding="utf-8")
+
+    serve.seed_from_image(data, image_root=image)
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(owner.read_text(encoding="utf-8"))["entries"]}
+    assert entries["opens_at"]["answer"]["ru"] == "10:30", "время осталось строкой"
+    assert "# правка владельца" in owner.read_text(encoding="utf-8")
+    assert serve._kb_loads(data / "kb", data / "media")

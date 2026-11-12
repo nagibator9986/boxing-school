@@ -90,9 +90,15 @@ def _merge_mapping(base: Mapping[Any, Any], ours: Any, theirs: Mapping[Any, Any]
 
 
 def _keyed(value: Any) -> bool:
-    """Список записей с уникальным ``id``: залы, вопросы, материалы."""
-    if not isinstance(value, list) or not value:
+    """Список записей с уникальным ``id``: залы, вопросы, материалы.
+
+    Пустой список с ними совместим: в прошлом выпуске записей могло не быть вовсе, и тогда
+    новые записи выпуска и записи, заведённые в CRM, должны остаться и те и другие.
+    """
+    if not isinstance(value, list):
         return False
+    if not value:
+        return True
     ids = [item.get("id") if isinstance(item, Mapping) else None for item in value]
     return all(isinstance(item_id, str) for item_id in ids) and len(set(ids)) == len(ids)
 

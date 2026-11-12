@@ -284,21 +284,25 @@ def _preview(kb: Any, gym_id: str) -> dict[str, Any] | None:
     if gym is None:
         return None
     cards: list[tuple[str, str]] = []
-    for lang, label in ((Language.RU, "по-русски"), (Language.KK, "по-казахски")):
+
+    def card(label: str, build: Any) -> None:
         try:
-            cards.append((f"Расписание {label}", render.render_schedule_card(
-                kb, gym_id=gym_id, slots=gym.schedule, lang=lang
-            )))
-        except Exception as exc:  # noqa: BLE001 - предпросмотр не роняет страницу
-            cards.append((f"Расписание {label}", f"не собралось: {exc}"))
+            cards.append((label, build()))
+        except Exception as exc:  # noqa: BLE001 - предпросмотр не роняет страницу зала
+            cards.append((label, f"не собралось: {exc}"))
+
+    for lang, label in ((Language.RU, "по-русски"), (Language.KK, "по-казахски")):
+        card(f"Расписание {label}", lambda lang=lang: render.render_schedule_card(
+            kb, gym_id=gym_id, slots=gym.schedule, lang=lang
+        ))
     location = kb.artifact(f"{gym_companions.LOCATION_PREFIX}{gym_id}")
     if location is not None:
-        cards.append(("Карточка адреса", render.render_gym_location(kb, gym_id=gym_id, lang=Language.RU)))
+        card("Карточка адреса", lambda: render.render_gym_location(kb, gym_id=gym_id, lang=Language.RU))
     route = kb.artifact(f"{gym_companions.ROUTE_PREFIX}{gym_id}")
     if route is not None:
-        cards.append(("Подпись к видео дороги", render.render_route_caption(
+        card("Подпись к видео дороги", lambda: render.render_route_caption(
             kb, gym_id=gym_id, lang=Language.RU, with_schedule=True
-        )))
+        ))
 
     problems: list[str] = []
     if not gym.active:
@@ -390,7 +394,8 @@ def route_video(gym_id: str) -> Any:
     handle, tmp_name = tempfile.mkstemp(prefix=".route-", suffix=suffix, dir=media_dir)
     os.close(handle)
     tmp = Path(tmp_name)
-    final: Path | None = None
+    # Что удалить при отказе базы: новый файл — да, файл, который уже был рабочим, — нет.
+    discard: Path | None = None
     try:
         upload.save(tmp)
         blob = tmp.read_bytes()
@@ -401,6 +406,9 @@ def route_video(gym_id: str) -> Any:
         final = media_dir / f"{gym_companions.ROUTE_PREFIX}{gym_id}_{sha[:8]}{suffix}"
         previous = snapshot().artifact(f"{gym_companions.ROUTE_PREFIX}{gym_id}")
         previous_file = previous.file_path if previous is not None else None
+        # Тот же файл загрузили повторно — имя совпадает с рабочим видео. При отказе базы
+        # удалять его нельзя: бот остался бы без видео дороги.
+        discard = None if final.exists() else final
         os.replace(tmp, final)
         kb_editor = editor()
         try:
@@ -417,12 +425,12 @@ def route_video(gym_id: str) -> Any:
             for line in exc.errors[:6]:
                 flash(line, "detail")
             return redirect(back)
-        final = None  # принято — файл остаётся
-        _drop_unused_file(media_dir, previous_file, keep=f"{gym_companions.ROUTE_PREFIX}{gym_id}_{sha[:8]}{suffix}")
+        discard = None  # принято — файл остаётся
+        _drop_unused_file(media_dir, previous_file, keep=final.name)
     finally:
         tmp.unlink(missing_ok=True)
-        if final is not None:
-            final.unlink(missing_ok=True)
+        if discard is not None:
+            discard.unlink(missing_ok=True)
     limit_mb = CHANNEL_LIMITS[ChannelKind.WHATSAPP].max_file_bytes // (1024 * 1024)
     flash(
         f"Видео дороги загружено ({len(blob) / 1048576:.1f} МБ, версия {result.kb_hash[:8]}). "

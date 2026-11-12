@@ -288,8 +288,7 @@ def seed_from_image(data_dir: Path, *, image_root: Path = ROOT) -> dict[str, int
             report[name] -= 1
         _log("=" * 72)
         _log("ВНИМАНИЕ: новая версия базы знаний из репозитория не сошлась с правками")
-        _log("владельца в других файлах — возвращена прежняя: "
-             + ", ".join(item.name for _, item, _, _ in kb_updates))
+        _log("владельца в других файлах — возвращена прежняя: " + ", ".join(sorted(rolled_back)))
         _log("=" * 72)
 
     _write_seed_state(data_dir, state)
@@ -325,13 +324,22 @@ def _store_seed_base(data_dir: Path, source_dir: Path, *, skip: set[str]) -> Non
 
 def _yaml_engine() -> Any:
     """Разбор YAML с сохранением комментариев и кавычек — тот же, что у CRM."""
-    from ruamel.yaml import YAML
+    from crm.kbio import yaml_engine
 
-    engine = YAML()
-    engine.preserve_quotes = True
-    engine.width = 4096
-    engine.indent(mapping=2, sequence=2, offset=0)
-    return engine
+    return yaml_engine()
+
+
+def _dump_yaml(engine: Any, document: Any, destination: Path) -> None:
+    """Пишет документ так же, как CRM: с кавычками там, где бот прочёл бы строку числом.
+
+    Бот читает YAML редакцией 1.1, где ``10:30`` без кавычек — число 630 (``quote_ambiguous``).
+    """
+    from crm.kbio import quote_ambiguous
+
+    temporary = destination.with_name(f".{destination.name}.seed-tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        engine.dump(quote_ambiguous(document), handle)
+    os.replace(temporary, destination)
 
 
 def _merge_three_way(base: Path, source: Path, destination: Path) -> list[str]:
@@ -351,10 +359,7 @@ def _merge_three_way(base: Path, source: Path, destination: Path) -> list[str]:
             engine.load(source.read_text(encoding="utf-8")) or {},
         )
         if report.applied:
-            temporary = destination.with_name(f".{destination.name}.seed-tmp")
-            with temporary.open("w", encoding="utf-8") as handle:
-                engine.dump(disk, handle)
-            os.replace(temporary, destination)
+            _dump_yaml(engine, disk, destination)
     except Exception as exc:  # noqa: BLE001 - не слили — громко, но запуск продолжается
         _log(f"ВНИМАНИЕ: kb/{destination.name}: правки выпуска не перенесены: {exc}")
         return []
@@ -392,12 +397,7 @@ def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
     if not section:
         return []
     try:
-        from ruamel.yaml import YAML
-
-        engine = YAML()
-        engine.preserve_quotes = True
-        engine.width = 4096
-        engine.indent(mapping=2, sequence=2, offset=0)
+        engine = _yaml_engine()
         image = engine.load(source.read_text(encoding="utf-8")) or {}
         disk = engine.load(destination.read_text(encoding="utf-8")) or {}
         theirs, ours = image.get(section) or {}, disk.get(section)
@@ -408,10 +408,7 @@ def _merge_missing_keys(source: Path, destination: Path) -> list[str]:
             return []
         for key in added:
             ours[key] = theirs[key]
-        temporary = destination.with_name(f".{destination.name}.seed-tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            engine.dump(disk, handle)
-        os.replace(temporary, destination)
+        _dump_yaml(engine, disk, destination)
     except Exception as exc:  # noqa: BLE001 - не дописали — громко, но запуск продолжается
         _log(f"ВНИМАНИЕ: kb/{destination.name}: не удалось дописать новые тексты: {exc}")
         return []
@@ -436,14 +433,9 @@ def _merge_schedule_since(source: Path, destination: Path) -> list[str]:
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
-        from ruamel.yaml import YAML
-
         from app.kb.schedule_since import DEFAULT_TZ, schedules_differ
 
-        engine = YAML()
-        engine.preserve_quotes = True
-        engine.width = 4096
-        engine.indent(mapping=2, sequence=2, offset=0)
+        engine = _yaml_engine()
         image = engine.load(source.read_text(encoding="utf-8")) or {}
         disk = engine.load(destination.read_text(encoding="utf-8")) or {}
         released = {
@@ -463,10 +455,7 @@ def _merge_schedule_since(source: Path, destination: Path) -> list[str]:
             added.append(gym_id if same else f"{gym_id} (занятия отличаются от выпуска — с {saved_at:%d.%m %H:%M})")
         if not added:
             return []
-        temporary = destination.with_name(f".{destination.name}.seed-tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            engine.dump(disk, handle)
-        os.replace(temporary, destination)
+        _dump_yaml(engine, disk, destination)
     except Exception as exc:  # noqa: BLE001 - не дописали — громко, но запуск продолжается
         _log(f"ВНИМАНИЕ: kb/{destination.name}: не удалось дописать отметку смены расписания: {exc}")
         return []
