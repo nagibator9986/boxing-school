@@ -204,7 +204,18 @@ def opening_caveats(kb: KBSnapshot, gyms: Sequence[Gym]) -> list[str]:
     ]
 
 
-def _gym_payload(gym: Gym, lang: Language) -> dict[str, Any]:
+def opens_on_payload(gym: Gym, kb: KBSnapshot) -> str | None:
+    """Дата открытия для модели — только пока зал не открылся.
+
+    После дня открытия она модели ни к чему: «начинает работать с 01.11» через две
+    недели после открытия клиент читает как «ещё не работает» (владелец 13.11.2026).
+    """
+    if gym.opens_on is None:
+        return None
+    return gym.opens_on.isoformat() if gym.opens_after(school_today(kb)) else None
+
+
+def _gym_payload(gym: Gym, lang: Language, kb: KBSnapshot) -> dict[str, Any]:
     """Зал в том виде, в каком его увидит модель. Ничего сверх базы знаний."""
     return {
         "id": gym.id,
@@ -218,7 +229,7 @@ def _gym_payload(gym: Gym, lang: Language) -> dict[str, Any]:
         "has_schedule": gym.has_schedule,
         "phone": gym.phone,          # НП: проверить на проде — сегодня всегда null (G-2)
         "map_url": gym.map_url,      # сегодня всегда null (G-15)
-        "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
+        "opens_on": opens_on_payload(gym, kb),
     }
 
 
@@ -345,7 +356,7 @@ async def get_gyms(
             "scope": parsed.value,
             "query_settlement": settlement,
             "settlement_filtered": filtered_by_settlement,
-            "gyms": [_gym_payload(gym, lang) for gym in shown],
+            "gyms": [_gym_payload(gym, lang, kb) for gym in shown],
             "total": len(shown),
             "total_in_scope": total,
             "city_settlement": kb.gyms.city_settlement,
@@ -696,7 +707,7 @@ async def find_gym_by_district(
     top = scored[:MAX_DISTRICT_MATCHES]
     payload: list[dict[str, Any]] = []
     for score, kind, key, gym in top:
-        item = _gym_payload(gym, lang)
+        item = _gym_payload(gym, lang, kb)
         item["match"] = kind
         item["match_score"] = score
         item["matched_alias"] = key

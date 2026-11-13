@@ -30,7 +30,7 @@ from app.kb import render
 from app.kb.render import render_schedule_card
 from app.kb.sessions import client_times, normalize_time, weekday_code
 from app.tools import freshness
-from app.tools.gyms import opening_caveats
+from app.tools.gyms import opening_caveats, opens_on_payload
 from app.types import (
     EscalationReason,
     GapRef,
@@ -315,7 +315,7 @@ async def get_schedule(
             "address": gym.address.get(lang),
             "landmark": gym.landmark.get(lang),
             "child_age": age,
-            "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
+            "opens_on": opens_on_payload(gym, kb),
             "shift": normalized_shift,
             "slots": [_slot_payload(slot, lang) for slot in matched],
             "alternatives": [_slot_payload(slot, lang) for slot in all_slots] if not matched else [],
@@ -407,7 +407,7 @@ async def find_sessions(
                 "gym_id": gym.id,
                 "gym_title": gym.title.get(lang) or gym.title.ru,
                 "address": gym.address.get(lang),
-                "opens_on": gym.opens_on.isoformat() if gym.opens_on else None,
+                "opens_on": opens_on_payload(gym, kb),
             }
             if is_today and slot.time_start <= f"{local_now:%H:%M}":
                 started.append(item)  # сегодня уже началось — только на другой день

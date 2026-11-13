@@ -140,8 +140,11 @@ def render_gyms_block(snapshot: KBSnapshot) -> str:
                 parts.append(gym.landmark.ru)
             if gym.is_head:
                 parts.append("головной зал")
-            if gym.opens_on is not None:
-                # Без «сегодня»: промпт кэшируется, а дата открытия верна и после неё.
+            if gym.opens_after(school_today(snapshot)):
+                # Только пока зал не открылся. Прежде строка оставалась и после даты: владелец
+                # 13.11.2026 — «нужно убрать, что Гашека начинает работать с 1.11», а модель
+                # повторяла это клиентам через две недели после открытия. Промпт меняется
+                # один раз, в день открытия.
                 parts.append(f"занятия с {gym.opens_on:%d.%m.%Y}, раньше записывать нельзя")
             lines.append("- " + " | ".join(parts))
     for gym in snapshot.unresolved_gyms():

@@ -132,6 +132,23 @@ def kb_with_regions(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
 
 
 @pytest.fixture(scope="session")
+def kb_with_opening_gym(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
+    """Копия базы, где у зала на КЖБИ снова стоит дата открытия — 01.11.2026.
+
+    Владелец 13.11.2026 дату снял («нужно убрать, что Гашека начинает работать с 1.11»), а
+    поле «Работает с» в CRM осталось для новых залов: механизм проверяется здесь.
+    """
+    marker = "- id: kzhbi_gasheka_9_3\n"
+
+    def with_opening(text: str) -> str:
+        start = text.index(marker)
+        status = text.index("  status: open\n", start) + len("  status: open\n")
+        return text[:status] + '  opens_on: "2026-11-01"\n' + text[status:]
+
+    return _kb_variant(tmp_path_factory, "kb_opening", with_opening)
+
+
+@pytest.fixture(scope="session")
 def kb_with_closed_gym_records(tmp_path_factory: pytest.TempPathFactory) -> KBSnapshot:
     """Копия базы, где Рахат и «Кеме» есть, но закрыты (``status: closed``).
 

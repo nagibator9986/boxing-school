@@ -35,6 +35,12 @@ AFTER = date(2026, 11, 5)
 
 
 @pytest.fixture
+def kb(kb_with_opening_gym):
+    """Механизм открытия — на копии базы с датой: в настоящей её с 13.11.2026 нет."""
+    return kb_with_opening_gym
+
+
+@pytest.fixture
 def before_opening(monkeypatch):
     monkeypatch.setattr(render, "school_today", lambda snapshot: BEFORE)
 
@@ -116,8 +122,28 @@ def test_schedule_location_and_caption_carry_the_note_once(kb, before_opening) -
     assert "Сабақтар 01.11.2026 бастап" in render_gym_location(kb, gym_id=KZHBI, lang=Language.KK)
 
 
-def test_model_registry_names_the_opening_date(kb) -> None:
+def test_model_registry_names_the_opening_date(kb, before_opening) -> None:
     assert "kzhbi_gasheka_9_3 | район КЖБИ | занятия с 01.11.2026" in render_system_prompt(kb)
+
+
+def test_after_the_opening_the_model_no_longer_hears_the_date(kb, after_opening, monkeypatch) -> None:
+    """Владелец 13.11.2026: «нужно убрать, что Гашека начинает работать с 1.11» — модель
+    повторяла дату из реестра залов через две недели после открытия."""
+    from app.tools import gyms
+
+    monkeypatch.setattr(gyms, "school_today", lambda snapshot: AFTER)
+    assert "01.11.2026" not in render_system_prompt(kb)
+    assert gyms.opens_on_payload(kb.gym(KZHBI), kb) is None
+
+
+def test_the_real_base_says_nothing_about_the_opening(kb_dir, media_dir) -> None:
+    from app.kb import loader
+
+    real, _ = loader.load_sync(kb_dir, media_dir=media_dir, schema_version=1)
+    assert real.gym(KZHBI).opens_on is None
+    answer = next(entry for entry in real.faq if entry.id.startswith("kzhbi") or "кжби" in " ".join(entry.question_variants.get("ru") or []))
+    assert "01.11" not in (answer.answer.ru or "") and "01.11" not in (answer.answer.kk or "")
+    assert "01.11.2026" not in render_system_prompt(real)
 
 
 async def test_schedule_tool_warns_before_the_opening(ctx, before_opening, monkeypatch) -> None:
@@ -157,7 +183,9 @@ async def test_find_sessions_skips_the_gym_before_it_opens(make_ctx, monkeypatch
 def test_faq_now_says_there_is_a_gym(kb) -> None:
     entry = next(item for item in kb.faq if item.id == "contacts_kzhbi")
 
-    assert "Гашека 9/3" in entry.answer.ru and "01.11.2026" in entry.answer.ru
+    assert "Гашека 9/3" in entry.answer.ru and "Гашек көшесі 9/3" in entry.answer.kk
+    # Владелец 13.11.2026: «нужно убрать, что Гашека начинает работать с 1.11».
+    assert "01.11" not in entry.answer.ru and "01.11" not in entry.answer.kk
     assert "отдельного зала нет" not in entry.answer.ru
     assert not entry.forbidden_claims, "«зал на КЖБИ есть» теперь правда"
 
